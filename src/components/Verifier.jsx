@@ -177,8 +177,8 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
 
   return (
     <div>
-      <div className={`verify-grid${result && !running && !expanded ? " verify-result-mode" : ""}`}>
-        <form className={`card${result && !running && !expanded ? " form-collapsed" : ""}`} onSubmit={handleSubmit} aria-label="Enviar conteúdo para checagem">
+      <div className={`verify-grid${result && !running && !expanded ? " verify-result-mode" : ""}${running && !result ? " verify-processing-mode" : ""}`}>
+        <form className={`card${result && !running && !expanded ? " form-collapsed" : ""}${running && !result ? " form-hidden" : ""}`} onSubmit={handleSubmit} aria-label="Enviar conteúdo para checagem">
           <div className="hd">
             <h3>{result && !running && !expanded ? "Checagem concluída" : "O que você quer checar?"}</h3>
             <span className="aside">{result && !running && !expanded ? `nota ${result.score}/100` : "link · texto · vídeo · foto"}</span>
@@ -401,13 +401,16 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
             )}
 
           {running && !result && (
-            <div>
-              <p className="thinking" aria-live="polite" key={thinkIdx}>
+            <div className="processing-hero">
+              <p className="thinking thinking-big" aria-live="polite" key={thinkIdx}>
                 <span className="thinking-dots" aria-hidden="true">
                   <i /><i /><i />
                 </span>
                 {THINKING_LINES[thinkIdx]}
               </p>
+              <div className="progress-track" aria-hidden="true">
+                <i style={{ width: `${Math.round(((step + 1) / PIPELINE_STEPS.length) * 100)}%` }} />
+              </div>
               <ol className="pipeline">
                 {PIPELINE_STEPS.map((s, i) => (
                   <li
@@ -424,6 +427,11 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
                   </li>
                 ))}
               </ol>
+              <div className="processing-actions">
+                <button className="btn ghost" type="button" onClick={reset}>
+                  Cancelar checagem
+                </button>
+              </div>
             </div>
           )}
 

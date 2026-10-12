@@ -8,7 +8,7 @@ import { transcribe, transcriptToPrompt } from "./transcribe.js";
 export const OPENCODE_URL = "https://opencode.ai/zen/go/v1/responses";
 export const DEFAULT_MODEL = "muse-spark-1.3-contributor";
 
-const BASE_RULES = `Regras: separe cada afirmação checável do conteúdo; "context" quando a frase é parcialmente verdadeira mas engana sem contexto; seja cético com prints sem origem e correntes de WhatsApp; cite fontes reais e específicas (TSE, agências de checagem, veículos) com URLs reais quando souber; score geral pondera a gravidade de cada afirmação. Tudo em pt-BR.`;
+const BASE_RULES = `Regras: separe cada afirmação checável do conteúdo; "context" quando a frase é parcialmente verdadeira mas engana sem contexto; seja cético com prints sem origem e correntes de WhatsApp; cite no mínimo 3 fontes VARIADAS por checagem, nunca repetindo o mesmo outlet — alterne entre: fontes oficiais (TSE, Câmara, Senado, Planalto, STF, IBGE, Banco Central), agências de checagem (Lupa, Aos Fatos, Estadão Verifica, UOL Confere, AFP Checamos), veículos grandes (G1, Folha, Estadão, O Globo, UOL, Poder360, Metrópoles, CNN Brasil) e regionais quando relevante; cada URL deve ser plausível e específica da fonte citada (nunca invente slug de matéria — prefira a home/seção do veículo se não souber a URL exata); score geral pondera a gravidade de cada afirmação. Tudo em pt-BR.`;
 
 const RESULT_SHAPE = `{"verdict":"true|mostly_true|mixed|unproven|misleading|false","score":0-100,"summary":"resumo em pt-BR, 1-2 frases","claims":[{"status":"true|false|unproven|context","score":0-100,"text":"a afirmação entre aspas","note":"justificativa curta em pt-BR"}],"sources":[{"outlet":"nome da fonte","detail":"tipo · data","url":"https://..."}]}`;
 
@@ -129,6 +129,41 @@ async function callModel({ apiKey, model, instructions, input, timeoutMs }) {
   }
 }
 
+/**
+ * Sanitiza fontes do modelo: remove outlets duplicados (case-insensitive) e
+ * marca URLs inalcançáveis como "#" (HEAD rápido, 8s; falha = mantém texto).
+ */
+async function sanitizeSources(sources) {
+  if (!Array.isArray(sources)) return [];
+  const seen = new Set();
+  const unique = [];
+  for (const s of sources.slice(0, 8)) {
+    const key = String(s?.outlet ?? "").trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push({
+      outlet: String(s.outlet).slice(0, 120),
+      detail: String(s?.detail ?? "").slice(0, 120),
+      url: typeof s?.url === "string" && /^https?:\/\//.test(s.url) ? s.url : "#",
+    });
+  }
+  await Promise.all(
+    unique.map(async (s) => {
+      if (s.url === "#") return;
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 8000);
+        const res = await fetch(s.url, { method: "HEAD", signal: ctrl.signal, redirect: "follow" });
+        clearTimeout(t);
+        if (!res.ok) s.url = "#";
+      } catch {
+        s.url = "#";
+      }
+    }),
+  );
+  return unique;
+}
+
 function toOrigin(media, url) {
   if (!media) return null;
   const out = {
@@ -229,6 +264,7 @@ export async function runVerify(input, { apiKey, model, timeoutMs = 120_000 } = 
         input: `Cheque este ${kindLabel}: ${maybeUrl}\n\nDados extraídos (confie nestes dados):\n${mediaContext}`,
         timeoutMs,
       });
+      second.sources = await sanitizeSources(second.sources);
       return { result: second, model: mdl, media: mediaDebug, transcript, origin };
     }
   }
@@ -249,5 +285,6 @@ export async function runVerify(input, { apiKey, model, timeoutMs = 120_000 } = 
       origin,
     };
   }
+  first.sources = await sanitizeSources(first.sources);
   return { result: first, model: mdl, media: mediaDebug, transcript, origin };
 }

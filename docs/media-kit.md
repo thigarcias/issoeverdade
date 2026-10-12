@@ -50,12 +50,27 @@ node scripts/fetch-media.mjs <url> --audio    # + baixa o MP3
 }
 ```
 
+## Fluxo em 2 passes (runVerify)
+
+1. **Passo 1 — rápido:** metadados do link (yt-dlp probe / oEmbed / OpenGraph).
+   A IA julga com o que tem; se faltar conteúdo, responde `{"needs_media":true}`.
+2. **Passo 2 — sob demanda:** só roda se a IA pedir mídia **ou** se for vídeo
+   com URL (vídeo sempre transcreve). Baixa o MP3 (`downloadAudio`) +
+   transcreve com Whisper (`transcribe`) + rejulga com a transcrição.
+
+Texto puro e links com conteúdo suficiente: 1 passo, sem download.
+
+## Transcrição (Whisper)
+
+- Worker: `scripts/transcribe.py` (faster-whisper, modelo `large-v3-turbo`).
+- Ponte Node: `server/transcribe.js` (fila serial, cache, fallback sem prompts).
+- CUDA se `torch.cuda.is_available()`, senão CPU int8 (~14s p/ 18s de áudio).
+- Trocar modelo: `WHISPER_MODEL=tiny|base|small|medium|large-v3` no `.env`.
+
 ## Limites conhecidos
 
 - Posts privados/com login não são acessíveis (yt-dlp sem cookies).
 - Instagram: metadados públicos OK via yt-dlp; oEmbed oficial descontinuado.
-- Vercel functions não têm `yt-dlp`/`ffmpeg` — lá valem as camadas HTTP
-  (oEmbed + OpenGraph). Para yt-dlp em produção: self-host ou API externa
-  (ex.: Cobalt API) como camada adicional.
-- Transcrição do áudio (Whisper) ainda não ligada — o prompt avisa o modelo
-  dessa limitação para vídeos.
+- Vercel functions não têm `yt-dlp`/`ffmpeg`/Python — lá valem as camadas HTTP
+  (oEmbed + OpenGraph) e o passo 2 é pulado (`hasYtDlp()`/`hasTranscriber()`
+  retornam false). Para pipeline completo em produção: self-host ou API externa.

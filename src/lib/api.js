@@ -60,7 +60,7 @@ function titleFrom(input) {
 }
 
 /** Normaliza o JSON do modelo para o formato que o ResultCard espera. */
-function normalizeLive(raw, input, model) {
+function normalizeLive(raw, input, model, transcript) {
   const verdicts = ["true", "mostly_true", "mixed", "unproven", "misleading", "false"];
   const statuses = ["true", "false", "unproven", "context"];
   const clamp = (n, dflt) => {
@@ -95,7 +95,10 @@ function normalizeLive(raw, input, model) {
     checkedAt: "agora",
     summary: String(raw?.summary ?? "Resultado gerado pelo modelo.").slice(0, 600),
     claims,
-    transcript: null,
+    transcript: Array.isArray(transcript?.segments)
+      ? transcript.segments.slice(0, 60).map((s) => ({ ts: s.ts, text: s.text, mark: null }))
+      : null,
+    transcriptModel: transcript?.model ?? null,
     sources,
   };
 }
@@ -160,7 +163,7 @@ async function liveVerify(input, opts) {
   await wait(300, opts.signal);
   opts.onStep?.(PIPELINE_STEPS.length);
   return {
-    result: normalizeLive(data.result, input, data.model ?? "ao vivo"),
+    result: normalizeLive(data.result, input, data.model ?? "ao vivo", data.transcript ?? null),
     live: true,
     model: data.model ?? null,
   };

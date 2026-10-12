@@ -118,7 +118,7 @@ export default function ResultCard({ result, showToast, titleId }) {
 
       {result.transcript && (
         <div className="transcript">
-          <span className="sec-label">Transcrição (Whisper Turbo · mock)</span>
+          <span className="sec-label">{result.transcriptModel ? `Transcrição (Whisper ${result.transcriptModel} · real)` : "Transcrição (Whisper Turbo · mock)"}</span>
           <blockquote>
             {result.transcript.map((line) => (
               <span className="line" key={line.ts}>

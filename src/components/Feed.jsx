@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
-import { MOCK_FEED, VERDICTS } from "../data/mocks.js";
-import { resolveResult } from "../lib/results.js";
+import { VERDICTS } from "../data/constants.js";
 
 const FILTERS = [
   { id: "all", label: "Todas" },
@@ -12,29 +11,39 @@ const FILTERS = [
   { id: "false", label: "Falsas" },
 ];
 
-export default function Feed({ onOpen }) {
+/** Checagens feitas neste navegador (histórico local). */
+export default function Feed({ items: allItems, onOpen }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
 
   const counts = useMemo(() => {
-    const c = { all: MOCK_FEED.length };
-    for (const item of MOCK_FEED) {
+    const c = { all: allItems.length };
+    for (const item of allItems) {
       c[item.verdict] = (c[item.verdict] ?? 0) + 1;
     }
     return c;
-  }, []);
+  }, [allItems]);
 
   const items = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return MOCK_FEED.filter((item) => {
+    return allItems.filter((item) => {
       if (filter !== "all" && item.verdict !== filter) return false;
       if (!q) return true;
-      const hay = `${item.title} ${item.excerpt} ${item.author} ${item.category}`.toLowerCase();
+      const hay = `${item.title} ${item.summary} ${item.author}`.toLowerCase();
       return q.split(/\s+/).every((word) => hay.includes(word));
     });
-  }, [query, filter]);
+  }, [allItems, query, filter]);
 
   const hasFilter = query.trim() !== "" || filter !== "all";
+
+  if (allItems.length === 0) {
+    return (
+      <div className="empty">
+        <h3>Nenhuma checagem ainda</h3>
+        <p>Cole um link, texto ou vídeo acima — suas checagens aparecem aqui.</p>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -46,7 +55,7 @@ export default function Feed({ onOpen }) {
           </svg>
           <input
             type="search"
-            placeholder="Buscar nome, assunto ou veículo…"
+            placeholder="Buscar nas suas checagens…"
             aria-label="Buscar checagens"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -91,7 +100,7 @@ export default function Feed({ onOpen }) {
 
       {items.length === 0 ? (
         <div className="empty">
-          <h3>Nada por aqui (mock)</h3>
+          <h3>Nada por aqui</h3>
           <p>Tente outro termo ou limpe os filtros para ver todas as checagens.</p>
         </div>
       ) : (
@@ -102,11 +111,11 @@ export default function Feed({ onOpen }) {
               <li key={item.id}>
                 <article
                   className="card feed-card"
-                  onClick={() => onOpen(resolveResult(item))}
+                  onClick={() => onOpen(item)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
-                      onOpen(resolveResult(item));
+                      onOpen(item);
                     }
                   }}
                   tabIndex={0}
@@ -120,7 +129,7 @@ export default function Feed({ onOpen }) {
                     <div className="feed-score">
                       <b style={{ color: v.color }}>{item.score}</b>
                       <small>
-                        score
+                        nota
                         <br />
                         /100
                       </small>
@@ -130,10 +139,10 @@ export default function Feed({ onOpen }) {
                     <i style={{ width: `${item.score}%`, background: v.color }} />
                   </div>
                   <h3>{item.title}</h3>
-                  <p className="excerpt">{item.excerpt}</p>
+                  <p className="excerpt">{item.summary}</p>
                   <div className="feed-bottom">
                     <span className="meta">
-                      {item.category} · {item.claimsCount} afirmações · {item.sourcesCount} fontes
+                      {item.claims.length} afirmações · {item.sources.length} fontes
                     </span>
                     <span className="quiet-link">Ler checagem</span>
                   </div>

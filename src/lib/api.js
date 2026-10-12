@@ -1,44 +1,18 @@
 // ---------------------------------------------------------------------------
-// API client — tenta o backend real (/api/verify, OpenCode Go) e cai para o
-// mock local se o backend estiver indisponível. Contrato estável:
-// `verify()` retorna `{ result, live: boolean, model: string|null }`.
+// API client — checagem real via /api/verify. Falhas viram exceção com mensagem
+// amigável; a UI exibe estado de erro com botão de tentar de novo.
+// Retorna `{ result, steps }`. Detalhes do modelo ficam no servidor.
 // ---------------------------------------------------------------------------
 
-import { MOCK_FALLBACK, MOCK_RESULTS, PIPELINE_STEPS } from "../data/mocks.js";
+import { PIPELINE_STEPS } from "../data/constants.js";
 
-const STEP_DELAY_MS = 650;
-
-const ERROR_MESSAGES = {
-  missing_api_key: "Servidor sem chave OpenCode — usando demonstração local.",
-  upstream_timeout: "O modelo demorou demais — usando demonstração local.",
-  upstream_fetch_failed: "Falha ao falar com a OpenCode — usando demonstração local.",
-  model_bad_json: "O modelo respondeu num formato estranho — usando demonstração local.",
-  FreeTierError: "Modelo gratuito indisponível fora do OpenCode — usando demonstração local.",
+export const ERROR_MESSAGES = {
+  missing_api_key: "Serviço de checagem indisponível no momento.",
+  upstream_timeout: "A checagem demorou demais. Tente de novo.",
+  upstream_fetch_failed: "Não consegui falar com o serviço de IA. Tente de novo.",
+  model_bad_json: "A IA respondeu num formato estranho. Tente de novo.",
+  FreeTierError: "Serviço de IA indisponível. Tente de novo mais tarde.",
 };
-
-function pickMock(input) {
-  const hay = `${input.text ?? ""} ${input.fileName ?? ""}`.toLowerCase();
-  return (
-    MOCK_RESULTS.find((r) => r.match.some((k) => hay.includes(k))) ??
-    MOCK_FALLBACK
-  );
-}
-
-function personalize(result, input) {
-  if (input.kind === "link" && input.text) {
-    try {
-      const host = new URL(input.text).hostname.replace(/^www\./, "");
-      return { ...result, kind: `Link · ${host} (mock)` };
-    } catch {
-      return result;
-    }
-  }
-  if ((input.kind === "video" || input.kind === "image") && input.fileName) {
-    const label = input.kind === "video" ? "Vídeo" : "Imagem";
-    return { ...result, kind: `${label} · ${input.fileName} (mock)` };
-  }
-  return result;
-}
 
 function kindLabel(input) {
   if (input.kind === "link") {
@@ -60,7 +34,7 @@ function titleFrom(input) {
 }
 
 /** Normaliza o JSON do modelo para o formato que o ResultCard espera. */
-function normalizeLive(raw, input, model, transcript) {
+function normalize(raw, input, origin) {
   const verdicts = ["true", "mostly_true", "mixed", "unproven", "misleading", "false"];
   const statuses = ["true", "false", "unproven", "context"];
   const clamp = (n, dflt) => {
@@ -76,7 +50,7 @@ function normalizeLive(raw, input, model, transcript) {
     : [];
   const claims = Array.isArray(raw?.claims)
     ? raw.claims.slice(0, 10).map((c, i) => ({
-        id: `live-c${i + 1}`,
+        id: `c${i + 1}`,
         status: statuses.includes(c?.status) ? c.status : "unproven",
         score: clamp(c?.score, 50),
         text: String(c?.text ?? "Afirmação").slice(0, 400),
@@ -85,21 +59,18 @@ function normalizeLive(raw, input, model, transcript) {
       }))
     : [];
   return {
-    id: `live-${Date.now().toString(36)}`,
+    id: `r-${Date.now().toString(36)}`,
     verdict: verdicts.includes(raw?.verdict) ? raw.verdict : "unproven",
     score: clamp(raw?.score, 50),
-    title: titleFrom(input),
-    kind: `${kindLabel(input)} · ${model}`,
-    author: "checagem ao vivo",
+    title: origin?.title ?? titleFrom(input),
+    kind: kindLabel(input),
+    author: origin?.author ?? "checagem por IA",
     publishedAt: new Date().toLocaleDateString("pt-BR"),
     checkedAt: "agora",
-    summary: String(raw?.summary ?? "Resultado gerado pelo modelo.").slice(0, 600),
+    summary: String(raw?.summary ?? "Resultado gerado pela checagem.").slice(0, 600),
     claims,
-    transcript: Array.isArray(transcript?.segments)
-      ? transcript.segments.slice(0, 60).map((s) => ({ ts: s.ts, text: s.text, mark: null }))
-      : null,
-    transcriptModel: transcript?.model ?? null,
     sources,
+    origin: origin ?? null,
   };
 }
 
@@ -113,21 +84,12 @@ function wait(ms, signal) {
   });
 }
 
-async function mockVerify(input, opts) {
-  for (let i = 0; i < PIPELINE_STEPS.length; i++) {
-    opts.onStep?.(i);
-    await wait(STEP_DELAY_MS, opts.signal);
-  }
-  opts.onStep?.(PIPELINE_STEPS.length);
-  return {
-    result: personalize(pickMock(input), input),
-    live: false,
-    model: null,
-  };
-}
-
-async function liveVerify(input, opts) {
-  // Avança o pipeline visual enquanto o modelo trabalha (passo 3 = "conferindo").
+/**
+ * @param {{ kind: "link"|"text"|"video"|"image", text: string, fileName: string|null }} input
+ * @param {{ onStep?: (index: number) => void, signal?: AbortSignal }} opts
+ * @returns {Promise<{ result: object, steps: typeof PIPELINE_STEPS }>}
+ */
+export async function verify(input, opts = {}) {
   opts.onStep?.(0);
   await wait(400, opts.signal);
   opts.onStep?.(1);
@@ -154,35 +116,14 @@ async function liveVerify(input, opts) {
     try {
       code = (await res.json())?.error ?? code;
     } catch { /* corpo ilegível */ }
-    const err = new Error(ERROR_MESSAGES[code] ?? "Backend indisponível — usando demonstração local.");
-    err.fallback = true;
-    throw err;
+    throw new Error(ERROR_MESSAGES[code] ?? "Não consegui checar agora. Tente de novo.");
   }
   const data = await res.json();
   opts.onStep?.(4);
   await wait(300, opts.signal);
   opts.onStep?.(PIPELINE_STEPS.length);
   return {
-    result: normalizeLive(data.result, input, data.model ?? "ao vivo", data.transcript ?? null),
-    live: true,
-    model: data.model ?? null,
+    result: normalize(data.result, input, data.origin ?? null),
+    steps: PIPELINE_STEPS,
   };
-}
-
-/**
- * @param {{ kind: "link"|"text"|"video"|"image", text: string, fileName: string|null }} input
- * @param {{ onStep?: (index: number) => void, signal?: AbortSignal, onFallback?: (msg: string) => void }} opts
- * @returns {Promise<{ result: object, live: boolean, model: string|null, steps: typeof PIPELINE_STEPS }>}
- */
-export async function verify(input, opts = {}) {
-  try {
-    const out = await liveVerify(input, opts);
-    return { ...out, steps: PIPELINE_STEPS };
-  } catch (err) {
-    if (err?.name === "AbortError") throw err;
-    if (!err?.fallback && !(err instanceof TypeError)) throw err;
-    opts.onFallback?.(err?.fallback ? err.message : "Backend indisponível — usando demonstração local.");
-    const out = await mockVerify(input, { ...opts, signal: opts.signal });
-    return { ...out, steps: PIPELINE_STEPS };
-  }
 }

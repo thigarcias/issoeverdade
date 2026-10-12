@@ -1,4 +1,5 @@
-import { CLAIM_STATUS, VERDICTS } from "../data/mocks.js";
+import { useEffect, useState } from "react";
+import { CLAIM_STATUS, VERDICTS } from "../data/constants.js";
 import ScoreRing from "./ScoreRing.jsx";
 import { copyText } from "../lib/hooks.js";
 
@@ -9,7 +10,6 @@ function SourceRow({ source }) {
       <small>{source.detail}</small>
     </span>
   );
-  // Mock: "#" não é link — renderiza texto estático para não pular a página.
   if (!source.url || source.url === "#") {
     return <span className="source-static">{body}</span>;
   }
@@ -23,39 +23,78 @@ function SourceRow({ source }) {
   );
 }
 
+/** Anel com contagem animada de 0 até o score. */
+function AnimatedScore({ score, color }) {
+  const [shown, setShown] = useState(0);
+  useEffect(() => {
+    let frame = 0;
+    const t0 = performance.now();
+    const dur = 900;
+    function tick(now) {
+      const p = Math.min(1, (now - t0) / dur);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setShown(Math.round(eased * score));
+      if (p < 1) frame = requestAnimationFrame(tick);
+    }
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [score]);
+  return <ScoreRing score={shown} color={color} title={`Nota ${score} de 100`} />;
+}
+
 export default function ResultCard({ result, showToast, titleId }) {
   const verdict = VERDICTS[result.verdict];
+  const origin = result.origin;
+  const [imgOk, setImgOk] = useState(true);
 
   function share() {
     const url = `${location.origin}${location.pathname}#checagem-${result.id}`;
     copyText(
-      `${result.title} — score ${result.score}/100 (${verdict.label}). ${url}`,
+      `${result.title} — nota ${result.score}/100 (${verdict.label}). ${url}`,
       showToast,
     );
   }
 
   return (
-    <article aria-live="polite">
+    <article aria-live="polite" className="result-anim">
+      {origin && (origin.thumbnail || origin.title) && (
+        <a
+          className="origin-card"
+          href={origin.url}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`Abrir conteúdo original: ${origin.title ?? origin.url}`}
+        >
+          {origin.thumbnail && imgOk ? (
+            <img
+              src={origin.thumbnail}
+              alt=""
+              loading="lazy"
+              referrerPolicy="no-referrer"
+              onError={() => setImgOk(false)}
+            />
+          ) : (
+            <span className="origin-play" aria-hidden="true">▶</span>
+          )}
+          <span className="origin-meta">
+            <b>{origin.title ?? "Conteúdo original"}</b>
+            <small>
+              {[origin.author, origin.platform].filter(Boolean).join(" · ")}
+            </small>
+          </span>
+          <span className="out" aria-hidden="true">
+            ↗
+          </span>
+        </a>
+      )}
+
       <div className="result-head">
-        <ScoreRing
-          score={result.score}
-          color={verdict.color}
-          title="Escala 0–100: 0–39 falso/enganoso · 40–69 misto/sem comprovação · 70–100 verdadeiro"
-        />
+        <AnimatedScore score={result.score} color={verdict.color} />
         <div className="result-title">
           <span className="verdict-row">
             <span className={`chip ${verdict.tint}`}>
               <i /> {verdict.label}
             </span>
-            {result.live ? (
-              <span className="chip tint-info" title={`Modelo: ${result.liveModel ?? "ao vivo"}`}>
-                <i /> ao vivo · IA
-              </span>
-            ) : (
-              <span className="chip" title="Demonstração local, sem IA">
-                <i /> mock
-              </span>
-            )}
           </span>
           <h3 id={titleId} style={{ marginTop: 8 }}>
             {result.title}
@@ -83,7 +122,7 @@ export default function ResultCard({ result, showToast, titleId }) {
             .map((idx) => result.sources[idx])
             .filter(Boolean);
           return (
-            <li key={claim.id}>
+            <li key={claim.id} className="claim-anim" style={{ "--i": i }}>
               <details className="claim" open={i === 0}>
                 <summary>
                   <span className={`chip ${st.tint} claim-badge`}>
@@ -116,22 +155,6 @@ export default function ResultCard({ result, showToast, titleId }) {
         })}
       </ol>
 
-      {result.transcript && (
-        <div className="transcript">
-          <span className="sec-label">{result.transcriptModel ? `Transcrição (Whisper ${result.transcriptModel} · real)` : "Transcrição (Whisper Turbo · mock)"}</span>
-          <blockquote>
-            {result.transcript.map((line) => (
-              <span className="line" key={line.ts}>
-                <span className="ts">{line.ts}</span>
-                <span className={line.mark ? `mark-${line.mark}` : undefined}>
-                  {line.text}
-                </span>
-              </span>
-            ))}
-          </blockquote>
-        </div>
-      )}
-
       <div className="sources">
         <span className="sec-label">
           Fontes encontradas · {result.sources.length}
@@ -151,7 +174,7 @@ export default function ResultCard({ result, showToast, titleId }) {
         </button>
         <button
           className="btn ghost"
-          onClick={() => showToast("Denúncia registrada (mock). Obrigado pelo aviso.")}
+          onClick={() => showToast("Obrigado pelo aviso. Vamos revisar esta checagem.")}
         >
           Reportar erro
         </button>

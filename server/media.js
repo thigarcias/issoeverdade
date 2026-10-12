@@ -219,9 +219,15 @@ export async function probeOEmbed(url) {
     const data = await res.json();
     const isInsta = /(^|\.)(instagram\.com)$/.test(host);
     const title = String(data.title ?? "").slice(0, 300);
+    const platform = isInsta ? "Instagram"
+      : /(^|\.)(x\.com|twitter\.com)$/.test(host) ? "X"
+      : /(^|\.)(youtube\.com|youtu\.be)$/.test(host) ? "YouTube"
+      : /(^|\.)(tiktok\.com)$/.test(host) ? "TikTok"
+      : String(data.provider_name ?? "").slice(0, 80);
     return {
       ok: true,
       source: "oembed",
+      platform,
       title,
       author: String(data.author_name ?? "").slice(0, 200),
       // No Instagram o "title" já é a legenda do post.

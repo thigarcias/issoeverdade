@@ -24,7 +24,7 @@ export default function DetailDialog({ result, onClose, showToast }) {
   return (
     <dialog ref={ref} aria-labelledby="dialog-title">
       <div className="dialog-bar">
-        <span>Checagem · dados mockados</span>
+        <span>Checagem</span>
         <button
           className="icon-btn"
           aria-label="Fechar"

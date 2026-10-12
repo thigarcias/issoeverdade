@@ -5,16 +5,16 @@ import Verifier from "./components/Verifier.jsx";
 import Feed from "./components/Feed.jsx";
 import DetailDialog from "./components/DetailDialog.jsx";
 import HowItWorks from "./components/HowItWorks.jsx";
-import { MOCK_FEED, VERDICTS } from "./data/mocks.js";
+import { VERDICTS } from "./data/constants.js";
 import { useToast } from "./lib/hooks.js";
 
-const HISTORY_KEY = "iev-history-v1";
+const HISTORY_KEY = "iev-history-v2";
 
 function loadHistory() {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.slice(0, 6) : [];
+    return Array.isArray(parsed) ? parsed.slice(0, 20) : [];
   } catch {
     return [];
   }
@@ -25,6 +25,7 @@ export default function App() {
   const [openResult, setOpenResult] = useState(null);
   const [history, setHistory] = useState(loadHistory);
   const [quickInput, setQuickInput] = useState(null);
+  const [heroCollapsed, setHeroCollapsed] = useState(false);
   const aboutRef = useRef(null);
   const howRef = useRef(null);
 
@@ -47,49 +48,37 @@ export default function App() {
   }, []);
 
   function handleChecked(result) {
-    setHistory((h) => [result, ...h.filter((r) => r.id !== result.id)].slice(0, 6));
-    show(`Checagem pronta: score ${result.score}/100 (${VERDICTS[result.verdict].label}).`);
+    setHistory((h) => [result, ...h.filter((r) => r.id !== result.id)].slice(0, 20));
+    show(`Pronto: nota ${result.score}/100 (${VERDICTS[result.verdict].label}).`);
+  }
+
+  function handleQuickCheck(value) {
+    setHeroCollapsed(true);
+    setQuickInput(value);
   }
 
   return (
     <>
       <Header />
       <main className="main-full">
-        <Hero onQuickCheck={setQuickInput} />
+        <Hero onQuickCheck={handleQuickCheck} collapsed={heroCollapsed} />
 
         <div className="wrap">
           <section className="section section-tight" id="verificar" aria-label="Verificador">
             <Verifier showToast={show} onChecked={handleChecked} quickInput={quickInput} />
-
-
-            {history.length > 0 && (
-              <div style={{ marginTop: 18 }}>
-                <h3 className="sec-label">Suas checagens</h3>
-                <div className="history">
-                  {history.map((r) => (
-                    <button key={r.id} type="button" onClick={() => setOpenResult(r)}>
-                      <span className={`chip ${VERDICTS[r.verdict].tint}`}>
-                        <i /> {r.score}/100 · {VERDICTS[r.verdict].label}
-                      </span>
-                      <b>{r.title}</b>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
           </section>
 
-          <section className="section" id="recentes" aria-label="Checagens recentes">
+          <section className="section" id="recentes" aria-label="Suas checagens">
             <div className="section-head">
-              <h2>Checagens recentes do segundo turno</h2>
-              <span className="section-count">{MOCK_FEED.length} mocks</span>
+              <h2>Suas checagens</h2>
+              <span className="section-count">{history.length} nesta conta local</span>
             </div>
             <p className="section-blurb">
-              O que já passou pelo verificador. Busque por nome, assunto ou veículo e
-              clique para ver afirmação por afirmação, com fontes.
+              Tudo que você já checou neste navegador. Clique para rever cada
+              afirmação com suas fontes.
             </p>
             <div style={{ marginTop: 14 }}>
-              <Feed onOpen={setOpenResult} />
+              <Feed items={history} onOpen={setOpenResult} />
             </div>
           </section>
 
@@ -98,7 +87,7 @@ export default function App() {
               Como funciona <span aria-hidden="true">＋</span>
             </summary>
             <div className="about-content">
-              <p>Da mídia que você manda até o score com fontes. Simples assim:</p>
+              <p>Da mídia que você manda até a nota com fontes. Simples assim:</p>
               <HowItWorks />
             </div>
           </details>
@@ -109,21 +98,14 @@ export default function App() {
             </summary>
             <div className="about-content">
               <p>
-                O <b>isso é verdade?</b> quer ser uma fonte da verdade para a política
+                O <b>isso é verdade?</b> é uma fonte da verdade para a política
                 do Brasil no segundo turno de 2026: qualquer pessoa cola um link, texto,
-                imagem ou vídeo e recebe um score da verdade com cada afirmação checada
+                imagem ou vídeo e recebe uma nota de 0 a 100 com cada afirmação checada
                 e suas fontes.
               </p>
               <p>
-                O plano técnico: transcrição com o modelo Whisper Turbo e validação por
-                modelos via OpenCode API. Por enquanto esta é a versão de design e
-                funcionamento com <b>dados 100% mockados</b> — nenhum score, transcrição
-                ou fonte exibida aqui é real.
-              </p>
-              <p>
-                Design inspirado em <a href="https://bolsomaster.site/">bolsomaster.site</a>:
-                paleta creme + tinta + vermelho, serifada Faustina nos títulos e cartões
-                com sombra dura.
+                Vídeos são baixados e transcritos automaticamente; cada frase vira um
+                item auditável cruzado com fontes oficiais e confiáveis.
               </p>
             </div>
           </details>
@@ -135,8 +117,8 @@ export default function App() {
           <span className="footer-brand">
             isso é verdade<span className="brand-dot">?</span>
           </span>
-          <p>Protótipo com dados mockados · segundo turno 2026 · nada aqui é uma checagem real</p>
-          <span>mock · v0.1</span>
+          <p>segundo turno 2026 · checagem por IA com fontes citadas</p>
+          <span>v1.0</span>
         </div>
       </footer>
 

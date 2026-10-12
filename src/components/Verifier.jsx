@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MOCK_EXAMPLES, PIPELINE_STEPS, VERDICTS } from "../data/mocks.js";
+import { PIPELINE_STEPS, REAL_EXAMPLES, THINKING_LINES, VERDICTS } from "../data/constants.js";
 import { verify } from "../lib/api.js";
 import ResultCard from "./ResultCard.jsx";
 
@@ -40,6 +40,8 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
   const [drag, setDrag] = useState(false);
   const [step, setStep] = useState(-1); // -1 idle, 0..n running, len done
   const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [thinkIdx, setThinkIdx] = useState(0);
   const aborter = useRef(null);
   const runId = useRef(0);
   const fileInput = useRef(null);
@@ -55,8 +57,10 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
     setText(quickInput);
     setFile(null);
     setResult(null);
+    setError(null);
     setStep(-1);
   }, [quickInput]);
+
   const running = step >= 0 && step < PIPELINE_STEPS.length;
   const isUpload = tab === "video" || tab === "image";
   const linkOk = text.trim().length === 0 || isValidHttpUrl(text);
@@ -70,11 +74,24 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
           ? Boolean(file)
           : text.trim().length >= 4);
 
+  // Frases de thinking: rotaciona enquanto a IA trabalha.
+  useEffect(() => {
+    if (!running) {
+      setThinkIdx(0);
+      return;
+    }
+    const t = setInterval(() => {
+      setThinkIdx((i) => (i + 1) % THINKING_LINES.length);
+    }, 2600);
+    return () => clearInterval(t);
+  }, [running]);
+
   function switchTab(next) {
     aborter.current?.abort();
     runId.current += 1;
     setTab(next);
     setResult(null);
+    setError(null);
     setStep(-1);
   }
 
@@ -85,23 +102,19 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
     aborter.current = new AbortController();
     const mine = ++runId.current;
     setResult(null);
+    setError(null);
     try {
-      const { result: r, live, model } = await verify(
+      const { result: r } = await verify(
         { kind: tab, text: text.trim(), fileName: file?.name ?? null },
-        {
-          onStep: setStep,
-          signal: aborter.current.signal,
-          onFallback: (msg) => showToast(msg),
-        },
+        { onStep: setStep, signal: aborter.current.signal },
       );
       if (runId.current !== mine) return; // execução obsoleta
-      setResult({ ...r, live, liveModel: model });
-      onChecked?.({ ...r, live, liveModel: model });
+      setResult(r);
+      onChecked?.(r);
     } catch (err) {
-      if (err?.name !== "AbortError") {
-        showToast("Falha na checagem. Tente de novo.");
-        setStep(-1);
-      }
+      if (err?.name === "AbortError") return;
+      setError(err?.message ?? "Não consegui checar agora. Tente de novo.");
+      setStep(-1);
     }
   }
 
@@ -121,17 +134,17 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
     if (!accept.test(f.type)) {
       showToast(
         tab === "video"
-          ? "Anexo rejeitado: envie vídeo ou áudio (mock)."
-          : "Anexo rejeitado: envie uma imagem (mock).",
+          ? "Envie um vídeo ou áudio."
+          : "Envie uma imagem.",
       );
       return;
     }
     if (f.size > MAX_FILE_BYTES) {
-      showToast("Anexo rejeitado: limite de 200 MB (mock).");
+      showToast("Arquivo acima do limite de 200 MB.");
       return;
     }
     setFile(f);
-    showToast(`"${f.name}" anexado (mock, nada é enviado).`);
+    showToast(`"${f.name}" pronto para checar.`);
   }
 
   function reset() {
@@ -140,6 +153,7 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
     setText("");
     setFile(null);
     setResult(null);
+    setError(null);
     setStep(-1);
   }
 
@@ -150,6 +164,7 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
     setText(ex.text);
     setFile(null);
     setResult(null);
+    setError(null);
     setStep(-1);
     showToast("Exemplo carregado. Clique em “Checar agora”.");
   }
@@ -266,7 +281,7 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
                 <div>
                   <span className="field-label" id="file-label">
                     {tab === "video"
-                      ? "Ou suba o arquivo (transcrevemos com Whisper Turbo)"
+                      ? "Ou suba o arquivo (a gente transcreve o áudio)"
                       : "Imagem ou print (lemos o texto dela)"}
                   </span>
                   <div
@@ -310,7 +325,7 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
                       <>
                         <b>Arraste o arquivo ou clique para escolher</b>
                         <span>
-                          {tab === "video" ? "MP4, MP3, MOV" : "PNG, JPG, prints de posts"} · até 200 MB (mock)
+                          {tab === "video" ? "MP4, MP3, MOV" : "PNG, JPG, prints de posts"} · até 200 MB
                         </span>
                       </>
                     )}
@@ -348,7 +363,7 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
           </p>
 
           <div className="examples" aria-label="Exemplos para testar">
-            {MOCK_EXAMPLES.map((ex) => (
+            {REAL_EXAMPLES.map((ex) => (
               <button key={ex.label} type="button" onClick={() => loadExample(ex)}>
                 {ex.label}
               </button>
@@ -356,31 +371,40 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
           </div>
         </form>
 
-        <div className="card" aria-label="Resultado da checagem">
+        <div className="card result-pane" aria-label="Resultado da checagem">
           <div className="hd">
-            <h3>{result ? "Resultado" : running ? "Analisando…" : "Seu resultado aparece aqui"}</h3>
-            <span className="aside">{result ? `nota ${result.score}/100` : "leva segundos"}</span>
+            <h3>{result ? "Resultado" : running ? "Analisando…" : error ? "Algo deu errado" : "Seu resultado aparece aqui"}</h3>
+            <span className="aside">{result ? `nota ${result.score}/100` : running ? "a IA está trabalhando" : "leva segundos"}</span>
           </div>
 
           {running && !result && (
-            <ol className="pipeline">
-              {PIPELINE_STEPS.map((s, i) => (
-                <li
-                  key={s.id}
-                  className={`pipe-step${i < step ? " done" : ""}${i === step ? " active" : ""}`}
-                  aria-current={i === step ? "step" : undefined}
-                >
-                  <span className="pipe-dot">{i < step ? "✓" : i + 1}</span>
-                  <div>
-                    <h4>{s.title}</h4>
-                    <p>{s.hint}</p>
-                  </div>
-                </li>
-              ))}
-            </ol>
+            <div>
+              <p className="thinking" aria-live="polite" key={thinkIdx}>
+                <span className="thinking-dots" aria-hidden="true">
+                  <i /><i /><i />
+                </span>
+                {THINKING_LINES[thinkIdx]}
+              </p>
+              <ol className="pipeline">
+                {PIPELINE_STEPS.map((s, i) => (
+                  <li
+                    key={s.id}
+                    className={`pipe-step${i < step ? " done" : ""}${i === step ? " active" : ""}`}
+                    aria-current={i === step ? "step" : undefined}
+                    style={{ "--i": i }}
+                  >
+                    <span className="pipe-dot">{i < step ? "✓" : i + 1}</span>
+                    <div>
+                      <h4>{s.title}</h4>
+                      <p>{s.hint}</p>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </div>
           )}
 
-          {!running && !result && (
+          {!running && !result && !error && (
             <div className="result-empty">
               <h3>É verdade ou mentira? A gente responde.</h3>
               <p>
@@ -393,14 +417,24 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
             </div>
           )}
 
+          {error && !running && !result && (
+            <div className="result-empty" role="alert">
+              <h3>Não consegui checar</h3>
+              <p>{error}</p>
+              <button className="btn" type="button" onClick={handleSubmit} disabled={!canSubmit}>
+                Tentar de novo
+              </button>
+            </div>
+          )}
+
           {result && <ResultCard result={result} showToast={showToast} />}
         </div>
       </div>
 
       {result && (
         <p className="verify-hint" style={{ marginTop: 10 }}>
-          Veredito: <b>{VERDICTS[result.verdict].label}</b> · score {result.score}/100 ·{" "}
-          {result.claims.length} afirmações · {result.sources.length} fontes · dados mockados.
+          Veredito: <b>{VERDICTS[result.verdict].label}</b> · nota {result.score}/100 ·{" "}
+          {result.claims.length} afirmações · {result.sources.length} fontes.
         </p>
       )}
     </div>

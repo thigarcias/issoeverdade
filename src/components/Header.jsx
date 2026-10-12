@@ -1,25 +1,13 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 const LINKS = [
   { href: "#topo", label: "Checar" },
-  { href: "#recentes", label: "Checagens recentes" },
+  { href: "#recentes", label: "Suas checagens" },
   { href: "#como-funciona", label: "Como funciona" },
 ];
 
 export default function Header() {
   const [open, setOpen] = useState(false);
-  const [live, setLive] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    // Probe: GET não é POST → 405 prova que o backend existe.
-    fetch("/api/verify", { method: "GET" })
-      .then((r) => !cancelled && setLive(r.status === 405))
-      .catch(() => !cancelled && setLive(false));
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   return (
     <header className="header">
@@ -31,15 +19,6 @@ export default function Header() {
           <a className="brand" href="#topo" aria-label="isso é verdade? — início">
             isso é verdade<span className="brand-dot">?</span>
           </a>
-          {live !== null && (
-            <span
-              className="mock-flag"
-              title={live ? "Backend conectado — checagens com IA" : "Sem backend — demonstração local"}
-              style={live ? { borderColor: "#7fb08a", color: "#bfe3c7" } : undefined}
-            >
-              {live ? "ao vivo" : "mock"}
-            </span>
-          )}
           <nav className="site-nav" aria-label="Navegação principal">
             {LINKS.map((l) => (
               <a key={l.href} href={l.href}>

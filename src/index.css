@@ -344,16 +344,6 @@ main {
   color: var(--accent);
 }
 
-.mock-flag {
-  font: 700 10px / 1 var(--sans);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--bg);
-  border: 1px solid #f2ecdc38;
-  border-radius: 100px;
-  padding: 5px 10px;
-  opacity: 0.85;
-}
 
 .site-nav {
   background: transparent;
@@ -413,17 +403,52 @@ main {
   padding: 0 24px;
 }
 
-.hero-quick {
+.hero-full {
   border-bottom: 2px solid var(--ink);
   background:
     radial-gradient(circle at 85% 20%, var(--accent-soft) 0 120px, transparent 121px),
     var(--bg);
+  min-height: calc(100dvh - var(--header-h));
+  display: grid;
+  align-items: center;
+  overflow: hidden;
+  transition:
+    min-height 0.5s var(--ease),
+    padding 0.5s var(--ease);
 }
 
-.hero-quick .wrap {
-  padding-top: clamp(28px, 5vh, 52px);
-  padding-bottom: clamp(24px, 4vh, 40px);
+.hero-full-inner {
   max-width: 760px;
+  padding-top: 24px;
+  padding-bottom: 48px;
+  width: 100%;
+  transition:
+    opacity 0.35s var(--ease),
+    transform 0.5s var(--ease);
+}
+
+/* Após a primeira checagem: hero encolhe para faixa compacta. */
+.hero-collapsed {
+  min-height: 0;
+}
+
+.hero-collapsed .hero-full-inner {
+  padding-top: 20px;
+  padding-bottom: 20px;
+}
+
+.hero-collapsed .quick-sub,
+.hero-collapsed .quick-note,
+.hero-collapsed .hero-scroll {
+  display: none;
+}
+
+.hero-collapsed .quick-title {
+  font-size: clamp(26px, 4vw, 34px);
+}
+
+.hero-collapsed .quick-form {
+  margin-top: 12px;
 }
 
 .hero-kick {
@@ -446,9 +471,10 @@ main {
 }
 
 .quick-title {
-  font: 600 clamp(38px, 7vw, 64px) / 1 var(--serif);
+  font: 600 clamp(44px, 9vw, 84px) / 1 var(--serif);
   letter-spacing: -0.022em;
-  margin-top: 10px;
+  margin-top: 12px;
+  transition: font-size 0.5s var(--ease);
 }
 
 .quick-title .dot {
@@ -456,21 +482,21 @@ main {
 }
 
 .quick-sub {
-  font: 400 clamp(15px, 2vw, 18px) / 1.55 var(--serif);
+  font: 400 clamp(16px, 2.4vw, 20px) / 1.55 var(--serif);
   color: var(--fg-3);
   max-width: 52ch;
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .quick-form {
   display: flex;
   gap: 10px;
-  margin-top: 18px;
+  margin-top: 22px;
 }
 
 .quick-input {
   flex: 1;
-  min-height: 50px;
+  min-height: 54px;
   font-size: var(--t-name);
 }
 
@@ -488,6 +514,30 @@ main {
 .quick-note a:hover {
   color: var(--fg);
   border-color: var(--fg);
+}
+
+.hero-scroll {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 32px;
+  font: 500 var(--t-label) / 1 var(--sans);
+  color: var(--fg-4);
+  animation: bob 2.2s ease-in-out infinite;
+}
+
+.hero-scroll:hover {
+  color: var(--fg);
+}
+
+@keyframes bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(5px);
+  }
 }
 
 
@@ -891,6 +941,84 @@ textarea.input-plain {
   }
 }
 
+.thinking {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font: 500 var(--t-name) / 1.4 var(--sans);
+  color: var(--fg-2);
+  margin: 6px 0 14px;
+  animation: think-in 0.4s var(--ease);
+}
+
+@keyframes think-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.thinking-dots {
+  display: inline-flex;
+  gap: 4px;
+  flex: none;
+}
+
+.thinking-dots i {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+.thinking-dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.thinking-dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+/* Entrada do resultado + cascata das afirmações. */
+.result-anim {
+  animation: rise 0.45s var(--ease);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+.claim-anim {
+  animation: rise 0.4s var(--ease) both;
+  animation-delay: calc(var(--i, 0) * 70ms + 150ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking,
+  .thinking-dots i,
+  .result-anim,
+  .claim-anim,
+  .hero-scroll {
+    animation: none;
+  }
+}
+
 .result-empty {
   text-align: center;
   padding: 36px 16px;
@@ -1032,51 +1160,71 @@ textarea.input-plain {
   color: var(--fg-2);
 }
 
-.transcript {
-  margin-top: 14px;
+.origin-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  transition:
+    border-color var(--hover) var(--ease),
+    transform var(--hover) var(--ease);
 }
 
-.transcript blockquote {
-  margin: 8px 0 0;
+.origin-card:hover {
+  border-color: var(--line-3);
+  transform: translate(-1px, -1px);
+}
+
+.origin-card img {
+  width: 88px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--line-2);
+  flex: none;
   background: var(--panel-3);
-  border-left: 2px solid var(--line-3);
-  font: 400 var(--t-body) / 1.7 var(--sans);
-  color: var(--fg-2);
-  border-radius: 0 10px 10px;
-  padding: 12px 14px;
-  display: grid;
-  gap: 8px;
 }
 
-.transcript .line {
+.origin-meta {
+  flex: 1;
+  min-width: 0;
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr);
-  gap: 8px;
-  align-items: baseline;
+  gap: 2px;
 }
 
-.transcript .ts {
-  font: 500 var(--t-micro) / 1.4 var(--sans);
+.origin-meta b {
+  font: 500 var(--t-body) / 1.35 var(--sans);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.origin-meta small {
+  font: 400 var(--t-micro) / 1.4 var(--sans);
   color: var(--fg-4);
-  font-variant-numeric: tabular-nums;
 }
 
-.transcript .mark-true {
-  background: var(--up-soft);
-  border-radius: 3px;
-  padding: 0 3px;
+.origin-play {
+  width: 88px;
+  height: 64px;
+  border-radius: 8px;
+  border: 1px solid var(--line-2);
+  background: var(--ink);
+  color: var(--bg);
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  flex: none;
 }
 
-.transcript .mark-false {
-  background: var(--accent-soft);
-  border-radius: 3px;
-  padding: 0 3px;
-}
-
-.transcript .mark-unproven {
-  background: var(--warn-soft);
-  border-radius: 3px;
-  padding: 0 3px;
+.origin-card .out {
+  color: var(--fg-4);
+  flex: none;
 }
 
 .sources {
@@ -1643,9 +1791,9 @@ dialog::backdrop {
     min-height: 48px;
   }
 
-  .transcript .line {
-    grid-template-columns: 1fr;
-    gap: 2px;
+  .origin-card img {
+    width: 72px;
+    height: 54px;
   }
 }
 

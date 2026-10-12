@@ -129,6 +129,18 @@ async function callModel({ apiKey, model, instructions, input, timeoutMs }) {
   }
 }
 
+function toOrigin(media, url) {
+  if (!media) return null;
+  const out = {
+    url,
+    platform: String(media.platform ?? media.source ?? "").slice(0, 80) || null,
+    title: String(media.title ?? "").slice(0, 200) || null,
+    author: String(media.author ?? "").slice(0, 120) || null,
+    thumbnail: typeof media.thumbnail === "string" && /^https?:\/\//.test(media.thumbnail) ? media.thumbnail : null,
+  };
+  return out.title || out.thumbnail ? out : null;
+}
+
 async function enrichWithMedia(maybeUrl) {
   // Retorna { mediaContext, transcript, debug } — probe e áudio em paralelo.
   const looksVideo = /(\.mp4|\.mov|reel|youtu\.?be|tiktok|twitter|x\.com\/.*status|vimeo|twitch|instagram\.com)/i.test(maybeUrl);
@@ -148,7 +160,7 @@ async function enrichWithMedia(maybeUrl) {
       mediaContext += `\n\nTranscrição do áudio (Whisper ${t.model}):\n${transcriptToPrompt(t)}`;
     }
   }
-  return { mediaContext: mediaContext.trim(), transcript, debug };
+  return { mediaContext: mediaContext.trim(), transcript, debug, origin: toOrigin(media.ok ? media.media : null, maybeUrl) };
 }
 
 /**
@@ -170,11 +182,15 @@ export async function runVerify(input, { apiKey, model, timeoutMs = 120_000 } = 
   let mediaContext = "";
   let transcript = null;
   let mediaDebug = [];
+  let origin = null;
   if (wantsMedia && isUrl) {
     try {
       const media = await fetchMediaContext(maybeUrl);
       mediaDebug = media.attempts;
-      if (media.ok) mediaContext = media.context;
+      if (media.ok) {
+        mediaContext = media.context;
+        origin = toOrigin(media.media, maybeUrl);
+      }
     } catch {
       mediaDebug = ["media-kit-crashed"];
     }
@@ -199,6 +215,7 @@ export async function runVerify(input, { apiKey, model, timeoutMs = 120_000 } = 
       if (enriched.mediaContext && enriched.mediaContext !== mediaContext) {
         mediaContext = enriched.mediaContext;
       }
+      if (enriched.origin && !origin) origin = enriched.origin;
       transcript = enriched.transcript;
     } catch {
       mediaDebug.push("enrich-crashed");
@@ -212,7 +229,7 @@ export async function runVerify(input, { apiKey, model, timeoutMs = 120_000 } = 
         input: `Cheque este ${kindLabel}: ${maybeUrl}\n\nDados extraídos (confie nestes dados):\n${mediaContext}`,
         timeoutMs,
       });
-      return { result: second, model: mdl, media: mediaDebug, transcript };
+      return { result: second, model: mdl, media: mediaDebug, transcript, origin };
     }
   }
 
@@ -229,7 +246,8 @@ export async function runVerify(input, { apiKey, model, timeoutMs = 120_000 } = 
       model: mdl,
       media: mediaDebug,
       transcript: null,
+      origin,
     };
   }
-  return { result: first, model: mdl, media: mediaDebug, transcript };
+  return { result: first, model: mdl, media: mediaDebug, transcript, origin };
 }

@@ -1,16 +1,26 @@
 import { useState } from "react";
 
-export default function Hero({ onQuickCheck }) {
+/**
+ * Tela cheia (100vh): título + campo. Ao submeter, App colapsa para a barra
+ * compacta (classe `hero-collapsed` no main) com transição de altura/fade.
+ */
+export default function Hero({ onQuickCheck, collapsed }) {
   const [quick, setQuick] = useState("");
 
   function submit(e) {
     e.preventDefault();
-    onQuickCheck?.(quick.trim());
+    const value = quick.trim();
+    if (value.length < 4) return;
+    onQuickCheck?.(value);
   }
 
   return (
-    <section className="hero-quick" id="topo" aria-label="Verificação rápida">
-      <div className="wrap">
+    <section
+      className={`hero-full${collapsed ? " hero-collapsed" : ""}`}
+      id="topo"
+      aria-label="Verificação rápida"
+    >
+      <div className="wrap hero-full-inner">
         <p className="hero-kick">
           <span className="hero-kick-red">Eleições 2026</span>
           <span className="sep" aria-hidden="true">
@@ -48,6 +58,9 @@ export default function Hero({ onQuickCheck }) {
           Grátis, sem conta, em segundos.{" "}
           <a href="#como-funciona">Como funciona?</a>
         </p>
+        <a className="hero-scroll" href="#verificar" aria-label="Rolar para o verificador completo">
+          <span aria-hidden="true">↓</span> ou use o verificador completo
+        </a>
       </div>
     </section>
   );

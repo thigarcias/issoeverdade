@@ -27,3 +27,4 @@ media-tmp/
 *.njsproj
 *.sln
 *.sw?
+tmp-dl/ # flyctl local + downloads

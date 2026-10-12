@@ -1,14 +1,13 @@
 // Kit de mídia server-side: baixa vídeo/áudio de "qualquer lugar" para a IA checar.
 // Estratégia em camadas (tenta em ordem, para na primeira que funciona):
+//   0. worker remoto (Fly.io) → yt-dlp + ffmpeg externos, se MEDIA_WORKER_URL definido
 //   1. yt-dlp --dump-json  → metadados + formatos (X, Instagram, TikTok, YouTube, +1000 sites)
-//   2. yt-dlp -x            → extrai áudio MP3 (para transcrição futura com Whisper)
+//   2. yt-dlp -x            → extrai áudio MP3 (para transcrição com Whisper)
 //   3. oEmbed oficial       → texto do post (fallback leve, ex.: publish.twitter.com)
 //   4. fetch HTML + og:*    → título/descrição/thumbnail (fallback universal)
 // Chamado pelo runVerify; também usável via CLI: node scripts/fetch-media.mjs <url>
-// Requer no servidor: yt-dlp + ffmpeg instalados (dev local: OK; Vercel: ver nota abaixo).
-// NOTA Vercel: functions não têm yt-dlp nativo. Opções: (a) self-host do backend,
-// (b) API externa (Cobalt), (c) manter camadas 3-4 na Vercel (sem yt-dlp, degradado).
-// Este módulo detecta ausência do binário e pula para os fallbacks automaticamente.
+// Local com yt-dlp: camadas 1-2 diretas, sem latência. Vercel: delega ao worker (0),
+// cai para 3-4 se o worker falhar.
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -16,6 +15,62 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const YTDLP_TIMEOUT_MS = 60_000;
 const MAX_DESC = 2000;
+const WORKER_URL = (process.env.MEDIA_WORKER_URL || "").replace(/\/$/, "");
+const WORKER_SECRET = process.env.MEDIA_WORKER_SECRET || "";
+
+/** Camada 0: delega probe ao worker remoto (Fly.io). */
+async function probeViaWorker(url) {
+  if (!WORKER_URL) return { ok: false, reason: "no-worker-url" };
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 75_000);
+    const res = await fetch(`${WORKER_URL}/fetch`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(WORKER_SECRET ? { Authorization: `Bearer ${WORKER_SECRET}` } : {}),
+      },
+      body: JSON.stringify({ url }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    if (!res.ok) return { ok: false, reason: `worker-http-${res.status}` };
+    const data = await res.json();
+    if (!data?.ok) return { ok: false, reason: data?.reason ?? "worker-probe-failed" };
+    return { ok: true, source: "worker:yt-dlp", ...data.media, _context: data.context };
+  } catch {
+    return { ok: false, reason: "worker-unreachable" };
+  }
+}
+
+/** Camada 0 (áudio): baixa MP3 via worker remoto, salva local para transcrever. */
+async function downloadViaWorker(url, outDir) {
+  if (!WORKER_URL) return { ok: false, reason: "no-worker-url" };
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 150_000);
+    const res = await fetch(`${WORKER_URL}/audio`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(WORKER_SECRET ? { Authorization: `Bearer ${WORKER_SECRET}` } : {}),
+      },
+      body: JSON.stringify({ url }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    if (!res.ok) return { ok: false, reason: `worker-http-${res.status}` };
+    const data = await res.json();
+    if (!data?.ok || !data.audio_b64) return { ok: false, reason: data?.reason ?? "worker-audio-failed" };
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(outDir, { recursive: true });
+    const file = `${outDir}/worker-${Date.now().toString(36)}.mp3`;
+    await writeFile(file, Buffer.from(data.audio_b64, "base64"));
+    return { ok: true, file, via: "worker" };
+  } catch {
+    return { ok: false, reason: "worker-unreachable" };
+  }
+}
 
 let ytdlpAvailable = null;
 
@@ -68,8 +123,13 @@ export async function probeWithYtDlp(url) {
   }
 }
 
-/** Camada 2: baixa áudio para transcrição. yt-dlp primeiro; sem binário, tenta og:video direto. */
+/** Camada 2: baixa áudio — worker remoto → yt-dlp local → og:video direto. */
 export async function downloadAudio(url, outDir = "./media-tmp") {
+  if (!(await hasYtDlp()) && WORKER_URL) {
+    // Sem binário local (Vercel): worker primeiro.
+    const w = await downloadViaWorker(url, outDir);
+    if (w.ok) return w;
+  }
   if (await hasYtDlp()) {
     const dl = await downloadViaYtDlp(url, outDir);
     if (dl.ok) return dl;
@@ -213,6 +273,12 @@ export async function probeOpenGraph(url) {
  */
 export async function fetchMediaContext(url) {
   const attempts = [];
+  // Sem yt-dlp local (Vercel) e com worker configurado: delega primeiro.
+  if (!(await hasYtDlp()) && WORKER_URL) {
+    const w = await probeViaWorker(url);
+    attempts.push(`worker:${w.ok ? "ok" : w.reason}`);
+    if (w.ok) return { ok: true, context: w._context, media: w, attempts };
+  }
   const yt = await probeWithYtDlp(url);
   attempts.push(`yt-dlp:${yt.ok ? "ok" : yt.reason}`);
   if (yt.ok) {

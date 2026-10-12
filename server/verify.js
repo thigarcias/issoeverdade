@@ -2,6 +2,7 @@
 // - vite.api-plugin.js (dev local)
 // - api/verify.js (serverless Vercel)
 // A key OpenCode NUNCA chega ao browser.
+import { fetchMediaContext } from "./media.js";
 
 export const OPENCODE_URL = "https://opencode.ai/zen/go/v1/responses";
 export const DEFAULT_MODEL = "muse-spark-1.3-contributor";
@@ -10,13 +11,20 @@ export const SYSTEM_PROMPT = `Você é o verificador de fatos do "isso é verdad
 {"verdict":"true|mostly_true|mixed|unproven|misleading|false","score":0-100,"summary":"resumo em pt-BR, 1-2 frases","claims":[{"status":"true|false|unproven|context","score":0-100,"text":"a afirmação entre aspas","note":"justificativa curta em pt-BR"}],"sources":[{"outlet":"nome da fonte","detail":"tipo · data","url":"https://..."}]}
 Regras: separe cada afirmação checável do conteúdo; "context" quando a frase é parcialmente verdadeira mas engana sem contexto; seja cético com prints sem origem e correntes de WhatsApp; cite fontes reais e específicas (TSE, agências de checagem, veículos) com URLs reais quando souber; score geral pondera a gravidade de cada afirmação. Tudo em pt-BR.`;
 
-export function buildUserContent(input) {
+export function buildUserContent(input, mediaContext = "") {
   const text = String(input?.text ?? "").slice(0, 8000);
   const fileName = input?.fileName ? String(input.fileName).slice(0, 200) : null;
   if (input?.kind === "link") {
+    if (mediaContext) {
+      return `Cheque este link: ${text}\n\nConteúdo extraído da página (confie nestes dados, não na URL):\n${mediaContext}`;
+    }
     return `Cheque este link (analise a URL e descreva o que se pode inferir dela; se não houver conteúdo acessível, julgue com base no padrão da URL e sinalize a limitação): ${text}`;
   }
   if (input?.kind === "video") {
+    const link = /^https?:\/\//.test(text) ? text : "";
+    if (link && mediaContext) {
+      return `Cheque este vídeo/áudio: ${link}\n\nMetadados extraídos do post (confie nestes dados):\n${mediaContext}\n\nNota: transcrição do áudio ainda indisponível — julgue título, autor, descrição e duração; sinalize o que dependeria do áudio.`;
+    }
     return `Cheque este vídeo/áudio${fileName ? ` (arquivo: ${fileName})` : ""}. Como não tenho o áudio, analise a descrição/link: ${text || "(sem descrição — sinalize como sem comprovação)"}. Se for link de rede social, julgue o que for inferível e sinalize limites.`;
   }
   if (input?.kind === "image") {
@@ -55,6 +63,19 @@ export async function runVerify(input, { apiKey, model, timeoutMs = 120_000 } = 
     fail(503, "missing_api_key", { message: "OPENCODE_API não configurada no servidor." });
   }
   const mdl = model || DEFAULT_MODEL;
+  // Links ganham contexto real: baixa metadados do post/vídeo antes de checar.
+  let mediaContext = "";
+  let mediaDebug = [];
+  const maybeUrl = String(input?.text ?? "").trim();
+  if ((input?.kind === "link" || input?.kind === "video") && /^https?:\/\//.test(maybeUrl)) {
+    try {
+      const media = await fetchMediaContext(maybeUrl);
+      mediaDebug = media.attempts;
+      if (media.ok) mediaContext = media.context;
+    } catch {
+      mediaDebug = ["media-kit-crashed"];
+    }
+  }
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -69,7 +90,7 @@ export async function runVerify(input, { apiKey, model, timeoutMs = 120_000 } = 
       body: JSON.stringify({
         model: mdl,
         instructions: SYSTEM_PROMPT,
-        input: buildUserContent(input),
+        input: buildUserContent(input, mediaContext),
         max_output_tokens: 3000,
         temperature: 0.2,
         reasoning: { effort: "low" },
@@ -98,7 +119,7 @@ export async function runVerify(input, { apiKey, model, timeoutMs = 120_000 } = 
       fail(502, "model_bad_json", { model: mdl, raw: content.slice(0, 500) });
     }
     try {
-      return { result: JSON.parse(content.slice(jsonStart, jsonEnd + 1)), model: mdl };
+      return { result: JSON.parse(content.slice(jsonStart, jsonEnd + 1)), model: mdl, media: mediaDebug };
     } catch {
       fail(502, "model_bad_json", { model: mdl, raw: content.slice(0, 500) });
     }

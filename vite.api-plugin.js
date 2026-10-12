@@ -25,6 +25,9 @@ export function apiVerifyPlugin() {
       const full = loadEnv(config.mode, config.root || process.cwd(), "");
       apiKey = apiKey || full.OPENCODE_API || "";
       model = process.env.OPENCODE_MODEL || full.OPENCODE_MODEL || DEFAULT_MODEL;
+      if (full.OPENAI_API_KEY && !process.env.OPENAI_API_KEY) {
+        process.env.OPENAI_API_KEY = full.OPENAI_API_KEY;
+      }
     },
     configureServer(server) {
       server.middlewares.use("/api/verify", async (req, res) => {

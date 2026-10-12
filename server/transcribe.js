@@ -1,35 +1,28 @@
-// Transcrição server-side via faster-whisper (worker Python).
-// - Modelo padrão: large-v3-turbo ("turbo") — melhor custo/qualidade.
-// - GPU (CUDA) se disponível, senão CPU.
-// - Fila com concorrência 1: transcrição é pesada, não paraleliza.
-// - Cache em memória por caminho de arquivo (mesmo áudio = mesma transcrição).
-// Requer: `py scripts/transcribe.py` funcional (pip install faster-whisper).
-// Ausente? transcribe() retorna { ok:false } e o runVerify segue sem transcrição.
+// Transcrição server-side via API da OpenAI (whisper-1, verbose_json).
+// - Zero binário/modelo local: funciona na Vercel, local, em qualquer lugar.
+// - verbose_json devolve segmentos com timestamps (start/end/text).
+// - Cache em memória por caminho de arquivo.
+// - Fila com concorrência 3 (API aguenta paralelo; evita estourar rate limit).
+// Requer: OPENAI_API_KEY no ambiente. Ausente? { ok:false } e segue sem transcrição.
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { readFile, stat } from "node:fs/promises";
 
-const execFileAsync = promisify(execFile);
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SCRIPT = join(ROOT, "scripts", "transcribe.py");
-const MODEL = process.env.WHISPER_MODEL || "turbo";
-const TIMEOUT_MS = Number(process.env.WHISPER_TIMEOUT_MS || 300_000);
+const API_URL = "https://api.openai.com/v1/audio/transcriptions";
+const MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || "whisper-1";
+const TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 120_000);
+const MAX_BYTES = 25 * 1024 * 1024; // limite da API OpenAI
 
 const cache = new Map();
-let available = null;
 let queue = Promise.resolve();
+let running = 0;
+const MAX_PARALLEL = 3;
+
+function apiKey() {
+  return process.env.OPENAI_API_KEY || "";
+}
 
 export async function hasTranscriber() {
-  if (available !== null) return available;
-  try {
-    await execFileAsync("py", [SCRIPT, "--help"], { timeout: 60_000 });
-    available = true;
-  } catch {
-    available = false;
-  }
-  return available;
+  return Boolean(apiKey());
 }
 
 function formatTs(sec) {
@@ -39,13 +32,22 @@ function formatTs(sec) {
 }
 
 /**
- * @param {string} audioPath caminho do MP3/WAV/M4A
+ * @param {string} audioPath caminho do MP3/WAV/M4A (lê do disco e faz upload)
  * @returns {{ ok, segments?: [{ts,start,end,text}], text?, duration?, model?, reason? }}
  */
 export async function transcribe(audioPath) {
   if (cache.has(audioPath)) return cache.get(audioPath);
-  // Serializa via fila
-  const job = queue.then(() => runTranscribe(audioPath));
+  const job = queue.then(async () => {
+    while (running >= MAX_PARALLEL) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    running++;
+    try {
+      return await runTranscribe(audioPath);
+    } finally {
+      running--;
+    }
+  });
   queue = job.catch(() => {});
   const out = await job;
   if (out.ok) cache.set(audioPath, out);
@@ -53,30 +55,61 @@ export async function transcribe(audioPath) {
 }
 
 async function runTranscribe(audioPath) {
-  if (!(await hasTranscriber())) return { ok: false, reason: "no-transcriber" };
+  if (!apiKey()) return { ok: false, reason: "no-openai-key" };
+  let size = 0;
   try {
-    const { stdout } = await execFileAsync(
-      "py",
-      [SCRIPT, audioPath, "--model", MODEL],
-      { timeout: TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 },
-    );
-    const data = JSON.parse(stdout);
-    if (data.error) return { ok: false, reason: "worker-error", detail: data.error };
+    size = (await stat(audioPath)).size;
+  } catch {
+    return { ok: false, reason: "audio-not-found" };
+  }
+  if (size > MAX_BYTES) {
+    return { ok: false, reason: "audio-too-large", detail: `${Math.round(size / 1024 / 1024)}MB > 25MB` };
+  }
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const buf = await readFile(audioPath);
+    const ext = (audioPath.split(".").pop() || "mp3").toLowerCase();
+    const mime = ext === "wav" ? "audio/wav" : ext === "m4a" ? "audio/m4a" : "audio/mpeg";
+    const form = new FormData();
+    form.append("file", new Blob([buf], { type: mime }), `audio.${ext}`);
+    form.append("model", MODEL);
+    form.append("language", "pt");
+    form.append("response_format", "verbose_json");
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey()}` },
+      body: form,
+      signal: ctrl.signal,
+    });
+    const raw = await res.text();
+    if (!res.ok) {
+      let msg = raw.slice(0, 300);
+      try {
+        msg = JSON.parse(raw)?.error?.message ?? msg;
+      } catch { /* mantém raw */ }
+      return { ok: false, reason: "openai-error", detail: msg.slice(0, 300) };
+    }
+    const data = JSON.parse(raw);
     const segments = (data.segments ?? []).map((s) => ({
-      ts: formatTs(s.start),
-      start: s.start,
-      end: s.end,
-      text: s.text,
-    }));
+      ts: formatTs(s.start ?? 0),
+      start: Math.round((s.start ?? 0) * 100) / 100,
+      end: Math.round((s.end ?? 0) * 100) / 100,
+      text: String(s.text ?? "").trim(),
+    })).filter((s) => s.text);
+    if (!segments.length && !data.text) return { ok: false, reason: "empty-transcript" };
     return {
       ok: true,
       segments,
-      text: data.text ?? "",
+      text: segments.map((s) => s.text).join(" ") || String(data.text ?? ""),
       duration: data.duration ?? null,
-      model: data.model ?? MODEL,
+      model: MODEL,
     };
   } catch (err) {
+    if (err?.name === "AbortError") return { ok: false, reason: "transcribe-timeout" };
     return { ok: false, reason: "transcribe-failed", detail: String(err?.message ?? err).slice(0, 300) };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

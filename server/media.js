@@ -68,9 +68,16 @@ export async function probeWithYtDlp(url) {
   }
 }
 
-/** Camada 2: baixa só o áudio (MP3) para transcrição futura. Retorna caminho do arquivo. */
+/** Camada 2: baixa áudio para transcrição. yt-dlp primeiro; sem binário, tenta og:video direto. */
 export async function downloadAudio(url, outDir = "./media-tmp") {
-  if (!(await hasYtDlp())) return { ok: false, reason: "no-ytdlp" };
+  if (await hasYtDlp()) {
+    const dl = await downloadViaYtDlp(url, outDir);
+    if (dl.ok) return dl;
+  }
+  return downloadViaDirectUrl(url, outDir);
+}
+
+async function downloadViaYtDlp(url, outDir) {
   const { mkdir } = await import("node:fs/promises");
   await mkdir(outDir, { recursive: true });
   try {
@@ -84,9 +91,43 @@ export async function downloadAudio(url, outDir = "./media-tmp") {
       { timeout: 180_000, maxBuffer: 4 * 1024 * 1024 },
     );
     const file = stdout.trim().split("\n").pop()?.trim() ?? "";
-    return file ? { ok: true, file } : { ok: false, reason: "no-file" };
+    return file ? { ok: true, file, via: "yt-dlp" } : { ok: false, reason: "no-file" };
   } catch (err) {
-    return { ok: false, reason: "download-failed", detail: String(err?.message ?? err).slice(0, 300) };
+    return { ok: false, reason: "download-failed", detail: String(err?.message ?? err).slice(0, 200) };
+  }
+}
+
+async function downloadViaDirectUrl(url, outDir) {
+  // Sem yt-dlp (ex.: Vercel): procura og:video/twitter:player:stream no HTML e baixa direto.
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 20_000);
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36", Accept: "text/html" },
+    });
+    clearTimeout(t);
+    if (!res.ok) return { ok: false, reason: "no-ytdlp-no-direct" };
+    const html = (await res.text()).slice(0, 200_000);
+    const m = html.match(/<meta[^>]+property=["']og:video(?::secure_url)?["'][^>]+content=["']([^"']+)/i)
+      ?? html.match(/<meta[^>]+name=["']twitter:player:stream["'][^>]+content=["']([^"']+)/i);
+    const direct = m?.[1];
+    if (!direct || !/^https?:\/\//.test(direct)) return { ok: false, reason: "no-direct-video-url" };
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(outDir, { recursive: true });
+    const dlCtrl = new AbortController();
+    const dlT = setTimeout(() => dlCtrl.abort(), 90_000);
+    const dl = await fetch(direct, { signal: dlCtrl.signal });
+    clearTimeout(dlT);
+    if (!dl.ok) return { ok: false, reason: `direct-http-${dl.status}` };
+    const buf = Buffer.from(await dl.arrayBuffer());
+    if (buf.length > 25 * 1024 * 1024) return { ok: false, reason: "direct-too-large" };
+    const ext = (direct.split("?")[0].split(".").pop() || "mp4").slice(0, 4).replace(/[^a-z0-9]/gi, "") || "mp4";
+    const file = `${outDir}/direct-${Date.now().toString(36)}.${ext}`;
+    await writeFile(file, buf);
+    return { ok: true, file, via: "direct" };
+  } catch {
+    return { ok: false, reason: "direct-failed" };
   }
 }
 

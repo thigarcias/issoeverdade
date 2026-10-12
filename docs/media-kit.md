@@ -60,17 +60,20 @@ node scripts/fetch-media.mjs <url> --audio    # + baixa o MP3
 
 Texto puro e links com conteúdo suficiente: 1 passo, sem download.
 
-## Transcrição (Whisper)
+## Transcrição (API da OpenAI)
 
-- Worker: `scripts/transcribe.py` (faster-whisper, modelo `large-v3-turbo`).
-- Ponte Node: `server/transcribe.js` (fila serial, cache, fallback sem prompts).
-- CUDA se `torch.cuda.is_available()`, senão CPU int8 (~14s p/ 18s de áudio).
-- Trocar modelo: `WHISPER_MODEL=tiny|base|small|medium|large-v3` no `.env`.
+- `server/transcribe.js` faz upload do MP3 para `whisper-1` (`verbose_json`).
+- Zero binário/modelo local: funciona na Vercel, local, em qualquer lugar.
+- Requer `OPENAI_API_KEY`. Custo: $0.006/minuto (~$0.002 por vídeo de 18s).
+- Áudios > 25MB são rejeitados (limite da API).
+- Legado local: `scripts/transcribe.py` (faster-whisper) mantido para uso
+  manual via CLI, fora do pipeline.
 
 ## Limites conhecidos
 
 - Posts privados/com login não são acessíveis (yt-dlp sem cookies).
 - Instagram: metadados públicos OK via yt-dlp; oEmbed oficial descontinuado.
-- Vercel functions não têm `yt-dlp`/`ffmpeg`/Python — lá valem as camadas HTTP
-  (oEmbed + OpenGraph) e o passo 2 é pulado (`hasYtDlp()`/`hasTranscriber()`
-  retornam false). Para pipeline completo em produção: self-host ou API externa.
+- Na Vercel (sem binário yt-dlp): metadados via oEmbed/OpenGraph; download de
+  áudio tenta `og:video` direto e cai para metadados se indisponível.
+  Pipeline 100% completo (yt-dlp + transcrição de qualquer rede) roda no
+  ambiente local / servidor com yt-dlp instalado.

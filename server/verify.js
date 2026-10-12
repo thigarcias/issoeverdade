@@ -138,7 +138,7 @@ async function enrichWithMedia(maybeUrl) {
   const looksVideo = /(\.mp4|\.mov|reel|youtu\.?be|tiktok|twitter|x\.com\/.*status|vimeo|twitch)/i.test(maybeUrl);
   if (media.ok || looksVideo) {
     const dl = await downloadAudio(maybeUrl);
-    debug.push(`audio:${dl.ok ? dl.file : dl.reason}`);
+    debug.push(`audio:${dl.ok ? `${dl.via}:${dl.file}` : dl.reason}`);
     if (dl.ok) {
       const t = await transcribe(dl.file);
       debug.push(`whisper:${t.ok ? `${t.segments?.length ?? 0} segs` : t.reason}`);

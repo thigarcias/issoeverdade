@@ -63,8 +63,11 @@ async function downloadViaWorker(url, outDir) {
     const data = await res.json();
     if (!data?.ok || !data.audio_b64) return { ok: false, reason: data?.reason ?? "worker-audio-failed" };
     const { mkdir, writeFile } = await import("node:fs/promises");
-    await mkdir(outDir, { recursive: true });
-    const file = `${outDir}/worker-${Date.now().toString(36)}.mp3`;
+    const { tmpdir } = await import("node:os");
+    // Vercel/Lambda: filesystem read-only exceto /tmp.
+    const dir = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? tmpdir() : outDir;
+    await mkdir(dir, { recursive: true });
+    const file = `${dir}/worker-${Date.now().toString(36)}.mp3`;
     await writeFile(file, Buffer.from(data.audio_b64, "base64"));
     return { ok: true, file, via: "worker" };
   } catch {
@@ -174,7 +177,9 @@ async function downloadViaDirectUrl(url, outDir) {
     const direct = m?.[1];
     if (!direct || !/^https?:\/\//.test(direct)) return { ok: false, reason: "no-direct-video-url" };
     const { mkdir, writeFile } = await import("node:fs/promises");
-    await mkdir(outDir, { recursive: true });
+    const { tmpdir } = await import("node:os");
+    const dir = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? tmpdir() : outDir;
+    await mkdir(dir, { recursive: true });
     const dlCtrl = new AbortController();
     const dlT = setTimeout(() => dlCtrl.abort(), 90_000);
     const dl = await fetch(direct, { signal: dlCtrl.signal });
@@ -183,7 +188,7 @@ async function downloadViaDirectUrl(url, outDir) {
     const buf = Buffer.from(await dl.arrayBuffer());
     if (buf.length > 25 * 1024 * 1024) return { ok: false, reason: "direct-too-large" };
     const ext = (direct.split("?")[0].split(".").pop() || "mp4").slice(0, 4).replace(/[^a-z0-9]/gi, "") || "mp4";
-    const file = `${outDir}/direct-${Date.now().toString(36)}.${ext}`;
+    const file = `${dir}/direct-${Date.now().toString(36)}.${ext}`;
     await writeFile(file, buf);
     return { ok: true, file, via: "direct" };
   } catch {

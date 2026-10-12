@@ -206,8 +206,9 @@ export async function probeOEmbed(url) {
         ? `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`
         : /(^|\.)(tiktok\.com)$/.test(host)
           ? `https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`
-          : null;
-  // Instagram removeu o oEmbed público em 2024 — cai para o HTML.
+          : /(^|\.)(instagram\.com)$/.test(host)
+            ? `https://www.instagram.com/api/v1/oembed/?url=${encodeURIComponent(url)}`
+            : null;
   if (!endpoint) return { ok: false, reason: "no-oembed-provider" };
   try {
     const ctrl = new AbortController();
@@ -216,12 +217,15 @@ export async function probeOEmbed(url) {
     clearTimeout(t);
     if (!res.ok) return { ok: false, reason: `oembed-http-${res.status}` };
     const data = await res.json();
+    const isInsta = /(^|\.)(instagram\.com)$/.test(host);
+    const title = String(data.title ?? "").slice(0, 300);
     return {
       ok: true,
       source: "oembed",
-      title: String(data.title ?? "").slice(0, 300),
+      title,
       author: String(data.author_name ?? "").slice(0, 200),
-      description: pickText(stripHtml(data.html)),
+      // No Instagram o "title" já é a legenda do post.
+      description: isInsta ? title : pickText(stripHtml(data.html)),
       thumbnail: typeof data.thumbnail_url === "string" ? data.thumbnail_url : "",
     };
   } catch {
@@ -278,6 +282,21 @@ export async function probeOpenGraph(url) {
  */
 export async function fetchMediaContext(url) {
   const attempts = [];
+  const host = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+  const isInsta = /(^|\.)(instagram\.com)$/.test(host);
+  // Instagram: oEmbed primeiro (rápido, ~1s, sem o 429 do scraping).
+  if (isInsta) {
+    const oe = await probeOEmbed(url);
+    attempts.push(`oembed:${oe.ok ? "ok" : oe.reason}`);
+    if (oe.ok) {
+      const lines = [
+        `Plataforma: Instagram`,
+        oe.author && `Autor: ${oe.author}`,
+        oe.description && `Legenda do post: ${oe.description}`,
+      ].filter(Boolean);
+      return { ok: true, context: lines.join("\n"), media: oe, attempts };
+    }
+  }
   // Sem yt-dlp local (Vercel) e com worker configurado: delega primeiro.
   if (!(await hasYtDlp()) && WORKER_URL) {
     const w = await probeViaWorker(url);

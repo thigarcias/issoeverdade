@@ -130,22 +130,22 @@ async function callModel({ apiKey, model, instructions, input, timeoutMs }) {
 }
 
 async function enrichWithMedia(maybeUrl) {
-  // Retorna { mediaContext, transcript, debug } — transcript só para vídeo/áudio.
-  const media = await fetchMediaContext(maybeUrl);
+  // Retorna { mediaContext, transcript, debug } — probe e áudio em paralelo.
+  const looksVideo = /(\.mp4|\.mov|reel|youtu\.?be|tiktok|twitter|x\.com\/.*status|vimeo|twitch|instagram\.com)/i.test(maybeUrl);
+  const [media, dl] = await Promise.all([
+    fetchMediaContext(maybeUrl),
+    looksVideo ? downloadAudio(maybeUrl) : Promise.resolve({ ok: false, reason: "not-video" }),
+  ]);
   let mediaContext = media.ok ? media.context : "";
   let transcript = null;
   const debug = [...media.attempts];
-  const looksVideo = /(\.mp4|\.mov|reel|youtu\.?be|tiktok|twitter|x\.com\/.*status|vimeo|twitch)/i.test(maybeUrl);
-  if (media.ok || looksVideo) {
-    const dl = await downloadAudio(maybeUrl);
-    debug.push(`audio:${dl.ok ? `${dl.via}:${dl.file}` : dl.reason}`);
-    if (dl.ok) {
-      const t = await transcribe(dl.file);
-      debug.push(`whisper:${t.ok ? `${t.segments?.length ?? 0} segs` : t.reason}`);
-      if (t.ok && t.text) {
-        transcript = t;
-        mediaContext += `\n\nTranscrição do áudio (Whisper ${t.model}):\n${transcriptToPrompt(t)}`;
-      }
+  debug.push(`audio:${dl.ok ? `${dl.via}:${dl.file}` : dl.reason}`);
+  if (dl.ok) {
+    const t = await transcribe(dl.file);
+    debug.push(`whisper:${t.ok ? `${t.segments?.length ?? 0} segs` : t.reason}`);
+    if (t.ok && t.text) {
+      transcript = t;
+      mediaContext += `\n\nTranscrição do áudio (Whisper ${t.model}):\n${transcriptToPrompt(t)}`;
     }
   }
   return { mediaContext: mediaContext.trim(), transcript, debug };

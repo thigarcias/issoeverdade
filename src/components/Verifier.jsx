@@ -42,6 +42,8 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [thinkIdx, setThinkIdx] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+  const [checkedInput, setCheckedInput] = useState(null);
   const aborter = useRef(null);
   const runId = useRef(0);
   const fileInput = useRef(null);
@@ -103,13 +105,16 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
     const mine = ++runId.current;
     setResult(null);
     setError(null);
+    setExpanded(false);
     try {
+      const snapshot = { kind: tab, text: text.trim(), fileName: file?.name ?? null };
       const { result: r } = await verify(
-        { kind: tab, text: text.trim(), fileName: file?.name ?? null },
+        snapshot,
         { onStep: setStep, signal: aborter.current.signal },
       );
       if (runId.current !== mine) return; // execução obsoleta
       setResult(r);
+      setCheckedInput(snapshot);
       onChecked?.(r);
     } catch (err) {
       if (err?.name === "AbortError") return;
@@ -154,6 +159,7 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
     setFile(null);
     setResult(null);
     setError(null);
+    setCheckedInput(null);
     setStep(-1);
   }
 
@@ -171,11 +177,11 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
 
   return (
     <div>
-      <div className="verify-grid">
-        <form className="card" onSubmit={handleSubmit} aria-label="Enviar conteúdo para checagem">
+      <div className={`verify-grid${result && !running && !expanded ? " verify-result-mode" : ""}`}>
+        <form className={`card${result && !running && !expanded ? " form-collapsed" : ""}`} onSubmit={handleSubmit} aria-label="Enviar conteúdo para checagem">
           <div className="hd">
-            <h3>O que você quer checar?</h3>
-            <span className="aside">link · texto · vídeo · foto</span>
+            <h3>{result && !running && !expanded ? "Checagem concluída" : "O que você quer checar?"}</h3>
+            <span className="aside">{result && !running && !expanded ? `nota ${result.score}/100` : "link · texto · vídeo · foto"}</span>
           </div>
 
           <div className="tabs" role="tablist" aria-label="Tipo de conteúdo">
@@ -344,18 +350,26 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
           </div>
 
           <div className="verify-actions">
-            <button className="btn primary big" type="submit" disabled={!canSubmit}>
-              {running ? "Checando…" : "Checar agora"}
-            </button>
-            {running && (
-              <button className="btn ghost" type="button" onClick={reset}>
-                Cancelar
+            {result && !running && !expanded ? (
+              <button className="btn big" type="button" onClick={() => setExpanded(true)}>
+                Checar outra coisa
               </button>
-            )}
-            {(result || text || file) && !running && (
-              <button className="btn ghost" type="button" onClick={reset}>
-                Limpar
-              </button>
+            ) : (
+              <>
+                <button className="btn primary big" type="submit" disabled={!canSubmit}>
+                  {running ? "Checando…" : "Checar agora"}
+                </button>
+                {running && (
+                  <button className="btn ghost" type="button" onClick={reset}>
+                    Cancelar
+                  </button>
+                )}
+                {(result || text || file) && !running && (
+                  <button className="btn ghost" type="button" onClick={reset}>
+                    Limpar
+                  </button>
+                )}
+              </>
             )}
           </div>
           <p className="verify-hint" style={{ marginTop: 10 }}>
@@ -376,6 +390,15 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
             <h3>{result ? "Resultado" : running ? "Analisando…" : error ? "Algo deu errado" : "Seu resultado aparece aqui"}</h3>
             <span className="aside">{result ? `nota ${result.score}/100` : running ? "a IA está trabalhando" : "leva segundos"}</span>
           </div>
+          {result && !running && expanded && checkedInput &&
+            (text.trim() !== checkedInput.text || tab !== checkedInput.kind || (file?.name ?? null) !== checkedInput.fileName) && (
+              <p className="stale-warning" role="status">
+                Você alterou o conteúdo — este resultado é da checagem anterior.{" "}
+                <button type="button" className="quiet-link" onClick={handleSubmit} disabled={!canSubmit}>
+                  Checar o novo conteúdo
+                </button>
+              </p>
+            )}
 
           {running && !result && (
             <div>

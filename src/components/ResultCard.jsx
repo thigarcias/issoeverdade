@@ -97,7 +97,11 @@ export default function ResultCard({ result, showToast, titleId }) {
             </span>
           </span>
           <h3 id={titleId} style={{ marginTop: 8 }}>
-            {result.title}
+            {origin?.title ? (
+              <>É {verdict.label.toLowerCase()}.</>
+            ) : (
+              result.title
+            )}
           </h3>
           <p className="meta">
             <span>{result.kind}</span>

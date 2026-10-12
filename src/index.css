@@ -654,6 +654,97 @@ main {
   margin-top: 14px;
 }
 
+/* Com resultado pronto: formulário vira barra compacta, resultado ocupa tudo. */
+.verify-result-mode {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.form-collapsed .tabs,
+.form-collapsed #verify-panel,
+.form-collapsed .verify-hint,
+.form-collapsed .examples {
+  display: none;
+}
+
+.form-collapsed {
+  padding: 12px 16px;
+}
+
+.form-collapsed .hd {
+  margin-bottom: 0;
+}
+
+.form-collapsed .verify-actions {
+  margin-top: 10px;
+}
+
+/* Resultado maior e mais legível em modo destaque. */
+.verify-result-mode .result-pane {
+  padding: 24px 28px;
+}
+
+.verify-result-mode .result-head {
+  gap: 20px;
+}
+
+.verify-result-mode .result-head .score-holder,
+.verify-result-mode .result-head .score-ring {
+  width: 128px;
+  height: 128px;
+}
+
+.verify-result-mode .result-head .score-value {
+  font-size: 34px;
+}
+
+.verify-result-mode .result-title h3 {
+  font-size: clamp(24px, 3vw, 32px);
+}
+
+.verify-result-mode .result-summary {
+  font-size: 17px;
+  max-width: 75ch;
+}
+
+.verify-result-mode .claims {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr));
+  gap: 10px;
+}
+
+.verify-result-mode .claim-text {
+  font-size: var(--t-name);
+}
+
+.verify-result-mode .origin-card {
+  padding: 14px 16px;
+  gap: 16px;
+}
+
+.verify-result-mode .origin-card img,
+.verify-result-mode .origin-play {
+  width: 160px;
+  height: 96px;
+}
+
+.verify-result-mode .origin-meta b {
+  font-size: 17px;
+}
+
+.stale-warning {
+  background: var(--warn-soft);
+  color: var(--warn);
+  font: 500 var(--t-label) / 1.5 var(--sans);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 0 0 12px;
+}
+
+.stale-warning .quiet-link {
+  color: var(--warn);
+  border-color: currentColor;
+  font-weight: 700;
+}
+
 .field-label {
   font: 500 var(--t-label) / 1.4 var(--sans);
   color: var(--fg-2);

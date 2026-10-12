@@ -268,13 +268,16 @@ export async function probeOpenGraph(url) {
     const title = meta("og:title") || (html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] ?? "").trim();
     const description = meta("og:description") || meta("description") || meta("twitter:description");
     if (!title && !description) return { ok: false, reason: "no-meta" };
+    const host = (() => { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; } })();
+    const platform = meta("og:site_name") || host || "site";
     return {
       ok: true,
       source: "opengraph",
+      platform: platform.slice(0, 80),
       title: title.slice(0, 300),
       description: description.slice(0, MAX_DESC),
       thumbnail: meta("og:image") || meta("twitter:image"),
-      author: meta("og:site_name").slice(0, 200),
+      author: "",
     };
   } catch {
     return { ok: false, reason: "html-failed" };

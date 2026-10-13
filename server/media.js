@@ -547,6 +547,86 @@ export async function probeOpenGraph(url) {
  * @returns {{ ok, context: string, media: object|null, attempts: string[] }}
  * `context` é texto pronto para injetar no prompt do modelo.
  */
+/**
+ * Segue links HTTP(s) presentes no texto extraído de um post social e traz
+ * metadados/trecho da página vinculada. Solução genérica: funciona para qualquer
+ * rede, desde que o texto contenha URL.
+ */
+function extractUrls(text) {
+  const found = new Set();
+  for (const match of String(text ?? "").matchAll(/https?:\/\/[^\s<>"')]+/gi)) {
+    let url = match[0].replace(/[),.;:!?]+$/, "");
+    try {
+      new URL(url);
+      found.add(url);
+    } catch {}
+  }
+  return [...found];
+}
+
+const LINKED_MAX = 3;
+const LINKED_TEXT_MAX = 2500;
+
+async function fetchLinkedContext(text, attempts) {
+  const urls = extractUrls(text).slice(0, LINKED_MAX);
+  const blocks = [];
+  for (const rawUrl of urls) {
+    let host = "";
+    try { host = new URL(rawUrl).hostname.toLowerCase(); } catch { continue; }
+    if (/^(www\.)?(x|twitter)\.com$/.test(host)) {
+      attempts.push(`linked:skipped-social:${host}`);
+      continue;
+    }
+    if (/\.(jpe?g|png|gif|webp|mp4|mov|webm|mp3|wav|m4a|pdf)$/i.test(new URL(rawUrl).pathname)) {
+      attempts.push(`linked:skipped-media:${host}`);
+      continue;
+    }
+    try {
+      const response = await safeFetch(rawUrl, {
+        maxBytes: 512 * 1024,
+        truncate: true,
+        timeoutMs: 15_000,
+        accept: "text/html",
+      });
+      const contentType = String(response.headers?.["content-type"] ?? response.headers?.["Content-Type"] ?? "");
+      if (!response.ok) {
+        attempts.push(`linked:http-${response.status}:${host}`);
+        continue;
+      }
+      if (!/text\/html|text\/plain/i.test(contentType)) {
+        attempts.push(`linked:non-html:${host}`);
+        continue;
+      }
+      const html = response.body.toString("utf8");
+      const meta = (prop) => {
+        const m =
+          html.match(new RegExp(`<meta[^>]+property=["']${prop}["'][^>]+content=["']([^"']+)`, "i")) ??
+          html.match(new RegExp(`<meta[^>]+name=["']${prop}["'][^>]+content=["']([^"']+)`, "i"));
+        return m ? m[1].trim() : "";
+      };
+      const title = meta("og:title") || meta("twitter:title") || (html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim() ?? "");
+      const description = meta("og:description") || meta("twitter:description") || meta("description");
+      const paragraphs = [...html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)]
+        .map((m) => stripHtml(m[1]).replace(/\s+/g, " ").trim())
+        .filter((s) => s.length >= 80 && s.length <= 4000 && !/menu|buscar|assine|minha folha|newsletter|cookie/i.test(s) && /[a-zà-ú].*\./i.test(s));
+      const body = (paragraphs.length > 0 ? paragraphs.join(" ") : stripHtml(html).replace(/\s+/g, " ").trim()).slice(0, LINKED_TEXT_MAX);
+      const parts = [
+        title && `Título: ${title}`,
+        description && `Descrição: ${description}`,
+        body && `Trecho: ${body}`,
+      ].filter(Boolean);
+      if (parts.length === 0) {
+        attempts.push(`linked:no-meta:${host}`);
+        continue;
+      }
+      blocks.push(`URL: ${rawUrl}\n${parts.join("\n")}`.slice(0, LINKED_TEXT_MAX * 2));
+      attempts.push(`linked:ok:${host}`);
+    } catch (error) {
+      attempts.push(`linked:${netReason(error)}:${host}`);
+    }
+  }
+  return blocks.join("\n\n").slice(0, 12000);
+}
 export async function fetchMediaContext(url) {
   const attempts = [];
   try {
@@ -567,10 +647,12 @@ export async function fetchMediaContext(url) {
     const oe = await probeOEmbed(url);
     attempts.push(`oembed:${oe.ok ? "ok" : oe.reason}`);
     if (oe.ok && oe.postText) {
+      const linkedContext = await fetchLinkedContext(oe.postText, attempts);
+      const combinedPostText = [oe.postText, linkedContext && `Conteúdo vinculado extraído:\n${linkedContext}`].filter(Boolean).join("\n\n");
       return {
         ok: true,
-        context: [`Plataforma: X`, oe.author && `Autor: ${oe.author}`, `Texto do post: ${oe.postText}`].filter(Boolean).join("\n"),
-        media: oe,
+        context: [`Plataforma: X`, oe.author && `Autor: ${oe.author}`, `Texto do post: ${oe.postText}`, linkedContext && `Conteúdo vinculado (metadados/trecho):\n${linkedContext}`].filter(Boolean).join("\n"),
+        media: { ...oe, postText: combinedPostText },
         attempts,
       };
     }

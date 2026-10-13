@@ -4,6 +4,7 @@
 // Keys (OpenAI + OpenCode) NUNCA chegam ao browser.
 import { downloadAudio, fetchMediaContext } from "./media.js";
 import { transcribe, transcriptToPrompt } from "./transcribe.js";
+import { saveCheckLog as saveLog } from "./checklog.js";
 
 export const OPENCODE_URL = "https://opencode.ai/zen/go/v1/responses";
 export const OPENAI_URL = "https://api.openai.com/v1/responses";
@@ -268,6 +269,19 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
   if (!apiKey && !process.env.OPENAI_API_KEY) {
     fail(503, "missing_api_key", { message: "Nenhuma chave de IA configurada no servidor." });
   }
+  const t0 = Date.now();
+  const phases = [];
+  async function phase(name, fn) {
+    const start = Date.now();
+    try {
+      const out = await fn();
+      phases.push({ name, ms: Date.now() - start, ok: true });
+      return out;
+    } catch (err) {
+      phases.push({ name, ms: Date.now() - start, ok: false, error: String(err?.payload?.error ?? err?.message ?? err).slice(0, 200) });
+      throw err;
+    }
+  }
   const maybeUrl = String(input?.text ?? "").trim();
   const isUrl = /^https?:\/\//.test(maybeUrl);
   const wantsMedia = input?.kind === "link" || input?.kind === "video";
@@ -278,57 +292,64 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
   let mediaDebug = [];
   let origin = null;
   if (wantsMedia && isUrl) {
-    try {
-      const media = await fetchMediaContext(maybeUrl);
-      mediaDebug = media.attempts;
-      if (media.ok) {
-        mediaContext = media.context;
-        origin = toOrigin(media.media, maybeUrl);
+    await phase("media-probe", async () => {
+      try {
+        const media = await fetchMediaContext(maybeUrl);
+        mediaDebug = media.attempts;
+        if (media.ok) {
+          mediaContext = media.context;
+          origin = toOrigin(media.media, maybeUrl);
+        }
+      } catch {
+        mediaDebug = ["media-kit-crashed"];
       }
-    } catch {
-      mediaDebug = ["media-kit-crashed"];
-    }
+    });
   }
-
-  const { result: first, model: firstModel } = await callModel({
-    apiKey,
-    instructions: SYSTEM_PROMPT_JUDGE,
-    input: buildUserContent(input, mediaContext),
-    timeoutMs,
-  });
+  const { result: first, model: firstModel } = await phase("judge", () =>
+    callModel({
+      apiKey,
+      instructions: SYSTEM_PROMPT_JUDGE,
+      input: buildUserContent(input, mediaContext),
+      timeoutMs,
+    }),
+  );
 
   // Passo 2 — a IA pediu mais? Baixa áudio + transcreve + rejulga.
   // Vídeo com URL sempre passa pelo passo 2 (transcrição é obrigatória).
   const mustTranscribe =
     wantsMedia && isUrl && (first?.needs_media === true || (input?.kind === "video" && !transcript));
   if (mustTranscribe) {
-    try {
-      const enriched = await enrichWithMedia(maybeUrl);
-      mediaDebug = [...mediaDebug, ...enriched.debug];
-      if (enriched.mediaContext && enriched.mediaContext !== mediaContext) {
-        mediaContext = enriched.mediaContext;
+    await phase("enrich", async () => {
+      try {
+        const enriched = await enrichWithMedia(maybeUrl);
+        mediaDebug = [...mediaDebug, ...enriched.debug];
+        if (enriched.mediaContext && enriched.mediaContext !== mediaContext) {
+          mediaContext = enriched.mediaContext;
+        }
+        if (enriched.origin && !origin) origin = enriched.origin;
+        transcript = enriched.transcript;
+      } catch {
+        mediaDebug.push("enrich-crashed");
       }
-      if (enriched.origin && !origin) origin = enriched.origin;
-      transcript = enriched.transcript;
-    } catch {
-      mediaDebug.push("enrich-crashed");
-    }
+    });
     if (transcript || mediaContext) {
       const kindLabel = input?.kind === "video" ? "vídeo/áudio" : "link";
-      const { result: second, model: secondModel } = await callModel({
-        apiKey,
-        instructions: SYSTEM_PROMPT_FINAL,
-        input: `Cheque este ${kindLabel}: ${maybeUrl}\n\nDados extraídos (confie nestes dados):\n${mediaContext}`,
-        timeoutMs,
-      });
+      const { result: second, model: secondModel } = await phase("final", () =>
+        callModel({
+          apiKey,
+          instructions: SYSTEM_PROMPT_FINAL,
+          input: `Cheque este ${kindLabel}: ${maybeUrl}\n\nDados extraídos (confie nestes dados):\n${mediaContext}`,
+          timeoutMs,
+        }),
+      );
       second.sources = await sanitizeSources(second.sources);
-      return { result: second, model: secondModel, media: mediaDebug, transcript, origin };
+      return finish({ result: second, model: secondModel });
     }
   }
 
   if (first?.needs_media === true && !transcript) {
     // IA pediu mídia mas não conseguimos extrair nada: veredito honesto.
-    return {
+    return finish({
       result: {
         verdict: "unproven",
         score: 30,
@@ -337,11 +358,32 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
         sources: [],
       },
       model: firstModel,
-      media: mediaDebug,
-      transcript: null,
-      origin,
-    };
+    });
   }
   first.sources = await sanitizeSources(first.sources);
-  return { result: first, model: firstModel, media: mediaDebug, transcript, origin };
+  return finish({ result: first, model: firstModel });
+
+  function finish({ result, model }) {
+    const totalMs = Date.now() - t0;
+    const checkId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    // Fire-and-forget: log nunca quebra a checagem.
+    saveLog({
+      id: checkId,
+      kind: input?.kind,
+      inputPreview: String(input?.text ?? ""),
+      fileName: input?.fileName ? String(input.fileName) : null,
+      phases,
+      totalMs,
+      model,
+      verdict: result?.verdict ?? null,
+      score: typeof result?.score === "number" ? result.score : null,
+      claimsCount: Array.isArray(result?.claims) ? result.claims.length : 0,
+      sourcesCount: Array.isArray(result?.sources) ? result.sources.length : 0,
+      mediaAttempts: mediaDebug,
+      transcriptSegs: transcript?.segments?.length ?? 0,
+      origin,
+      error: null,
+    }).catch(() => {});
+    return { result, model, media: mediaDebug, transcript, origin, checkId, totalMs };
+  }
 }

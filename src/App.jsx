@@ -5,9 +5,9 @@ import Verifier from "./components/Verifier.jsx";
 import Feed from "./components/Feed.jsx";
 import DetailDialog from "./components/DetailDialog.jsx";
 import HowItWorks from "./components/HowItWorks.jsx";
+import Admin from "./components/Admin.jsx";
 import { VERDICTS } from "./data/constants.js";
 import { useToast } from "./lib/hooks.js";
-
 const HISTORY_KEY = "iev-history-v2";
 
 function loadHistory() {
@@ -55,6 +55,29 @@ export default function App() {
   function handleQuickCheck(value) {
     setHeroCollapsed(true);
     setQuickInput(value);
+  }
+
+  const [isAdmin, setIsAdmin] = useState(() => location.hash === "#/admin");
+  useEffect(() => {
+    function onHash() {
+      setIsAdmin(location.hash === "#/admin");
+    }
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  if (isAdmin) {
+    return (
+      <>
+        <Header />
+        <main className="main-full">
+          <Admin showToast={show} />
+        </main>
+        <div id="toast" role="status" className={message ? "show" : ""}>
+          {message}
+        </div>
+      </>
+    );
   }
 
   return (

@@ -1,7 +1,8 @@
-// Plugin Vite (dev): serve POST /api/verify com a chave OpenCode server-side.
-// Reusa server/verify.js — a mesma lógica da serverless Vercel (api/verify.js).
+// Plugin Vite (dev): serve /api/verify e /api/admin com as chaves server-side.
+// Reusa server/verify.js + server/checklog.js — mesma lógica da Vercel.
 import { loadEnv } from "vite";
 import { runVerify } from "./server/verify.js";
+import { getCheckLog, listCheckLogs, logEnabled } from "./server/checklog.js";
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -25,6 +26,12 @@ export function apiVerifyPlugin() {
       apiKey = apiKey || full.OPENCODE_API || "";
       if (full.OPENAI_API_KEY && !process.env.OPENAI_API_KEY) {
         process.env.OPENAI_API_KEY = full.OPENAI_API_KEY;
+      }
+      if (full.BLOB_READ_WRITE_TOKEN && !process.env.BLOB_READ_WRITE_TOKEN) {
+        process.env.BLOB_READ_WRITE_TOKEN = full.BLOB_READ_WRITE_TOKEN;
+      }
+      if (full.ADMIN_SECRET && !process.env.ADMIN_SECRET) {
+        process.env.ADMIN_SECRET = full.ADMIN_SECRET;
       }
     },
     configureServer(server) {
@@ -50,6 +57,29 @@ export function apiVerifyPlugin() {
         } catch (err) {
           return send(err.status ?? 502, err.payload ?? { error: "upstream_error" });
         }
+      });
+      server.middlewares.use("/api/admin", async (req, res) => {
+        res.setHeader("Content-Type", "application/json");
+        const send = (status, obj) => {
+          res.statusCode = status;
+          res.end(JSON.stringify(obj));
+        };
+        const secret = process.env.ADMIN_SECRET || "";
+        if (!secret) return send(503, { error: "admin_disabled" });
+        if (String(req.headers.authorization ?? "") !== `Bearer ${secret}`) {
+          return send(401, { error: "unauthorized" });
+        }
+        if (req.method !== "GET") return send(405, { error: "method_not_allowed" });
+        if (!logEnabled()) {
+          return send(200, { enabled: false, items: [], hint: "BLOB_READ_WRITE_TOKEN ausente — logs só no console." });
+        }
+        const id = new URL(req.url, "http://local").searchParams.get("id") || "";
+        if (id) {
+          const record = await getCheckLog(id);
+          if (!record) return send(404, { error: "not_found" });
+          return send(200, { record });
+        }
+        return send(200, await listCheckLogs());
       });
     },
   };

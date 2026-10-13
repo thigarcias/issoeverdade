@@ -33,6 +33,13 @@ function formatBytes(bytes) {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
+function formatDuration(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return `${m}min ${String(s % 60).padStart(2, "0")}s`;
+}
+
 export default function Verifier({ showToast, onChecked, quickInput }) {
   const [tab, setTab] = useState("link");
   const [text, setText] = useState("");
@@ -44,6 +51,8 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
   const [thinkIdx, setThinkIdx] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [checkedInput, setCheckedInput] = useState(null);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const startRef = useRef(0);
   const aborter = useRef(null);
   const runId = useRef(0);
   const fileInput = useRef(null);
@@ -78,16 +87,22 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
           ? Boolean(file)
           : text.trim().length >= 4);
 
-  // Frases de thinking: rotaciona enquanto a IA trabalha.
+  // Frases de thinking + cronômetro: rotaciona enquanto a IA trabalha.
   useEffect(() => {
     if (!running) {
       setThinkIdx(0);
       return;
     }
-    const t = setInterval(() => {
+    const think = setInterval(() => {
       setThinkIdx((i) => (i + 1) % THINKING_LINES.length);
     }, 2600);
-    return () => clearInterval(t);
+    const clock = setInterval(() => {
+      setElapsedMs(Date.now() - startRef.current);
+    }, 500);
+    return () => {
+      clearInterval(think);
+      clearInterval(clock);
+    };
   }, [running]);
 
   function switchTab(next) {
@@ -108,6 +123,8 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
     setResult(null);
     setError(null);
     setExpanded(false);
+    startRef.current = Date.now();
+    setElapsedMs(0);
     try {
       const snapshot = { kind: tab, text: text.trim(), fileName: file?.name ?? null };
       const { result: r } = await verify(
@@ -115,6 +132,7 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
         { onStep: setStep, signal: aborter.current.signal },
       );
       if (runId.current !== mine) return; // execução obsoleta
+      r.elapsedMs = Date.now() - startRef.current;
       setResult(r);
       setCheckedInput(snapshot);
       onChecked?.(r);
@@ -425,6 +443,12 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
               <div className="progress-track" aria-hidden="true">
                 <i style={{ width: `${Math.round(((step + 1) / PIPELINE_STEPS.length) * 100)}%` }} />
               </div>
+              <p className="eta-line">
+                {formatDuration(elapsedMs)} decorridos
+                {tab === "video" && (
+                  <> · vídeos longos podem levar alguns minutos — quanto maior o vídeo, mais demora a transcrição</>
+                )}
+              </p>
               <ol className="pipeline">
                 {PIPELINE_STEPS.map((s, i) => (
                   <li
@@ -479,7 +503,8 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
       {result && (
         <p className="verify-hint" style={{ marginTop: 10 }}>
           Veredito: <b>{VERDICTS[result.verdict].label}</b> · nota {result.score}/100 ·{" "}
-          {result.claims.length} afirmações · {result.sources.length} fontes.
+          {result.claims.length} afirmações · {result.sources.length} fontes
+          {typeof result.elapsedMs === "number" && <> · checada em {formatDuration(result.elapsedMs)}</>}.
         </p>
       )}
     </div>

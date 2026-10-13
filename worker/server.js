@@ -3,11 +3,12 @@
 //   GET  /health          → { ok, ytdlp }
 //   POST /fetch { url }    → { ok, context, media, attempts } (metadados, sem baixar)
 //   POST /audio { url }    → { ok, audio_b64, mime } ou { ok:false, reason }
+//   POST /frames { url }   → { ok, frames: [jpeg_b64], count, seconds } — OCR/visão
 // Limites: áudio até 20MB (retorna base64); timeout 120s por request.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createServer } from "node:http";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -93,6 +94,64 @@ async function fetchAudio(url) {
   }
 }
 
+const MAX_FRAMES = 10;
+const MAX_FRAMES_BYTES = 2_500_000;
+
+/** Frames do vídeo (JPEG base64) para OCR/visão — cobre vídeos só com texto na tela. */
+async function fetchFrames(url) {
+  const dir = await mkdtempSafe();
+  try {
+    await execFileAsync(
+      "yt-dlp",
+      [
+        "--no-playlist", "-f", "worst[height<=480]/best[height<=480]/worst",
+        "--no-warnings", "--socket-timeout", "20",
+        "-o", `${dir}/v.%(ext)s`, url,
+      ],
+      { timeout: 150_000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    const files = await readdir(dir);
+    const file = files.find((f) => f.startsWith("v."));
+    if (!file) return { ok: false, reason: "no-file" };
+    const src = join(dir, file);
+    let seconds = 0;
+    try {
+      const { stdout } = await execFileAsync(
+        "ffprobe",
+        ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", src],
+        { timeout: 30_000 },
+      );
+      seconds = Math.ceil(Number(stdout.trim()) || 0);
+    } catch { /* segue sem duração */ }
+    // Amostra no máximo MAX_FRAMES ao longo dos primeiros 300s.
+    const span = Math.max(1, Math.min(300, seconds || 60));
+    const fps = Math.min(1, MAX_FRAMES / span);
+    await execFileAsync(
+      "ffmpeg",
+      [
+        "-y", "-hide_banner", "-loglevel", "error", "-i", src,
+        "-vf", `fps=${fps.toFixed(4)},scale=448:-2`,
+        "-frames:v", String(MAX_FRAMES), "-q:v", "7",
+        `${dir}/f-%02d.jpg`,
+      ],
+      { timeout: 120_000 },
+    );
+    const jpgs = (await readdir(dir)).filter((f) => /^f-\d+\.jpg$/.test(f)).sort();
+    const frames = [];
+    let bytes = 0;
+    for (const j of jpgs.slice(0, MAX_FRAMES)) {
+      const buf = await readFile(join(dir, j));
+      if (bytes + buf.length > MAX_FRAMES_BYTES) break;
+      bytes += buf.length;
+      frames.push(buf.toString("base64"));
+    }
+    if (!frames.length) return { ok: false, reason: "no-frames" };
+    return { ok: true, frames, count: frames.length, seconds: seconds || null, bytes };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 async function mkdtempSafe() {
   const { mkdtemp } = await import("node:fs/promises");
   return mkdtemp(join(tmpdir(), "iev-"));
@@ -130,6 +189,13 @@ const server = createServer(async (req, res) => {
         return send(res, 200, await fetchAudio(url));
       } catch (err) {
         return send(res, 200, { ok: false, reason: "audio-failed", detail: String(err?.message ?? err).slice(0, 300) });
+      }
+    }
+    if (req.url === "/frames") {
+      try {
+        return send(res, 200, await fetchFrames(url));
+      } catch (err) {
+        return send(res, 200, { ok: false, reason: "frames-failed", detail: String(err?.message ?? err).slice(0, 300) });
       }
     }
     return send(res, 404, { ok: false, reason: "not_found" });

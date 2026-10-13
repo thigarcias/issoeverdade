@@ -161,6 +161,112 @@ async function downloadViaYtDlp(url, outDir) {
   }
 }
 
+/** Camada 2b: frames do vídeo — worker remoto → yt-dlp+ffmpeg local. */
+export async function downloadFrames(url) {
+  if (!(await hasYtDlp()) && WORKER_URL) {
+    const w = await framesViaWorker(url);
+    if (w.ok) return w;
+  }
+  if (await hasYtDlp()) {
+    const f = await framesViaYtDlp(url);
+    if (f.ok) return f;
+  }
+  if (WORKER_URL) {
+    const w = await framesViaWorker(url);
+    if (w.ok) return w;
+  }
+  return { ok: false, reason: "no-frames-path" };
+}
+
+const MAX_FRAMES = 10;
+const MAX_FRAMES_BYTES = 2_500_000;
+
+async function framesViaWorker(url) {
+  if (!WORKER_URL) return { ok: false, reason: "no-worker-url" };
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 180_000);
+    const res = await fetch(`${WORKER_URL}/frames`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(WORKER_SECRET ? { Authorization: `Bearer ${WORKER_SECRET}` } : {}),
+      },
+      body: JSON.stringify({ url }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    if (!res.ok) return { ok: false, reason: `worker-http-${res.status}` };
+    const data = await res.json();
+    if (!data?.ok || !Array.isArray(data.frames) || data.frames.length === 0) {
+      return { ok: false, reason: data?.reason ?? "worker-frames-failed" };
+    }
+    return { ok: true, frames: data.frames, count: data.frames.length, via: "worker" };
+  } catch {
+    return { ok: false, reason: "worker-unreachable" };
+  }
+}
+
+async function framesViaYtDlp(url) {
+  const { mkdir, readdir, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const base = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? tmpdir() : "./media-tmp";
+  const dir = `${base}/frames-${Date.now().toString(36)}`;
+  await mkdir(dir, { recursive: true });
+  try {
+    await execFileAsync(
+      "yt-dlp",
+      [
+        "--no-playlist", "-f", "worst[height<=480]/best[height<=480]/worst",
+        "--no-warnings", "--socket-timeout", "20",
+        "--extractor-args", "youtube:player_client=android,web",
+        "-o", `${dir}/v.%(ext)s`, url,
+      ],
+      { timeout: 150_000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    const file = (await readdir(dir)).find((f) => f.startsWith("v."));
+    if (!file) return { ok: false, reason: "no-file" };
+    const src = `${dir}/${file}`;
+    let seconds = 0;
+    try {
+      const { stdout } = await execFileAsync(
+        "ffprobe",
+        ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", src],
+        { timeout: 30_000 },
+      );
+      seconds = Math.ceil(Number(stdout.trim()) || 0);
+    } catch { /* segue sem duração */ }
+    const span = Math.max(1, Math.min(300, seconds || 60));
+    const fps = Math.min(1, MAX_FRAMES / span);
+    await execFileAsync(
+      "ffmpeg",
+      [
+        "-y", "-hide_banner", "-loglevel", "error", "-i", src,
+        "-vf", `fps=${fps.toFixed(4)},scale=448:-2`,
+        "-frames:v", String(MAX_FRAMES), "-q:v", "7",
+        `${dir}/f-%02d.jpg`,
+      ],
+      { timeout: 120_000 },
+    );
+    const jpgs = (await readdir(dir)).filter((f) => /^f-\d+\.jpg$/.test(f)).sort();
+    const frames = [];
+    let bytes = 0;
+    const { readFile } = await import("node:fs/promises");
+    for (const j of jpgs.slice(0, MAX_FRAMES)) {
+      const buf = await readFile(`${dir}/${j}`);
+      if (bytes + buf.length > MAX_FRAMES_BYTES) break;
+      bytes += buf.length;
+      frames.push(buf.toString("base64"));
+    }
+    if (!frames.length) return { ok: false, reason: "no-frames" };
+    return { ok: true, frames, count: frames.length, seconds: seconds || null, via: "yt-dlp" };
+  } catch (err) {
+    return { ok: false, reason: "frames-failed", detail: String(err?.message ?? err).slice(0, 200) };
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function downloadViaDirectUrl(url, outDir) {
   // Sem yt-dlp (ex.: Vercel): procura og:video/twitter:player:stream no HTML e baixa direto.
   try {

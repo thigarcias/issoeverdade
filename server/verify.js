@@ -2,7 +2,7 @@
 // - vite.api-plugin.js (dev local)
 // - api/verify.js (serverless Vercel)
 // Keys (OpenAI + OpenCode) NUNCA chegam ao browser.
-import { downloadAudio, fetchMediaContext } from "./media.js";
+import { downloadAudio, downloadFrames, fetchMediaContext } from "./media.js";
 import { transcribe, transcriptToPrompt } from "./transcribe.js";
 import { saveCheckLog as saveLog } from "./checklog.js";
 import { getCached, setCached } from "./cache.js";
@@ -289,6 +289,70 @@ async function sanitizeSources(sources, claims = null) {
   return { sources: final, dropped };
 }
 
+/**
+ * Analisa frames do vídeo com o modelo de visão — OCR do texto na tela +
+ * descrição das cenas. Usado quando o vídeo não tem fala (só música/trilha).
+ * Muse (custo zero) primeiro; Luna (OpenAI) como fallback. Falha → null.
+ * @param {string[]} frames JPEGs em base64, na ordem temporal.
+ * @returns {Promise<string|null>} "[frame N] TEXTO: ... | CENA: ..." por linha.
+ */
+async function describeFrames(frames, { apiKey, timeoutMs = 120_000 } = {}) {
+  if (!Array.isArray(frames) || frames.length === 0) return null;
+  const instructions = `Você analisa frames, em ordem, de um vídeo de política brasileira que NÃO tem fala (só música ou trilha). Para CADA frame: extraia LITERALMENTE todo texto visível (títulos, legendas queimadas, marca d'água, assinatura de propaganda eleitoral) e descreva a cena em 1 frase curta. Formato exato, uma linha por frame: "[frame N] TEXTO: <texto literal ou (nenhum)> | CENA: <descrição>". Sem markdown, sem introdução, sem comentários.`;
+  const content = [{ type: "input_text", text: `Analise os ${frames.length} frames na ordem em que aparecem:` }];
+  for (const f of frames) content.push({ type: "input_image", image_url: `data:image/jpeg;base64,${f}` });
+  const input = [{ role: "user", content }];
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    if (apiKey) {
+      try {
+        const res = await fetch(OPENCODE_URL, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            "User-Agent": "issoeverdade/0.1",
+            "x-opencode-session": `iev-${Date.now().toString(36)}`,
+          },
+          body: JSON.stringify({
+            model: DEFAULT_MODEL,
+            instructions,
+            input,
+            max_output_tokens: 4000,
+            reasoning: { effort: "low" },
+          }),
+          signal: ctrl.signal,
+        });
+        if (res.ok) {
+          const text = extractText(await res.json()).trim();
+          if (text) return text.slice(0, 6000);
+        }
+      } catch { /* tenta o fallback */ }
+    }
+    const key = process.env.OPENAI_API_KEY || "";
+    if (!key) return null;
+    const res = await fetch(OPENAI_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: FALLBACK_MODEL,
+        instructions,
+        input,
+        max_output_tokens: 4000,
+      }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return null;
+    const text = extractText(await res.json()).trim();
+    return text ? text.slice(0, 6000) : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function toOrigin(media, url) {
   if (!media) return null;
   const out = {
@@ -301,7 +365,7 @@ function toOrigin(media, url) {
   return out.title || out.thumbnail ? out : null;
 }
 
-async function enrichWithMedia(maybeUrl) {
+async function enrichWithMedia(maybeUrl, opts = {}) {
   // Retorna { mediaContext, transcript, debug } — probe e áudio em paralelo.
   const looksVideo = /(\.mp4|\.mov|reel|youtu\.?be|tiktok|twitter|x\.com\/.*status|vimeo|twitch|instagram\.com)/i.test(maybeUrl);
   const [media, dl] = await Promise.all([
@@ -318,6 +382,20 @@ async function enrichWithMedia(maybeUrl) {
     if (t.ok && t.text) {
       transcript = t;
       mediaContext += `\n\nTranscrição do áudio (Whisper ${t.model}):\n${transcriptToPrompt(t)}`;
+    }
+  }
+  // Vídeo sem fala (só música/trilha): o conteúdo costuma estar no TEXTO NA TELA.
+  // Nesse caso, extrai frames e roda OCR/visão para capturar a mensagem real.
+  const spoken = (transcript?.text ?? "").replace(/[^\p{L}\p{N}]/gu, "");
+  if (looksVideo && spoken.length < 12) {
+    const fr = await downloadFrames(maybeUrl);
+    debug.push(`frames:${fr.ok ? `${fr.via}:${fr.count}` : fr.reason}`);
+    if (fr.ok) {
+      const vision = await describeFrames(fr.frames, { apiKey: opts.apiKey });
+      debug.push(`vision:${vision ? "ok" : "failed"}`);
+      if (vision) {
+        mediaContext += `\n\nVídeo sem fala — texto na tela e cenas (análise visual frame a frame):\n${vision}`;
+      }
     }
   }
   return { mediaContext: mediaContext.trim(), transcript, debug, origin: toOrigin(media.ok ? media.media : null, maybeUrl) };
@@ -474,7 +552,7 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
   if (mustTranscribe) {
     await phase("enrich", async () => {
       try {
-        const enriched = await enrichWithMedia(maybeUrl);
+        const enriched = await enrichWithMedia(maybeUrl, { apiKey });
         mediaDebug = [...mediaDebug, ...enriched.debug];
         if (enriched.mediaContext && enriched.mediaContext !== mediaContext) {
           mediaContext = enriched.mediaContext;

@@ -21,6 +21,26 @@ Tenta em ordem, para na primeira que funciona. Retorna
 `yt-dlp -x --audio-format mp3` salva em `./media-tmp/<id>.mp3`. Pronto para
 ligar no Whisper Turbo quando implementarmos transcrição real.
 
+### 2b. `downloadFrames(url)` — frames do vídeo para OCR/visão
+
+Vídeos de campanha muitas vezes **não têm fala** — a mensagem está no texto
+queimado na tela, com trilha musical por cima. Nesses casos o Whisper devolve
+só `🎶` e nada do conteúdo é checado.
+
+`downloadFrames` baixa o vídeo (≤480p) e extrai até 10 frames JPEG (448px,
+amostrados ao longo dos primeiros 300s). O `runVerify` então manda os frames
+para o modelo de visão (`describeFrames`, Muse primeiro / Luna como fallback),
+que faz OCR e descreve cada cena. O resultado entra no `mediaContext` como
+"Vídeo sem fala — texto na tela e cenas".
+
+**Quando roda:** só quando o áudio não traz fala (transcrição vazia ou só
+música) — vídeos com narração não pagam o custo extra.
+
+| Camada | O que faz | Requer |
+| ------ | ---------- | ------ |
+| worker `/frames` | yt-dlp + ffmpeg no worker, retorna JPEGs em base64 | `MEDIA_WORKER_URL` |
+| local | yt-dlp + ffmpeg locais, mesma extração | `yt-dlp` + `ffmpeg` |
+
 ### 3. `hasYtDlp()` — detecção de ambiente
 
 Se o binário não existir (ex.: Vercel), o kit pula automaticamente para os
@@ -57,6 +77,8 @@ node scripts/fetch-media.mjs <url> --audio    # + baixa o MP3
 2. **Passo 2 — sob demanda:** só roda se a IA pedir mídia **ou** se for vídeo
    com URL (vídeo sempre transcreve). Baixa o MP3 (`downloadAudio`) +
    transcreve com Whisper (`transcribe`) + rejulga com a transcrição.
+   **Sem fala no áudio?** Extrai frames (`downloadFrames`) e roda OCR/visão
+   (`describeFrames`) para capturar o texto na tela, e rejulga com ele.
 
 Texto puro e links com conteúdo suficiente: 1 passo, sem download.
 

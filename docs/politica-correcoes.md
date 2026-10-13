@@ -6,7 +6,7 @@
 
 O servidor valida vínculos, status, nota e coerência do resultado, corrige automaticamente alguns campos incompatíveis e grava as correções internas no registro da checagem. Se uma correção alterar claim, score, veredito ou fonte, o resumo pode ser substituído por um aviso genérico para não manter uma síntese contraditória. Isso não equivale a revisão editorial humana, aviso ao usuário, política completa de retificação ou reanálise de históricos.
 
-Registros antigos descrevem a execução preservada. Não são reexecutados automaticamente com `fact-check-3`; quando não têm versão de metodologia, podem aparecer como legados.
+Registros antigos descrevem a execução preservada. Não são reexecutados automaticamente com `fact-check-4`; quando não têm versão de metodologia, podem aparecer como legados. Quando uma classificação é rebaixada por evidência incompatível/insuficiente, a justificativa deixa de afirmar confirmação ou refutação.
 
 ## Canal público
 

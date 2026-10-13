@@ -59,6 +59,7 @@ export async function saveCheckLog(entry) {
     sources: Array.isArray(entry.sources) ? entry.sources.slice(0, 30) : [],
     researchCitations: Array.isArray(entry.researchCitations) ? entry.researchCitations.slice(0, 50) : [],
     researchQueries: Array.isArray(entry.researchQueries) ? entry.researchQueries.slice(0, 20) : [],
+    researchDiagnostics: Array.isArray(entry.researchDiagnostics) ? entry.researchDiagnostics.slice(0, 4) : [],
     claimsCount: entry.claimsCount ?? null,
     sourcesCount: entry.sourcesCount ?? null,
     mediaAttempts: entry.mediaAttempts ?? [],

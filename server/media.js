@@ -259,7 +259,7 @@ async function framesViaWorker(url) {
     if (!data?.ok || !Array.isArray(data.frames) || data.frames.length === 0) {
       return { ok: false, reason: data?.reason ?? "worker-frames-failed" };
     }
-    return { ok: true, frames: data.frames, count: data.frames.length, via: "worker" };
+    return { ok: true, frames: data.frames, count: data.frames.length, seconds: data.seconds ?? null, via: "worker" };
   } catch {
     return { ok: false, reason: "worker-unreachable" };
   }

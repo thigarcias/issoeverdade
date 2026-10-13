@@ -63,6 +63,7 @@ function normalize(raw, input, origin) {
           score: clamp(claim?.score, 35),
           text: String(claim?.text ?? "Afirmação").slice(0, 600),
           note: String(claim?.note ?? "").slice(0, 800),
+          referencePeriod: claim?.referencePeriod ?? null,
           sourceIds,
           evidence: Array.isArray(claim?.evidence)
             ? claim.evidence
@@ -71,6 +72,7 @@ function normalize(raw, input, origin) {
                   sourceId: item.sourceId,
                   relation: item.relation,
                   quote: String(item.quote ?? "").slice(0, 600),
+                  referencePeriod: item?.referencePeriod ?? null,
                 }))
             : [],
         };

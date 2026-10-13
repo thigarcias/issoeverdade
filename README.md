@@ -78,6 +78,13 @@ checagem, não o tempo desde a época Unix.
 
 ## Metodologia e avaliação
 
+`fact-check-4` captura anotações e fontes estruturadas da busca, compartilha o
+dossiê entre julgamento/revisão, distingue períodos de pesquisa e paraleliza
+transcrição/visão. `/admin` exibe o diagnóstico de proveniência e as subetapas
+de mídia. Fontes somente escritas pelo modelo continuam sendo descartadas.
+Regressões de evidência temporal e justificativas: `node --test server/scoring.test.js`.
+
+
 - [docs/metodologia-factual.md](docs/metodologia-factual.md): fluxo efetivo,
   estados operacionais, faixas de score e limites de evidência.
 - [docs/politica-correcoes.md](docs/politica-correcoes.md): o que o sistema

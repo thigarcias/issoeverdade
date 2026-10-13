@@ -56,7 +56,7 @@ continuam sendo evidência da execução preservada, não prova de comportamento
 | Aviso de metodologia divergente/legado | `methodologyNotice` | legado: “sem versão de metodologia”; `fact-check-2`: “Produzido sob fact-check-2” |
 | Prompts com versão, hash e truncamento | aba Prompts + `promptHashes` | hash `9f1c0d` e rótulo “prévia truncada” exibidos |
 | Correções e consultas visíveis | abas Resultado/Execução | correção do validador e `researchQueries` exibidas |
-| Metodologia no painel | `AdminMethodology` com versão/faixas/estados/avaliação vindos da API | versão `fact-check-3`, faixas e “benchmark publicado: não” |
+| Metodologia no painel | `AdminMethodology` com versão/faixas/estados/avaliação vindos da API | validação original com `fact-check-3`; código atual usa `fact-check-4`, mantendo ausência de benchmark humano |
 | URL canônica decidida e documentada | `/admin` (rewrite em `vercel.json`) + alias `/#/admin` em `README.md` | `/admin` responde 200 no dev com fallback de SPA |
 | Registros novos conservam score | índice/registro com `score` e `methodologyVersion` | painel mostra nota e versão por registro |
 

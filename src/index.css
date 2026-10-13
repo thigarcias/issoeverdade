@@ -1166,9 +1166,8 @@ main {
 
 .admin-tl-name {
   font: 500 var(--t-label) / 1.4 var(--sans);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .admin-timeline li.fail .admin-tl-name {

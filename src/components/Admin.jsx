@@ -89,14 +89,14 @@ function CopyButton({ text, showToast, label = "Copiar" }) {
 function PhaseTimeline({ phases, totalMs }) {
   const rows = phases ?? [];
   if (rows.length === 0) return <p className="admin-mut">Nenhuma fase registrada.</p>;
-  const total = totalMs > 0 ? totalMs : rows.reduce((a, p) => a + (p.ms ?? 0), 0);
+  const total = totalMs > 0 ? totalMs : rows.filter((p) => !p.parent).reduce((a, p) => a + (p.ms ?? 0), 0);
   return (
     <ol className="admin-timeline">
       {rows.map((p, i) => {
         const pct = total > 0 ? Math.max(3, Math.round(((p.ms ?? 0) / total) * 100)) : 3;
         return (
           <li key={`${p.name}-${i}`} className={p.ok ? "ok" : "fail"}>
-            <span className="admin-tl-name">{p.name}</span>
+            <span className="admin-tl-name">{p.parent ? `${p.parent} / ` : ""}{p.name}</span>
             <span className="admin-tl-track">
               <span className="admin-tl-bar" style={{ width: `${pct}%` }} />
             </span>
@@ -284,6 +284,7 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
                           <li key={`${evidence.sourceId ?? "source"}-${index}`}>
                             <b>{relation}{source?.outlet ? ` · ${source.outlet}` : ""}</b>
                             {evidence.quote && <q>{evidence.quote}</q>}
+                            {evidence.referencePeriod && <small>Período da evidência: {evidence.referencePeriod.start} a {evidence.referencePeriod.end}</small>}
                             {source?.url && <a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>}
                           </li>
                         );
@@ -381,8 +382,20 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
                   <dt>Cache</dt><dd>{detail.cached ? "Resultado servido do cache" : detail.cachedFrom ? `Resultado reutilizado de ${detail.cachedFrom}` : "Não registrado como cache"}</dd>
                   <dt>Consultas de busca registradas</dt>
                   <dd className="admin-mono">{detail.researchQueries?.length > 0 ? detail.researchQueries.join(" · ") : "Nenhuma consulta preservada nesta execução"}</dd>
+                  <dt>Proveniência da pesquisa por etapa</dt>
+                  <dd>{detail.researchDiagnostics?.length > 0 ? detail.researchDiagnostics.map((item) => (
+                    <p key={item.step}>
+                      {STEP_LABEL[item.step] ?? item.step}: {({ available: "URLs estruturadas disponíveis", missing_provenance: "Busca executada sem URLs rastreáveis retornadas", no_search_calls: "Nenhuma chamada de busca registrada", not_requested: "Revisão do dossiê sem nova busca" })[item.status] ?? item.status}
+                      {" "}· {item.acceptedUrlCount ?? 0} URLs · {item.annotationCount ?? 0} citações · {item.retrievedCount ?? 0} resultados de busca
+                    </p>
+                  )) : "Diagnóstico não preservado nesta execução"}</dd>
+                  {detail.researchDiagnostics?.length > 0 && <>
+                    <dt>Chamadas da ferramenta</dt>
+                    <dd><details><summary>Status e páginas tentadas</summary><pre className="admin-pre">{JSON.stringify(detail.researchDiagnostics.map(({ step, calls }) => ({ step, calls })), null, 2)}</pre></details></dd>
+                  </>}
                 </dl>
                 <h4 className="admin-sub">Fases registradas</h4>
+                <p className="admin-mut">Subetapas de mídia podem ocorrer em paralelo e estão incluídas na fase principal; suas durações não devem ser somadas ao total.</p>
                 <PhaseTimeline phases={detail.phases} totalMs={detail.totalMs} />
               </div>
             )}

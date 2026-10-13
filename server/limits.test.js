@@ -175,6 +175,21 @@ test("orçamento diário reserva antes, recusa acima do teto e devolve a reserva
   });
 });
 
+test("conciliação cobra unidades pelos tokens observados sem rejeitar a resposta", async () => {
+  const guard = createGuard(limitsConfig({ IEV_LIMITS_MODE: "memory", IEV_DAILY_CHECK_UNITS: "10", IEV_TOKENS_PER_UNIT: "100000" }));
+  const leve = await guard.reconcileTokens(50_000);
+  assert.equal(leve.extraUnits, 0);
+  assert.equal(leve.exceeded, false);
+  const pesada = await guard.reconcileTokens(329_006);
+  assert.equal(pesada.extraUnits, 3);
+  assert.equal(pesada.unitsUsed, 3);
+  assert.equal(pesada.tokensUsed, 379_006);
+  const estouro = await guard.reconcileTokens(2_000_000);
+  assert.equal(estouro.extraUnits, 20);
+  assert.equal(estouro.exceeded, true, "orçamento estourado é reportado, não lançado");
+  assert.equal(guard.describe().tokensPerUnit, 100000);
+});
+
 test("store indisponível lança LimitsUnavailable (fail-closed no endpoint)", async () => {
   const guard = createGuard(limitsConfig({ UPSTASH_REDIS_REST_URL: "http://127.0.0.1:1", UPSTASH_REDIS_REST_TOKEN: "t" }));
   await assert.rejects(() => guard.rateLimit("9.9.9.9"), (error) => error instanceof LimitsUnavailable);

@@ -65,6 +65,7 @@ export function limitsConfig(env = process.env) {
     slotPollMs: intEnv(env.IEV_SLOT_POLL_MS, 750),
     dailyUnits: intEnv(env.IEV_DAILY_CHECK_UNITS, 200),
     dailyTokens: intEnv(env.IEV_DAILY_TOKENS, 0),
+    tokensPerUnit: intEnv(env.IEV_TOKENS_PER_UNIT, 150_000),
     correctionsPerWindow: intEnv(env.IEV_CORRECTIONS_RATE_LIMIT_PER_WINDOW, 5),
     costUnits: costUnitsFromEnv(env.IEV_COST_UNITS),
   };
@@ -229,6 +230,7 @@ export function createGuard(config = limitsConfig()) {
         slotLeaseSec: config.slotLeaseSec,
         dailyUnits: config.dailyUnits,
         dailyTokens: config.dailyTokens,
+        tokensPerUnit: config.tokensPerUnit,
         costUnits: config.costUnits,
       };
     },
@@ -296,6 +298,27 @@ export function createGuard(config = limitsConfig()) {
       const used = await store.incrBy(key, Math.round(tokens));
       if (used === Math.round(tokens)) await store.expire(key, 2 * 24 * 3600);
       return used;
+    },
+    /**
+     * Conciliação: o trabalho já foi pago, então cobrar unidades extras pelos
+     * tokens observados NUNCA rejeita a resposta atual — apenas consome orçamento
+     * e, se estourar, as próximas checagens ficam barradas pela reserva prévia.
+     */
+    async reconcileTokens(tokens) {
+      const observed = Number(tokens);
+      const tokensUsed = await this.recordTokens(observed).catch(() => null);
+      if (!store || !Number.isFinite(observed) || observed <= 0 || config.tokensPerUnit <= 0) {
+        return { extraUnits: 0, tokensUsed, exceeded: false };
+      }
+      const extraUnits = Math.floor(observed / config.tokensPerUnit);
+      if (extraUnits <= 0) return { extraUnits: 0, tokensUsed, exceeded: false };
+      try {
+        const charged = await this.chargeUnits(extraUnits, "tokens");
+        return { extraUnits, tokensUsed, unitsUsed: charged.used, exceeded: false };
+      } catch (error) {
+        if (error instanceof LimitsExceeded) return { extraUnits, tokensUsed, exceeded: true };
+        throw error;
+      }
     },
     async tokensToday() {
       if (!store || !config.dailyTokens) return null;

@@ -104,7 +104,7 @@ export async function handleVerifyRequest({ method, headers = {}, body, socketAd
     }
     const out = await runVerify(input);
     const tokens = out?.tokenUsage?.total ?? 0;
-    if (tokens) await guard.recordTokens(tokens).catch(() => null);
+    if (tokens) await guard.reconcileTokens(tokens).catch(() => null);
     return { status: 200, body: out };
   } catch (err) {
     if (err instanceof LimitsUnavailable) return jsonError(503, blockedPayload(guard));

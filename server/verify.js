@@ -552,7 +552,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   trace.configRevision = configState.revision;
   trace.configSource = configState.source;
   trace.methodologyVersion = PROMPT_VERSION;
-  const cacheNamespace = `${PROMPT_VERSION}:post-text-v1:${configState.revision}`;
+  const cacheNamespace = `${PROMPT_VERSION}:post-linked-content-v2:${configState.revision}`;
   const t0 = startedAt ?? Date.now();
   const hit = await getCached(input, cacheNamespace).catch(() => null);
   if (hit) {

@@ -18,7 +18,7 @@ Para a URL acima, o sistema:
 
 1. Extraía o tweet com sucesso via oEmbed (`publish.twitter.com/oembed`).
 2. Marcava `postTextOnly = true`, porque não havia áudio/transcrição/visão.
-3. O modelo precisava do conteúdo integral da matéria vinculada e retornava `needs_media = true`.
+3. O resultado indicava cobertura limitada e `inaccessible_media`. Não foi capturado o retorno bruto do modelo dessa execução; não é possível atribuir o resultado a `needs_media = true`.
 4. O resultado final virava `inaccessible_media`, sem veredito nem score.
 
 Resumo exibido ao usuário:
@@ -29,8 +29,7 @@ Resumo exibido ao usuário:
 ## Causa
 
 A camada de mídia para X extraía apenas o texto do tweet, sem seguir os links citados no próprio texto.
-O modelo não tinha acesso ao conteúdo primário da matéria vinculada, por isso considerava o material
-insuficiente e solicitava mídia/conteúdo integral.
+Isso limita o material entregue ao modelo. Sem o retorno bruto da execução original, não é possível afirmar qual condição do julgamento produziu a abstenção.
 
 ## Correção aplicada
 
@@ -95,8 +94,7 @@ Resultados:
 
 ## Escopo/intenção
 
-A mudança é genérica: não trata a Folha ou o post específico. Qualquer post cujo texto contenha URL pública terá os links resolvidos automaticamente,
-desde que o destino seja HTML acessível pela política de rede do projeto.
+A função de extração de URLs é genérica, mas sua integração atual é exclusiva do caminho de oEmbed do X. Instagram, TikTok e outros caminhos não chamam esse resolvedor automaticamente. A extração inclui metadados e trechos limitados, não garante artigo integral nem um veredito.
 
 ## Commit
 
@@ -104,3 +102,14 @@ desde que o destino seja HTML acessível pela política de rede do projeto.
 - Hash: `a8f89a2`
 - Branch: `main`
 - Push realizado para `origin/main`.
+
+## Reavaliação após persistência do erro
+
+- A captura enviada pelo usuário ainda mostra `inaccessible_media`, zero afirmações e zero fontes, em cerca de três segundos.
+- A alteração original não mudou o namespace `post-text-v1` do cache em `server/verify.js`. Assim, uma resposta anterior podia ser devolvida antes da nova extração.
+- Correção: o namespace passou a `post-linked-content-v2`, separando resultados antigos das novas execuções. Isso depende de implantar a versão atual do servidor.
+- A captura não mostra `cached`, `cachedFrom`, versão implantada ou tentativas de mídia. Portanto, cache antigo é uma causa possível comprovada pelo código, não uma identificação conclusiva da execução capturada.
+- O resultado local `checked/unproven` foi observado em uma execução; outra execução durante o desenvolvimento retornou `insufficient_input`. O teste não provou estabilidade do julgamento nem correção em produção.
+- A ausência de fontes não deve ser mascarada atribuindo um veredito positivo. É necessário distinguir falha de extração, conteúdo parcial e insuficiência de evidência.
+- Verificação desta reavaliação: um smoke com `setCached/getCached` confirmou que a entrada antiga continua no namespace antigo, mas não é recuperada pelo novo; uma entrada nova é recuperada normalmente.
+- Extração real desta reavaliação: `fetchMediaContext` para o URL da Folha retornou `ok: true`, `oembed:ok` e `linked:ok:t.co`, com título, descrição e trecho. Isso comprova extração local, não implantação nem julgamento em produção.

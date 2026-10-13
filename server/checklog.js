@@ -1,4 +1,4 @@
-// Log estruturado de checagens — 1 JSON por iteração no Vercel Blob.
+// Log estruturado de checagens — 1 JSON por iteração no Vercel Blob (store privada).
 // Sem BLOB_READ_WRITE_TOKEN: cai para console.log (funciona em dev).
 // Cada registro: id, timestamp, input (truncado), fases com tempos, modelo,
 // veredito/score, tentativas de mídia, erros. Sem conteúdo integral de
@@ -48,19 +48,21 @@ export async function saveCheckLog(entry) {
   }
   try {
     const { put, list, del } = await blob();
+    const tok = blobToken();
     const key = `iev-logs/${record.id}.json`;
     await put(key, JSON.stringify(record, null, 1), {
-      access: "public",
+      access: "private",
       contentType: "application/json",
-      token: blobToken(),
+      token: tok,
+      allowOverwrite: true,
     });
     // Índice cronológico (mais novos primeiro), podado em MAX_INDEX.
     let index = [];
     try {
-      const found = await list({ prefix: INDEX_KEY, token: blobToken() });
+      const found = await list({ prefix: INDEX_KEY, token: tok });
       const item = found.blobs.find((b) => b.pathname === INDEX_KEY);
       if (item) {
-        const res = await fetch(item.url);
+        const res = await fetch(item.url, { headers: { Authorization: `Bearer ${tok}` } });
         if (res.ok) index = (await res.json()) ?? [];
       }
     } catch { /* índice novo */ }
@@ -79,19 +81,20 @@ export async function saveCheckLog(entry) {
     // Remove JSONs que caíram do índice para não acumular lixo.
     const keep = new Set(index.map((e) => e.id));
     try {
-      const all = await list({ prefix: "iev-logs/", token: blobToken() });
+      const all = await list({ prefix: "iev-logs/", token: tok });
       const stale = all.blobs
         .map((b) => b.pathname)
         .filter((p) => p.startsWith("iev-logs/") && p.endsWith(".json") && p !== INDEX_KEY)
         .filter((p) => !keep.has(p.slice("iev-logs/".length, -".json".length)));
       for (const p of stale.slice(0, 20)) {
-        await del(p, { token: blobToken() }).catch(() => {});
+        await del(p, { token: tok }).catch(() => {});
       }
     } catch { /* limpeza best-effort */ }
     await put(INDEX_KEY, JSON.stringify(index), {
-      access: "public",
+      access: "private",
       contentType: "application/json",
-      token: blobToken(),
+      token: tok,
+      allowOverwrite: true,
     });
     return record.id;
   } catch (err) {
@@ -103,11 +106,12 @@ export async function saveCheckLog(entry) {
 export async function listCheckLogs() {
   if (!logEnabled()) return { enabled: false, items: [] };
   try {
+    const tok = blobToken();
     const { list } = await blob();
-    const found = await list({ prefix: INDEX_KEY, token: blobToken() });
+    const found = await list({ prefix: INDEX_KEY, token: tok });
     const item = found.blobs.find((b) => b.pathname === INDEX_KEY);
     if (!item) return { enabled: true, items: [] };
-    const res = await fetch(item.url);
+    const res = await fetch(item.url, { headers: { Authorization: `Bearer ${tok}` } });
     if (!res.ok) return { enabled: true, items: [] };
     return { enabled: true, items: (await res.json()) ?? [] };
   } catch {
@@ -119,11 +123,12 @@ export async function getCheckLog(id) {
   if (!logEnabled()) return null;
   if (!/^[a-z0-9-]+$/i.test(id)) return null;
   try {
+    const tok = blobToken();
     const { list } = await blob();
-    const found = await list({ prefix: `iev-logs/${id}.json`, token: blobToken() });
+    const found = await list({ prefix: `iev-logs/${id}.json`, token: tok });
     const item = found.blobs.find((b) => b.pathname === `iev-logs/${id}.json`);
     if (!item) return null;
-    const res = await fetch(item.url);
+    const res = await fetch(item.url, { headers: { Authorization: `Bearer ${tok}` } });
     if (!res.ok) return null;
     return await res.json();
   } catch {

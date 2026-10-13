@@ -97,6 +97,18 @@ export default function ResultCard({ result, showToast, titleId, onShareCard }) 
   const verdict = VERDICTS[result.verdict];
   const origin = result.origin;
   const [imgOk, setImgOk] = useState(true);
+  const hasVerdict = Boolean(verdict) && result.score != null;
+  const shareLabel = hasVerdict
+    ? `nota ${result.score}/100 (${verdict.label.toLowerCase()})`
+    : `${NO_VERDICT_LABEL[result.outcome] ?? "Sem veredito"} — sem nota ou conclusão factual`;
+  const shareText = [
+    `isso é verdade? — ${result.title || origin?.title || "Resultado da checagem"}`,
+    shareLabel,
+    result.summary,
+    origin?.url && `Conteúdo original: ${origin.url}`,
+    `Confira você também: ${location.origin}${location.pathname}`,
+  ].filter(Boolean).join("\n\n");
+  const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
 
   if (!verdict || result.score == null) {
     return (
@@ -116,6 +128,9 @@ export default function ResultCard({ result, showToast, titleId, onShareCard }) 
         <EvidenceNote result={result} />
         {result.origin?.url && <a href={result.origin.url} target="_blank" rel="noreferrer">Abrir conteúdo original ↗</a>}
         <div className="result-actions">
+          <a className="btn" href={whatsappUrl} target="_blank" rel="noopener noreferrer">
+            Compartilhar no WhatsApp
+          </a>
           <a className="btn ghost" href={`/correcoes.html?checkId=${encodeURIComponent(result.id)}`}>
             Contestar este resultado
           </a>
@@ -127,10 +142,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard }) 
  
 
   function share() {
-    copyText(
-      `🔍 ${result.title} — nota ${result.score}/100 (${verdict.label.toLowerCase()}).\n\nViu algo suspeito? Confira você também em ${location.origin}${location.pathname}`,
-      showToast,
-    );
+    copyText(shareText, showToast);
   }
 
   return (
@@ -288,6 +300,9 @@ export default function ResultCard({ result, showToast, titleId, onShareCard }) 
         <button className="btn" onClick={share}>
           Copiar texto
         </button>
+        <a className="btn" href={whatsappUrl} target="_blank" rel="noopener noreferrer">
+          Compartilhar no WhatsApp
+        </a>
         <a className="btn ghost" href={`/correcoes.html?checkId=${encodeURIComponent(result.id)}`}>
           Contestar este resultado
         </a>

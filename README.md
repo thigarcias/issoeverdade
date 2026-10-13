@@ -106,6 +106,11 @@ assinatura de arquivo). Resultados recentes ficam em `localStorage` (até 20) no
 navegador. No servidor, logs e cache só são duráveis com Blob privado
 configurado; limites e lacunas estão em [docs/privacidade-dados-ia.md](docs/privacidade-dados-ia.md).
 
+O card do resultado oferece **Compartilhar no WhatsApp**: abre o WhatsApp com
+título, nota/veredito quando disponíveis, resumo, URL original quando presente e
+link do site. Resultados sem veredito mantêm essa limitação na mensagem. O envio
+e a escolha do destinatário ficam a cargo do usuário; o botão não envia o PNG.
+
 Posts do X têm seu texto extraído pelo oEmbed oficial antes das tentativas de
 metadados via downloader. Se áudio e visão não estiverem disponíveis, mas houver
 texto do post, a checagem se limita às afirmações explícitas nesse texto e mostra

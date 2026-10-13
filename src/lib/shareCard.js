@@ -1,16 +1,16 @@
 // Gera card PNG de compartilhamento (1080×1350) via Canvas 2D.
-// Identidade: creme #F2ECDC, tinta #1A140C, vermelho #D9341F, serifada.
+// Design escuro estilo Spotify Wrapped, na identidade (tinta + veredito + creme).
 // Zero dependências — roda 100% no browser.
 
 import { CLAIM_STATUS, VERDICTS } from "../data/constants.js";
 
 const W = 1080;
 const H = 1350;
-const BG = "#F2ECDC";
 const INK = "#1A140C";
-const ACCENT = "#D9341F";
-const FG2 = "#453F33";
-const FG3 = "#5F5849";
+const CREAM = "#F2ECDC";
+const CREAM_DIM = "#B9B09A";
+const SERIF = "Faustina, Georgia, serif";
+const SANS = "Geist, 'Helvetica Neue', Arial, sans-serif";
 
 function rr(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -41,128 +41,151 @@ function wrap(ctx, text, maxW) {
 
 const CLAIM_ICON = { true: "✓", false: "✕", unproven: "?", context: "◐" };
 
+async function ensureFonts() {
+  try {
+    await Promise.all([
+      document.fonts.load('600 100px Faustina'),
+      document.fonts.load('400 40px Faustina'),
+      document.fonts.load('600 40px Geist'),
+      document.fonts.load('500 32px Geist'),
+    ]);
+    await document.fonts.ready;
+  } catch { /* fallback serif/sans */ }
+}
+
 /**
  * @param {object} result resultado normalizado (api.js)
  * @returns {Promise<Blob>} PNG
  */
 export async function renderShareCard(result) {
-  try {
-    await document.fonts.load('600 200px Faustina, Georgia, serif');
-    await document.fonts.load('500 40px Geist, Arial, sans-serif');
-  } catch { /* fonte fallback */ }
+  await ensureFonts();
 
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = H;
   const ctx = canvas.getContext("2d");
   const verdict = VERDICTS[result.verdict] ?? VERDICTS.unproven;
+  const claims = (result.claims ?? []).slice(0, 3);
+  const sources = (result.sources ?? []).filter((s) => s.url && s.url !== "#").slice(0, 3);
 
-  // Fundo + moldura
-  ctx.fillStyle = BG;
+  // Fundo tinta + brilho radial na cor do veredito
+  ctx.fillStyle = INK;
   ctx.fillRect(0, 0, W, H);
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 10;
-  ctx.strokeRect(24, 24, W - 48, H - 48);
-  // Faixa vermelha fina no topo
-  ctx.fillStyle = ACCENT;
-  ctx.fillRect(24, 24, W - 48, 14);
+  const glow = ctx.createRadialGradient(W / 2, 420, 60, W / 2, 420, 620);
+  glow.addColorStop(0, `${verdict.color}55`);
+  glow.addColorStop(1, "#1A140C00");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, H);
 
-  let y = 130;
+  // Faixa superior na cor do veredito
+  ctx.fillStyle = verdict.color;
+  ctx.fillRect(0, 0, W, 18);
+
+  ctx.textAlign = "center";
 
   // Marca
-  ctx.fillStyle = INK;
-  ctx.font = "400 44px Faustina, Georgia, serif";
-  ctx.textAlign = "center";
+  let y = 110;
+  ctx.fillStyle = CREAM;
+  ctx.font = `400 46px ${SERIF}`;
   ctx.fillText("isso é verdade?", W / 2, y);
-  ctx.fillStyle = ACCENT;
-  const markW = ctx.measureText("isso é verdade?").width;
-  ctx.fillText("?", W / 2 + markW / 2 - 12, y);
-  y += 44;
-  ctx.fillStyle = FG3;
-  ctx.font = "600 24px Geist, Arial, sans-serif";
-  ctx.fillText("E L E I Ç Õ E S  2 0 2 6  ·  2 º  T U R N O", W / 2, y);
-  y += 90;
+  y += 40;
+  ctx.fillStyle = CREAM_DIM;
+  ctx.font = `600 22px ${SANS}`;
+  ctx.fillText("ELEIÇÕES 2026 · SEGUNDO TURNO", W / 2, y);
 
-  // Nota gigante
+  // Anel de score
+  const cx = W / 2;
+  const cy = 470;
+  const R = 150;
+  ctx.lineWidth = 26;
+  ctx.lineCap = "round";
+  ctx.strokeStyle = "#3A332A";
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = verdict.color;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * result.score) / 100);
+  ctx.stroke();
+  // Nota dentro do anel
+  ctx.fillStyle = CREAM;
+  ctx.font = `600 130px ${SERIF}`;
+  ctx.fillText(String(result.score), cx, cy + 48);
+  ctx.fillStyle = CREAM_DIM;
+  ctx.font = `500 24px ${SANS}`;
+  ctx.fillText("/ 100", cx, cy + 88);
+
+  // Veredito em destaque
+  y = cy + 220;
   ctx.fillStyle = verdict.color;
-  ctx.font = "600 230px Faustina, Georgia, serif";
-  ctx.fillText(String(result.score), W / 2, y + 170);
-  y += 210;
-  ctx.fillStyle = FG3;
-  ctx.font = "500 34px Geist, Arial, sans-serif";
-  ctx.fillText("NOTA DE VERDADE · 0–100", W / 2, y);
-  y += 80;
+  ctx.font = `600 64px ${SANS}`;
+  ctx.fillText(verdict.label.toUpperCase(), W / 2, y);
 
-  // Chip veredito
-  ctx.font = "600 40px Geist, Arial, sans-serif";
-  const label = verdict.label.toUpperCase();
-  const chipW = ctx.measureText(label).width + 90;
-  ctx.fillStyle = verdict.color;
-  rr(ctx, W / 2 - chipW / 2, y, chipW, 76, 38);
-  ctx.fill();
-  ctx.fillStyle = "#FFF6E9";
-  ctx.fillText(label, W / 2, y + 51);
-  y += 140;
-
-  // Título do conteúdo
-  ctx.fillStyle = INK;
-  ctx.font = "400 38px Faustina, Georgia, serif";
-  const titleLines = wrap(ctx, result.title, W - 200).slice(0, 3);
+  // Título do conteúdo (entre aspas, itálico)
+  y += 70;
+  ctx.fillStyle = CREAM;
+  ctx.font = `italic 400 36px ${SERIF}`;
+  const cleanTitle = result.title.replace(/^\[MOCK\]\s*/, "");
+  const titleLines = wrap(ctx, `“${cleanTitle}”`, W - 240).slice(0, 3);
   for (const line of titleLines) {
     ctx.fillText(line, W / 2, y);
     y += 48;
   }
-  y += 20;
+  y += 30;
 
-  // Claims (até 4)
+  // Claims com barra lateral colorida
   ctx.textAlign = "left";
-  const claims = (result.claims ?? []).slice(0, 4);
   for (const c of claims) {
     const st = CLAIM_STATUS[c.status] ?? CLAIM_STATUS.unproven;
-    ctx.font = "500 30px Geist, Arial, sans-serif";
-    const badge = `${CLAIM_ICON[c.status] ?? "?"} ${st.label} · ${c.score}`;
-    const bw = ctx.measureText(badge).width + 36;
+    const text = c.text.replace(/^["“]|["”]$/g, "");
+    ctx.font = `400 29px ${SANS}`;
+    const clines = wrap(ctx, text, W - 320).slice(0, 2);
+    const blockH = 24 + clines.length * 40 + 20;
+    // barra lateral
     ctx.fillStyle = st.color;
-    rr(ctx, 100, y, bw, 48, 12);
+    rr(ctx, 110, y, 10, blockH, 5);
     ctx.fill();
-    ctx.fillStyle = "#FFF6E9";
-    ctx.fillText(badge, 118, y + 33);
-    y += 62;
-    ctx.fillStyle = FG2;
-    ctx.font = "400 30px Geist, Arial, sans-serif";
-    const clines = wrap(ctx, c.text.replace(/^["“]|["”]$/g, ""), W - 200).slice(0, 2);
-    for (const line of clines) {
-      ctx.fillText(line, 100, y);
-      y += 40;
-    }
-    y += 18;
+    // selo
+    ctx.font = `600 24px ${SANS}`;
+    const badge = `${CLAIM_ICON[c.status] ?? "?"} ${st.label.toUpperCase()} · ${c.score}`;
+    ctx.fillStyle = st.color;
+    ctx.fillText(badge, 145, y + 28);
+    // texto
+    ctx.fillStyle = CREAM;
+    ctx.font = `400 29px ${SANS}`;
+    clines.forEach((line, i) => {
+      ctx.fillText(line, 145, y + 28 + 40 * (i + 1));
+    });
+    y += blockH + 22;
   }
 
   // Fontes
-  const sources = (result.sources ?? []).filter((s) => s.url && s.url !== "#").slice(0, 3);
   if (sources.length > 0) {
-    y += 6;
-    ctx.fillStyle = FG3;
-    ctx.font = "600 24px Geist, Arial, sans-serif";
-    ctx.fillText("FONTES", 100, y);
-    y += 36;
-    ctx.font = "400 26px Geist, Arial, sans-serif";
-    ctx.fillStyle = FG2;
+    y += 4;
+    ctx.fillStyle = CREAM_DIM;
+    ctx.font = `600 22px ${SANS}`;
+    ctx.fillText("FONTES", 110, y);
+    y += 34;
+    ctx.font = `400 26px ${SANS}`;
+    ctx.fillStyle = CREAM;
     for (const s of sources) {
-      const line = `• ${s.outlet}`;
-      ctx.fillText(line.slice(0, 60), 100, y);
+      ctx.fillText(`•  ${String(s.outlet).slice(0, 52)}`, 110, y);
       y += 36;
     }
   }
 
   // Rodapé
   ctx.textAlign = "center";
-  ctx.fillStyle = FG3;
-  ctx.font = "500 26px Geist, Arial, sans-serif";
-  ctx.fillText("Confira a checagem completa:", W / 2, H - 120);
-  ctx.fillStyle = INK;
-  ctx.font = "600 30px Geist, Arial, sans-serif";
-  ctx.fillText(location.host, W / 2, H - 78);
+  ctx.fillStyle = CREAM_DIM;
+  ctx.font = `500 24px ${SANS}`;
+  ctx.fillText("Confira a checagem completa em", W / 2, H - 100);
+  ctx.fillStyle = CREAM;
+  ctx.font = `600 34px ${SANS}`;
+  ctx.fillText(location.host, W / 2, H - 58);
+
+  // Faixa inferior na cor do veredito
+  ctx.fillStyle = verdict.color;
+  ctx.fillRect(0, H - 18, W, 18);
 
   return new Promise((resolve, reject) => {
     canvas.toBlob(

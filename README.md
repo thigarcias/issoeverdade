@@ -1,7 +1,7 @@
 # isso é verdade?
 
 Verificador automático de afirmações públicas no Brasil. Envie link, texto,
-imagem ou vídeo e receba um resultado com afirmações, evidências vinculadas,
+imagem ou vídeo/áudio e receba um resultado com afirmações, evidências vinculadas,
 limites explícitos e, quando houver base, uma nota 0–100. A nota **não** é
 probabilidade calibrada e o sistema pode não atribuir veredito.
 
@@ -23,7 +23,7 @@ OPENAI_API_KEY=...            # julgamento/final/visão, transcrição e modera�
 OPENCODE_API=...              # provedor alternativo (OpenCode Go)
 ADMIN_SECRET=...              # habilita /admin
 BLOB_READ_WRITE_TOKEN=...     # opcional: cache/logs/correções/config privados na Vercel Blob
-MEDIA_WORKER_URL=...          # opcional: worker de extração de áudio/frames
+MEDIA_WORKER_URL=...          # worker remoto para mídia; necessário em serverless
 MEDIA_WORKER_SECRET=...
 UPSTASH_REDIS_REST_URL=...    # opcional: limites compartilhados (obrigatório em produção)
 UPSTASH_REDIS_REST_TOKEN=...
@@ -101,24 +101,26 @@ Variáveis opcionais de compatibilidade: `IEV_<ETAPA>` (JSON por etapa) e
 
 ## Dados e privacidade
 
-Uploads de imagem/vídeo enviam os bytes reais (limite de 3 MiB, validação por
-assinatura de arquivo). Resultados recentes ficam em `localStorage` (até 20) no
-navegador. No servidor, logs e cache só são duráveis com Blob privado
-configurado; limites e lacunas estão em [docs/privacidade-dados-ia.md](docs/privacidade-dados-ia.md).
+Uploads de imagem e vídeo/áudio enviam bytes reais (limite de 3 MiB, validação
+por assinatura). Sem worker, desenvolvimento usa `ffprobe`/`ffmpeg` locais;
+serverless sem worker declara indisponibilidade. Worker configurado não tem
+fallback silencioso se falhar. O navegador guarda até 20 resultados em
+`localStorage`; logs/cache no servidor dependem do Blob privado ([privacidade](docs/privacidade-dados-ia.md)).
 
 O card do resultado oferece **Compartilhar no WhatsApp**: abre o WhatsApp com
 título, nota/veredito quando disponíveis, resumo, URL original quando presente e
 link do site. Resultados sem veredito mantêm essa limitação na mensagem. O envio
 e a escolha do destinatário ficam a cargo do usuário; o botão não envia o PNG.
 
-Posts do X têm seu texto extraído pelo oEmbed oficial antes das tentativas de
-metadados via downloader. Se áudio e visão não estiverem disponíveis, mas houver
-texto do post, a checagem se limita às afirmações explícitas nesse texto e mostra
-o aviso de que os anexos não foram examinados. Sem conteúdo acessível, mantém
-`inaccessible_media`, sem nota/veredito. O namespace do cache inclui a revisão
-de extração `article-content-v3` para não reaproveitar abstenções anteriores.
-O cronômetro da interface é inicializado a cada envio e mede a duração daquela
-checagem, não o tempo desde a época Unix.
+Links sociais usam texto disponível em oEmbed, worker, yt-dlp ou OpenGraph e
+seguem até três links documentais presentes nesse texto, dentro de limites. Texto
+do post e anexos são cobertos separadamente; metadados não são transcrição.
+Áudio sem vídeo não exige frames; vídeo só é analisado após validar duração e
+trilhas, com transcrição/OCR parciais. Sem conteúdo lido, não há score/veredito.
+Links diretos são encaminhados por modalidade: PDF textual ao `unpdf`, JPEG/PNG/WebP
+à moderação e visão, áudio/vídeo ao processador audiovisual. A revisão de extração
+`article-content-v4` invalida cache anterior sem alterar `fact-check-5`.
+O cronômetro da interface mede a duração da checagem iniciada, não o tempo desde a época Unix.
 
 Links comuns de notícias passam por extração HTML pública com limites de rede,
 antes do julgamento com busca web. A cobertura distingue corpo estruturado
@@ -129,6 +131,11 @@ alegações identificáveis, sem fingir leitura integral. `needs_media` legado n
 encerra esse caminho: há pesquisa antes da abstenção. Só a impossibilidade de
 identificar alegações justifica `insufficient_input`; ausência de provas para
 uma alegação identificada mantém `unproven`, sem forçar verdadeiro/falso.
+
+O classificador compartilhado distingue HTML, post social, PDF, imagem, áudio e
+vídeo; MIME e assinatura refinam o tipo quando há amostra disponível. Links de
+Spotify são candidatos a áudio apenas para episódios. Login-wall, paywall,
+captcha, streams protegidos e conteúdo removido continuam limitações externas.
 
 ## Metodologia e avaliação
 

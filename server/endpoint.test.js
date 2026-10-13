@@ -32,6 +32,43 @@ test("endpoint recusa método, tipo, entrada vazia e URL interna", async () => {
   assert.equal(interna.body.error, "private_url");
 });
 
+test("link rejeita entradas não HTTP antes de reservar vaga ou consumir orçamento", async () => {
+  const guard = guardWith();
+  let rateCalls = 0;
+  let slotCalls = 0;
+  let chargeCalls = 0;
+  const rateLimit = guard.rateLimit.bind(guard);
+  guard.rateLimit = async (...args) => {
+    rateCalls += 1;
+    return rateLimit(...args);
+  };
+  guard.acquireSlot = async () => {
+    slotCalls += 1;
+    return { release: async () => {} };
+  };
+  guard.chargeUnits = async () => {
+    chargeCalls += 1;
+  };
+
+  const cases = [
+    ["ftp://example.com", "invalid_url"],
+    ["javascript:alert(1)", "invalid_url"],
+    ["data:text/plain,hello", "invalid_url"],
+    ["www.example.com", "invalid_url"],
+    ["example.com", "invalid_url"],
+    ["://x", "invalid_url"],
+    ["   \t\n ", "empty_input"],
+  ];
+  for (const [text, error] of cases) {
+    const out = await handleVerifyRequest(post({ kind: "link", text }, { guard }));
+    assert.equal(out.status, 400);
+    assert.equal(out.body.error, error);
+  }
+  assert.equal(rateCalls, cases.length);
+  assert.equal(slotCalls, 0);
+  assert.equal(chargeCalls, 0);
+});
+
 test("limite de taxa por origem responde 429 com Retry-After", async () => {
   const guard = guardWith({ IEV_RATE_LIMIT_PER_WINDOW: "1" });
   const primeira = await handleVerifyRequest(post({ kind: "text", text: "escreva um poema sobre o mar" }, { guard }));
@@ -50,6 +87,7 @@ test("capacidade esgotada responde 429 antes de executar a checagem", async () =
   const out = await handleVerifyRequest(post({ kind: "text", text: "afirmação verificável" }, { guard }));
   assert.equal(out.status, 429);
   assert.equal(out.body.error, "capacity_full");
+  assert.ok(Number(out.headers["Retry-After"]) >= 1 && Number(out.headers["Retry-After"]) <= 30);
   await slot.release();
 });
 

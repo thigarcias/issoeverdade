@@ -152,6 +152,35 @@ test("vagas de concorrência usam lease e liberam na saída", async () => {
   });
 });
 
+test("sugestão de capacidade fica entre 1 e 30 segundos e vaga liberada é reutilizada", async () => {
+  const guard = createGuard(limitsConfig({
+    IEV_LIMITS_MODE: "memory",
+    IEV_MAX_CONCURRENT_CHECKS: "1",
+    IEV_SLOT_LEASE_SECONDS: "120",
+  }));
+  const held = await guard.acquireSlot();
+  let retryAfterSec;
+  await assert.rejects(
+    () => guard.acquireSlot({ waitMs: 5, pollMs: 1 }),
+    (error) => {
+      assert.ok(error instanceof LimitsExceeded);
+      assert.equal(error.code, "capacity_full");
+      retryAfterSec = error.retryAfterSec;
+      assert.ok(retryAfterSec >= 1 && retryAfterSec <= 30);
+      return true;
+    },
+  );
+  assert.equal(retryAfterSec, 30);
+  await held.release();
+  const reused = await guard.acquireSlot({ waitMs: 5, pollMs: 1 });
+  assert.equal(reused.index, held.index);
+  await assert.rejects(
+    () => guard.acquireSlot({ waitMs: 5, pollMs: 1 }),
+    (error) => error.code === "capacity_full",
+  );
+  await reused.release();
+});
+
 test("lease expira e libera a vaga mesmo sem release explícito", async () => {
   const guard = createGuard(limitsConfig({ IEV_LIMITS_MODE: "memory", IEV_MAX_CONCURRENT_CHECKS: "1", IEV_SLOT_LEASE_SECONDS: "1", IEV_SLOT_WAIT_MS: "100" }));
   const slot = await guard.acquireSlot({ waitMs: 50 });

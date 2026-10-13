@@ -98,6 +98,8 @@ export async function fetchDocument(url, { config = evidenceConfig(), budget = n
 
 /** Fontes que interessam ao dossiê: as usadas por claims confirmados/refutados primeiro. */
 export function prioritizeSources(sources = [], claims = []) {
+  sources ??= [];
+  claims ??= [];
   const weight = new Map();
   for (const claim of claims) {
     for (const evidence of Array.isArray(claim?.evidence) ? claim.evidence : []) {
@@ -130,6 +132,8 @@ async function inPool(items, limit, worker) {
  * @returns {{documents:Array, citations:Array, summary:object}}
  */
 export async function collectEvidence({ sources = [], claims = [], config = evidenceConfig(), fetchImpl = fetchDocument } = {}) {
+  sources ??= [];
+  claims ??= [];
   const citations = [];
   const documents = [];
   if (!config.enabled) return { documents, citations, summary: { enabled: false, documents: 0, citations: 0, located: 0, missing: 0 } };
@@ -215,12 +219,15 @@ export const EVIDENCE_REVIEW_INSTRUCTIONS = "Você revisa a fidelidade de citaç
 
 /** Itens que a revisão por modelo consegue avaliar (documento obtido + trecho). */
 export function reviewableCitations(citations = [], config = evidenceConfig()) {
+  citations ??= [];
   return citations
     .filter((citation) => citation.excerpt && citation.quote)
     .slice(0, config.maxReviewItems);
 }
 
 export function buildReviewInput({ claims = [], citations = [], config = evidenceConfig() } = {}) {
+  claims ??= [];
+  citations ??= [];
   const items = reviewableCitations(citations, config).map((citation, index) => ({
     id: index + 1,
     claim: clip(claims[citation.claimIndex]?.text ?? "", 400),
@@ -237,6 +244,8 @@ export function buildReviewInput({ claims = [], citations = [], config = evidenc
  * sobrevive à verificação, registra limitações e devolve correções textuais.
  */
 export function applyReview({ claims = [], citations = [], review = null, config = evidenceConfig() } = {}) {
+  claims ??= [];
+  citations ??= [];
   const corrections = [];
   const byId = new Map();
   for (const item of Array.isArray(review?.items) ? review.items : []) {

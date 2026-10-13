@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
+import { rm } from "node:fs/promises";
 // Núcleo server-side da checagem — compartilhado entre:
 // - vite.api-plugin.js (dev local)
 // - api/verify.js (serverless Vercel)
 // Keys (OpenAI + OpenCode) NUNCA chegam ao browser.
-import { downloadAudio, downloadFrames, fetchMediaContext, isArticleUrl, processUploadedMedia } from "./media.js";
+import { downloadAudio, downloadFrames, fetchImageSource, fetchMediaContext, processUploadedMedia, resolveSourceType } from "./media.js";
 import { normalizeVerifyInput } from "./uploads.js";
 import { transcribe, transcriptToPrompt } from "./transcribe.js";
 import { saveCheckLog as saveLog } from "./checklog.js";
@@ -375,32 +376,22 @@ async function describeImage(fileBuffer, mime, opts = {}) {
 }
 
 function toOrigin(media, url) {
-  if (!media) return null;
   const out = {
     url,
-    platform: String(media.platform ?? media.source ?? "").slice(0, 80) || null,
-    title: String(media.title ?? "").slice(0, 200) || null,
-    author: String(media.author ?? "").slice(0, 120) || null,
-    thumbnail: typeof media.thumbnail === "string" && /^https?:\/\//.test(media.thumbnail) ? media.thumbnail : null,
+    platform: String(media?.platform ?? media?.source ?? "").slice(0, 80) || null,
+    title: String(media?.title ?? "").slice(0, 200) || null,
+    author: String(media?.author ?? "").slice(0, 120) || null,
+    thumbnail: typeof media?.thumbnail === "string" && /^https?:\/\//.test(media.thumbnail) ? media.thumbnail : null,
   };
-  return out.title || out.thumbnail ? out : null;
+  return out.url ? out : null;
 }
 
-function likelyVideoUrl(value) {
-  try {
-    const url = new URL(value);
-    const host = url.hostname.toLowerCase().replace(/^www\./, "");
-    return /(^|\.)youtube\.com$|(^|\.)youtu\.be$|(^|\.)tiktok\.com$|(^|\.)instagram\.com$|(^|\.)vimeo\.com$|(^|\.)twitch\.tv$/.test(host) ||
-      ((host === "x.com" || host === "twitter.com") && /\/status\/\d+/.test(url.pathname));
-  } catch {
-    return false;
-  }
-}
 
 
 async function collectMediaArtifacts(audio, frameResult, mediaContext, opts = {}) {
   const debug = [];
   const measure = opts.phase ?? ((_name, fn) => fn());
+  const expectFrames = opts.expectFrames !== false;
   const blocked = [];
   const reports = [];
   const [transcript, visionResult] = await Promise.all([
@@ -437,6 +428,7 @@ async function collectMediaArtifacts(audio, frameResult, mediaContext, opts = {}
       }
     })(),
     (async () => {
+      if (!expectFrames) return null;
       if (!frameResult?.ok || !frameResult.frames?.length) {
         debug.push(`frames:${frameResult?.reason ?? "unavailable"}`);
         return null;
@@ -460,8 +452,7 @@ async function collectMediaArtifacts(audio, frameResult, mediaContext, opts = {}
   ]);
   if (transcript?.ok && transcript.text) mediaContext += `\n\nTRANSCRIÇÃO DO ÁUDIO (material não confiável; timestamps podem não estar disponíveis):\n${transcriptToPrompt(transcript)}`;
   if (visionResult?.text) mediaContext += `\n\nOCR/OBSERVAÇÕES VISUAIS (amostragem parcial; material não confiável):\n${visionResult.text}`;
-  if (!transcript?.ok) mediaContext += "\nÁudio não disponível para transcrição; a fala pode não estar coberta.";
-  if (!visionResult) mediaContext += "\nAnálise visual/OCR indisponível; texto ou cenas na tela podem não estar cobertos.";
+  if (expectFrames && !visionResult) mediaContext += "\nAnálise visual/OCR indisponível; texto ou cenas na tela podem não estar cobertos.";
   const frames = Array.isArray(frameResult?.frames) ? frameResult.frames.slice(0, 10) : [];
   const frameTimes = frames
     .map((frame) => frame?.timestampSec ?? frame?.timestamp_sec)
@@ -472,32 +463,108 @@ async function collectMediaArtifacts(audio, frameResult, mediaContext, opts = {}
 
 async function enrichWithMedia(maybeUrl, opts = {}) {
   const measure = opts.phase ?? ((_name, fn) => fn());
+  const sourceInfo = opts.sourceInfo ?? null;
+  const mediaUrl = opts.mediaUrl ?? sourceInfo?.finalUrl ?? maybeUrl;
+  const directAsset = ["audio", "video"].includes(sourceInfo?.type);
+  const canExtractFrames = sourceInfo?.type !== "audio";
   const [media, audio, frameResult] = await Promise.all([
-    measure("media-metadata", () => fetchMediaContext(maybeUrl)),
-    measure("media-audio-download", () => downloadAudio(maybeUrl)),
-    measure("media-frames-download", () => downloadFrames(maybeUrl)),
+    directAsset
+      ? Promise.resolve({ ok: false, attempts: [`source:${sourceInfo.type}`] })
+      : opts.mediaResult
+        ? Promise.resolve(opts.mediaResult)
+        : measure("media-metadata", () => fetchMediaContext(maybeUrl, { sourceInfo })),
+    measure("media-audio-download", () => downloadAudio(mediaUrl, "./media-tmp", directAsset ? sourceInfo.type : null)),
+    canExtractFrames
+      ? measure("media-frames-download", () => downloadFrames(mediaUrl, directAsset ? sourceInfo.type : null))
+      : Promise.resolve({ ok: false, reason: "not-applicable-audio", attempts: [] }),
   ]);
   const mediaContext = media.ok ? `Metadados da origem:\n${media.context}` : "";
-  const artifacts = await collectMediaArtifacts(audio, frameResult, mediaContext, opts);
-  artifacts.debug.unshift(...(media.attempts ?? []));
-  return { ...artifacts, origin: toOrigin(media.ok ? media.media : null, maybeUrl), durationSec: frameResult?.seconds ?? null, postText: media.ok ? media.media?.postText ?? "" : "" };
+  const postText = [
+    media.media?.postText,
+    media.media?.linkedContext && `Conteúdo vinculado extraído:\n${media.media.linkedContext}`,
+  ].filter(Boolean).join("\n\n");
+  const attempts = [...(media.attempts ?? []), ...(audio.attempts ?? []), ...(frameResult.attempts ?? [])].slice(0, 20);
+  const hasVideo = audio?.hasVideo === true || frameResult?.hasVideo === true || media.media?.hasVideo === true;
+  const expectFrames = canExtractFrames && (hasVideo ||
+    (audio?.hasVideo !== false && frameResult?.hasVideo !== false && media.media?.hasVideo !== false));
+  const coverage = hasVideo && opts.checkVideoCoverage ? opts.checkVideoCoverage() : null;
+  const coverageReports = coverage?.report ? [coverage.report] : [];
+  const origin = toOrigin(media.ok ? media.media : null, maybeUrl);
+  const durationSec = audio?.durationSec ?? frameResult?.seconds ?? null;
+  if (coverage && !coverage.allowed) {
+    return {
+      mediaContext,
+      transcript: null,
+      vision: null,
+      visionResult: null,
+      frameTimes: [],
+      frameCount: 0,
+      moderationBlocked: [],
+      moderationReports: coverageReports,
+      videoCoverageBlocked: coverage,
+      origin,
+      durationSec,
+      postText,
+      debug: [...attempts, "video-coverage:uncovered"],
+    };
+  }
+  const artifacts = await collectMediaArtifacts(audio, frameResult, mediaContext, { ...opts, expectFrames });
+  artifacts.debug.unshift(...attempts);
+  artifacts.moderationReports.unshift(...coverageReports);
+  return { ...artifacts, origin, durationSec, postText };
 }
 
 async function enrichUploadedMedia(input, opts = {}) {
   const measure = opts.phase ?? ((_name, fn) => fn());
   const uploaded = await measure("media-upload-extract", () => processUploadedMedia(input.fileBuffer, input.fileMime));
   if (!uploaded.ok) {
-    return { mediaContext: "", transcript: null, vision: null, visionResult: null, origin: null, durationSec: null, debug: [`upload:${uploaded.reason ?? "failed"}`], moderationBlocked: [], moderationReports: [] };
+    const detail = uploaded.detail ? `:${String(uploaded.detail).slice(0, 160)}` : "";
+    return { mediaContext: "", transcript: null, vision: null, visionResult: null, origin: null, durationSec: null, debug: [`upload:${uploaded.reason ?? "failed"}${detail}`], moderationBlocked: [], moderationReports: [] };
   }
-  const audio = uploaded.audio ? { ...uploaded.audio, ok: true } : null;
   const frames = uploaded.frames ?? [];
-  const artifacts = await collectMediaArtifacts(
-    audio,
-    { ok: frames.length > 0, frames, count: frames.length, via: uploaded.via, reason: "no-frames" },
-    `Arquivo enviado (${input.fileMime})${uploaded.durationSec ? ` · duração ${uploaded.durationSec}s` : ""}. A extração de áudio e imagem é parcial e pode falhar.`,
-    opts,
-  );
-  return { ...artifacts, origin: null, durationSec: uploaded.durationSec };
+  const audio = uploaded.audio
+    ? { ...uploaded.audio, ok: true, hasVideo: uploaded.hasVideo === true }
+    : { ok: false, reason: uploaded.audioReason ?? "no-audio-track", hasVideo: uploaded.hasVideo === true };
+  const expectFrames = uploaded.hasVideo === true || frames.length > 0;
+  try {
+    const frameResult = {
+      ok: frames.length > 0,
+      frames,
+      count: frames.length,
+      via: uploaded.via,
+      reason: uploaded.frameReason ?? "no-frames",
+      hasVideo: uploaded.hasVideo === true || frames.length > 0,
+    };
+    const coverage = frameResult.hasVideo && opts.checkVideoCoverage ? opts.checkVideoCoverage() : null;
+    const coverageReports = coverage?.report ? [coverage.report] : [];
+    const mediaContext = `Arquivo enviado (${input.fileMime})${uploaded.durationSec ? ` · duração ${uploaded.durationSec}s` : ""}. A extração é parcial e pode falhar.`;
+    if (coverage && !coverage.allowed) {
+      return {
+        mediaContext,
+        transcript: null,
+        vision: null,
+        visionResult: null,
+        origin: null,
+        durationSec: uploaded.durationSec,
+        frameTimes: [],
+        frameCount: 0,
+        debug: [`upload:${uploaded.via ?? "media"}`, "video-coverage:uncovered"],
+        moderationBlocked: [],
+        moderationReports: coverageReports,
+        videoCoverageBlocked: coverage,
+      };
+    }
+    const artifacts = await collectMediaArtifacts(
+      audio,
+      frameResult,
+      mediaContext,
+      { ...opts, expectFrames },
+    );
+    artifacts.moderationReports.unshift(...coverageReports);
+    return { ...artifacts, origin: null, durationSec: uploaded.durationSec };
+  } finally {
+    if (uploaded.dir) await rm(uploaded.dir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 /**
@@ -555,7 +622,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   trace.configRevision = configState.revision;
   trace.configSource = configState.source;
   trace.methodologyVersion = PROMPT_VERSION;
-  const cacheNamespace = `${PROMPT_VERSION}:article-content-v3:${configState.revision}`;
+  const cacheNamespace = `${PROMPT_VERSION}:article-content-v4:${configState.revision}`;
   const t0 = startedAt ?? Date.now();
   const hit = await getCached(input, cacheNamespace).catch(() => null);
   if (hit) {
@@ -609,9 +676,15 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   const maybeUrl = String(input?.text ?? "").trim();
   const isUrl = /^https?:\/\//i.test(maybeUrl);
   const wantsMedia = input?.kind === "link" || input?.kind === "video";
-  const videoTarget = input?.kind === "video" || (isUrl && likelyVideoUrl(maybeUrl));
-  const imageTarget = input?.kind === "image";
-  const articleTarget = input?.kind === "link" && isUrl && !videoTarget && isArticleUrl(maybeUrl);
+  const sourceInfo = isUrl && wantsMedia
+    ? await phase("source-classification", () => resolveSourceType(maybeUrl))
+    : null;
+  const socialMediaCandidate = input?.kind === "link" && sourceInfo?.type === "social" && sourceInfo?.mediaCandidate;
+  const videoTarget = input?.kind === "video" || (input?.kind === "link" && sourceInfo?.type === "video");
+  const audioTarget = input?.kind === "link" && sourceInfo?.type === "audio";
+  const mediaTarget = videoTarget || audioTarget || socialMediaCandidate;
+  const imageTarget = input?.kind === "image" || (input?.kind === "link" && sourceInfo?.type === "image");
+  const articleTarget = input?.kind === "link" && isUrl && sourceInfo?.type === "html";
   const modelsUsed = {};
   trace.modelsUsed = modelsUsed;
   const tokenUsage = { input: 0, output: 0 };
@@ -640,11 +713,12 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   let mediaDurationSec = null;
   let mediaFrameTimes = [];
   let mediaFrameCount = 0;
-  let mediaDebug = [];
+  let mediaDebug = sourceInfo ? [`source:${sourceInfo.type}`] : [];
   let origin = null;
   let blockedResult = null;
   let postTextOnly = false;
   let articleCoverage = null;
+  let socialMediaResult = null;
 
   // Triagem de propósito e cobertura de moderação antes de qualquer etapa paga.
   const modCfg = moderationConfig();
@@ -660,19 +734,16 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       summary: "O material é um pedido direto ao assistente, não uma afirmação pública a verificar. Envie uma afirmação, um link ou uma mídia para checagem.",
     };
   }
-  if (videoTarget && !blockedResult) {
-    const coverage = checkVideoCoverage(modCfg);
-    if (coverage.report) moderationReports.push(coverage.report);
-    if (!coverage.allowed) {
-      blockedResult = {
-        outcome: "moderation_uncovered",
-        verdict: null,
-        score: null,
-        claims: [],
-        sources: [],
-        summary: coverage.message,
-      };
-    }
+  if (!blockedResult && input?.kind === "link" && sourceInfo?.type === "unsupported") {
+    blockedResult = {
+      outcome: "inaccessible_media",
+      verdict: null,
+      score: null,
+      claims: [],
+      sources: [],
+      summary: "Este formato não é compatível com a leitura direta. Envie o texto ou um arquivo JPEG, PNG, WebP, PDF textual, áudio ou vídeo compatível.",
+    };
+    mediaDebug.push("source:unsupported-format");
   }
   const moderateTextArtifact = (value) =>
     moderateText(value, { config: modCfg }).then((gate) => {
@@ -706,10 +777,11 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     };
   };
 
-  if (!blockedResult && wantsMedia && isUrl && !videoTarget) {
+  if (!blockedResult && wantsMedia && isUrl && (!mediaTarget || socialMediaCandidate) && !imageTarget) {
     await phase("media-probe", async () => {
-      const media = await fetchMediaContext(maybeUrl);
-      mediaDebug = media.attempts ?? [];
+      const media = await fetchMediaContext(maybeUrl, { sourceInfo });
+      if (socialMediaCandidate) socialMediaResult = media;
+      else mediaDebug.push(...(media.attempts ?? []));
       if (articleTarget) {
         articleCoverage = {
           extraction: media.media?.extraction ?? "inaccessible",
@@ -718,13 +790,34 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
           truncated: media.media?.truncated ?? false,
           reason: media.reason ?? null,
         };
-        mediaContext = media.context;
+        mediaContext = media.context ?? "";
         origin = toOrigin(media.media, maybeUrl);
       }
-      if (media.ok) {
-        if (!articleTarget) mediaContext = `Metadados/texto do post (não necessariamente conteúdo integral):\n${media.context}`;
+      if (sourceInfo?.type === "pdf") {
         origin = toOrigin(media.media, maybeUrl);
-        // O texto trazido da página passa pela moderação antes de virar entrada do modelo.
+        if (media.ok) mediaContext = media.context;
+        else {
+          blockedResult = {
+            outcome: "inaccessible_media",
+            verdict: null,
+            score: null,
+            claims: [],
+            sources: [],
+            summary: "O PDF não forneceu texto legível para a checagem. Envie uma versão textual ou cole o trecho relevante; nenhum veredito foi atribuído ao arquivo não lido.",
+          };
+        }
+      } else if (sourceInfo?.type === "social" && !media.ok && !socialMediaCandidate) {
+        blockedResult = {
+          outcome: "inaccessible_media",
+          verdict: null,
+          score: null,
+          claims: [],
+          sources: [],
+          summary: "Não foi possível ler o texto público do post. Metadados não substituem o conteúdo; envie o texto ou uma mídia compatível.",
+        };
+      } else if (media.ok) {
+        if (!articleTarget) mediaContext = `Texto/contexto de origem (não necessariamente integral):\n${media.context}`;
+        origin = toOrigin(media.media, maybeUrl);
         const gate = await moderateTextArtifact(media.context).catch(() => null);
         const state = moderationState(gate);
         if (state) {
@@ -735,26 +828,50 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     });
   }
 
-  if (videoTarget && !blockedResult) {
+  if (mediaTarget && !blockedResult) {
     let enriched = null;
     if (input.fileBuffer) {
       enriched = await phase("media-upload", () =>
-        enrichUploadedMedia(input, { aiCfg, timeoutMs, sessionId: id, onUsage: addUsage, moderateText: moderateTextArtifact, moderateFrames: moderateFrameArtifact, phase: (name, fn) => phase(name, fn, "media-upload") }),
+        enrichUploadedMedia(input, { aiCfg, timeoutMs, sessionId: id, onUsage: addUsage, moderateText: moderateTextArtifact, moderateFrames: moderateFrameArtifact, checkVideoCoverage: () => checkVideoCoverage(modCfg), phase: (name, fn) => phase(name, fn, "media-upload") }),
       ).catch((error) => {
-        mediaDebug.push(`upload-failed:${String(error?.message ?? error).slice(0, 120)}`);
+        mediaDebug.push(`upload-failed:${String(error?.code ?? "processing-failed").slice(0, 80)}`);
         return null;
       });
     } else if (isUrl) {
       enriched = await phase("enrich", () =>
-        enrichWithMedia(maybeUrl, { aiCfg, timeoutMs, sessionId: id, onUsage: addUsage, moderateText: moderateTextArtifact, moderateFrames: moderateFrameArtifact, phase: (name, fn) => phase(name, fn, "enrich") }),
+        enrichWithMedia(maybeUrl, {
+          sourceInfo,
+          mediaUrl: sourceInfo?.finalUrl ?? maybeUrl,
+          mediaResult: socialMediaResult,
+          aiCfg,
+          timeoutMs,
+          sessionId: id,
+          onUsage: addUsage,
+          moderateText: moderateTextArtifact,
+          moderateFrames: moderateFrameArtifact,
+          checkVideoCoverage: () => checkVideoCoverage(modCfg),
+          phase: (name, fn) => phase(name, fn, "enrich"),
+        }),
       ).catch((error) => {
-        mediaDebug.push(`enrich-failed:${String(error?.message ?? error).slice(0, 120)}`);
+        mediaDebug.push(`enrich-failed:${String(error?.code ?? "processing-failed").slice(0, 80)}`);
         return null;
       });
     } else {
       mediaDebug.push("upload:missing-bytes");
     }
-    if (enriched?.moderationBlocked?.length) {
+    if (enriched?.videoCoverageBlocked) {
+      const coverage = enriched.videoCoverageBlocked;
+      if (coverage.report) moderationReports.push(coverage.report);
+      blockedResult = {
+        outcome: "moderation_uncovered",
+        verdict: null,
+        score: null,
+        claims: [],
+        sources: [],
+        summary: coverage.message ?? "O vídeo não foi processado porque a cobertura de moderação não foi aprovada.",
+      };
+    }
+    if (!blockedResult && enriched?.moderationBlocked?.length) {
       blockedResult = moderationState(enriched.moderationBlocked[0]);
     }
     if (enriched) {
@@ -784,15 +901,36 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       };
     }
   } else if (imageTarget && !blockedResult) {
-    if (input.fileBuffer) {
-      const imageGate = await moderateImages([{ data: input.fileBuffer.toString("base64"), mime: input.fileMime }], { config: modCfg });
+    const imageInput = input.fileBuffer
+      ? { ok: true, fileBuffer: input.fileBuffer, fileMime: input.fileMime, finalUrl: maybeUrl }
+      : await phase("image-source-fetch", () => fetchImageSource(sourceInfo?.finalUrl ?? maybeUrl));
+    if (!imageInput.ok) {
+      mediaDebug.push(`image-source:${imageInput.reason ?? "unavailable"}`);
+      blockedResult = {
+        outcome: "inaccessible_media",
+        verdict: null,
+        score: null,
+        claims: [],
+        sources: [],
+        summary: imageInput.reason === "unsupported_upload_type"
+          ? "Formato de imagem não suportado. Use JPEG, PNG ou WebP e envie o conteúdo legível."
+          : "A imagem por link não pôde ser validada dentro dos limites. Envie JPEG, PNG ou WebP; nenhum veredito foi atribuído ao conteúdo não lido.",
+      };
+    } else {
+      mediaDebug.push(`image-source:${input.fileBuffer ? "upload" : "link"}:${imageInput.fileMime}`);
+      if (!input.fileBuffer) {
+        const imageHost = (() => { try { return new URL(imageInput.finalUrl).hostname; } catch { return null; } })();
+        origin = toOrigin({ source: "image", platform: imageHost }, maybeUrl);
+      }
+      const imageBytes = imageInput.fileBuffer;
+      const imageGate = await moderateImages([{ data: imageBytes.toString("base64"), mime: imageInput.fileMime }], { config: modCfg });
       if (imageGate.report) moderationReports.push(imageGate.report);
       blockedResult = moderationState(imageGate);
       const image = blockedResult ? null : await phase("vision", () =>
-        describeImage(input.fileBuffer, input.fileMime, { aiCfg, timeoutMs, sessionId: id }),
+        describeImage(imageBytes, imageInput.fileMime, { aiCfg, timeoutMs, sessionId: id }),
       ).catch(() => null);
       if (blockedResult) {
-        // recusa de conteúdo já registrada; nenhuma análise factual é executada
+        // Recusa de conteúdo registrada; nenhuma análise factual é executada.
       } else if (image?.text) {
         vision = image.text;
         mediaContext = `Descrição visual/OCR (não comprova autenticidade):\n${image.text}`;
@@ -807,19 +945,9 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
           score: null,
           claims: [],
           sources: [],
-          summary: "A imagem recebida não pôde ser analisada; nenhum veredito factual foi atribuído.",
+          summary: "A imagem validada não pôde ser analisada; nenhum veredito factual foi atribuído.",
         };
       }
-    } else {
-      mediaDebug.push("image:missing-bytes");
-      blockedResult = {
-        outcome: "inaccessible_media",
-        verdict: null,
-        score: null,
-        claims: [],
-        sources: [],
-        summary: "O conteúdo da imagem não foi recebido; nome ou descrição do arquivo não substituem a imagem.",
-      };
     }
   }
 
@@ -888,7 +1016,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     finalRaw = research.raw;
   }
 
-  if (!blockedResult && (videoTarget || imageTarget)) {
+  if (!blockedResult && (mediaTarget || imageTarget)) {
     const reviewClaims = structuredClone(first?.claims ?? []);
     const reviewSources = sanitizeSources(first?.sources, reviewClaims, firstCitations);
     const review = validateResult({ ...first, claims: reviewClaims, sources: reviewSources.sources }).fixed;

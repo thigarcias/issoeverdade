@@ -93,9 +93,9 @@ Resultados:
 - oxlint: sem erros.
 - endpoint com URL real: `checked`, `unproven`, score `35`, sem `inaccessible_media`.
 
-## Escopo/intenção
+## Escopo e comportamento atual
 
-A função de extração de URLs é genérica, mas sua integração atual é exclusiva do caminho de oEmbed do X. Instagram, TikTok e outros caminhos não chamam esse resolvedor automaticamente. A extração inclui metadados e trechos limitados, não garante artigo integral nem um veredito.
+O resolvedor genérico é chamado quando um caminho social expõe texto utilizável por oEmbed, worker, yt-dlp ou OpenGraph; texto do post e conteúdo vinculado permanecem campos separados. Segue no máximo 3 links públicos documentais, com teto de 512 KiB e 15 s por página, corpo de até 2.500 caracteres e contexto conjunto de até 12.000. Deduplica URLs, ignora o próprio post, links sociais e arquivos de mídia, e não percorre links recursivamente. Falha de link externo não apaga o texto do post. Conteúdo não extraído, login-wall e anexos inacessíveis não são declarados como lidos.
 
 ## Commit
 
@@ -121,6 +121,14 @@ O extrator de páginas vinculadas agora compartilha a leitura de metadados/corpo
 com notícias enviadas diretamente. Posts mantêm até 3 links, 512 KiB/15 s por
 página, corpo de até 2.500 caracteres e contexto combinado de até 12.000.
 Cada trecho é identificado como contexto limitado, sem prometer artigo
-integral. A revisão atual do cache é `article-content-v3`, mantendo a metodologia
-`fact-check-5`. O histórico de smokes acima descreve execuções anteriores;
-as regras atuais de notícias e pesquisa estão em [Metodologia](metodologia-factual.md).
+integral. A revisão atual do cache é `article-content-v4`, mantendo a metodologia
+`fact-check-5`; o histórico acima descreve execuções anteriores e não comprova a
+implantação atual.
+
+O mesmo roteamento classifica HTML, post social, PDF, imagem, áudio e vídeo.
+Notícias comuns não disparam download audiovisual; Spotify só trata episódios
+como candidatos a áudio. PDFs textuais usam `fetchDocument`/`unpdf`, imagens
+diretas passam por `safeFetch`, validação e visão, e áudio/vídeo exigem stream e
+duração legíveis. Upload local usa ffprobe/ffmpeg somente sem worker e fora de
+serverless; worker configurado não tem fallback silencioso. Mídia não lida não
+gera veredito factual.

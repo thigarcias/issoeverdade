@@ -12,10 +12,17 @@
 // transferência) e todo subprocesso por server/proc.js (tempo + vigia de disco).
 
 import { execFile } from "node:child_process";
+import { mkdtemp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { byteBudget, hostPolicy, parseUrlStrict, safeFetch, urlHost } from "./net.js";
 import { runLimited } from "./proc.js";
 import { clip, decodeEntities, stripHtml, textFromHtml } from "./text.js";
+import { evidenceConfig, fetchDocument } from "./evidence.js";
+import { inspectMediaFile, jpegIsDecodableCandidate, processMediaFile } from "./local-media.js";
+import { classifySourceUrl } from "./source-type.js";
+import { normalizeVerifyInput, uploadLimits } from "./uploads.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_DESC = 2000;
@@ -40,6 +47,21 @@ const MAX_WORKER_RESPONSE_BYTES = 32 * 1024 * 1024;
 const MAX_WORKER_AUDIO_BYTES = 20 * 1024 * 1024;
 const MAX_WORKER_FRAMES_BYTES = 2_500_000;
 const MAX_WORKER_FRAMES = 10;
+function sanitizeDiagnostic(value, max = 160) {
+  const safe = String(value ?? "")
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[url]")
+    .replace(/\b(?:bearer\s+)[A-Za-z0-9._~-]+/gi, "Bearer [redacted]")
+    .replace(/\b(token|secret|signature|sig|auth|key)\s*[:=]\s*[^\s&]+/gi, "$1=[redacted]")
+    .replace(/\b[A-Za-z]:\\[^\s"'<>]+/g, "[path]")
+    .replace(/\/(?:tmp|var\/tmp)\/[^\s"'<>]+/g, "[path]");
+  return clip(safe, max);
+}
+
+function diagnosticAttempt(stage, result) {
+  const reason = result?.ok ? "ok" : result?.reason ?? "failed";
+  const detail = result?.detail ? `:${sanitizeDiagnostic(result.detail)}` : "";
+  return `${stage}:${reason}${detail}`;
+}
 
 /**
  * Política de rede usada para falar com o worker: porta do worker permitida e
@@ -85,7 +107,7 @@ async function workerPost(path, payload, { timeoutMs = mediaLimits().workerTimeo
   }
 }
 
-/** Normaliza frames do worker: limite de quantidade, tamanho por frame e base64 válido. */
+/** Normaliza frames do worker e só retém JPEGs completos e dentro dos limites. */
 export function normalizeWorkerFrames(value) {
   const frames = [];
   let bytes = 0;
@@ -93,13 +115,75 @@ export function normalizeWorkerFrames(value) {
     if (frames.length >= MAX_WORKER_FRAMES) break;
     const data = typeof item === "string" ? item : item?.image_b64 ?? item?.data;
     if (typeof data !== "string" || data.length === 0 || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) continue;
-    const size = Math.floor((data.length * 3) / 4);
-    if (size > 600_000 || bytes + size > MAX_WORKER_FRAMES_BYTES) break;
-    bytes += size;
+    const image = Buffer.from(data, "base64");
+    if (image.toString("base64") !== data || !jpegIsDecodableCandidate(image)) continue;
+    if (image.length > 600_000 || bytes + image.length > MAX_WORKER_FRAMES_BYTES) break;
+    bytes += image.length;
     const seconds = Number(item?.timestamp_sec ?? item?.timestampSec);
     frames.push({ data, timestampSec: Number.isFinite(seconds) ? seconds : null });
   }
   return frames;
+}
+
+/** Resolves redirects and uses MIME/signature hints without retaining file bodies. */
+export async function resolveSourceType(value) {
+  const initial = classifySourceUrl(value);
+  if (!initial.finalUrl) return initial;
+  try {
+    let response = await safeFetch(initial.finalUrl, {
+      method: "HEAD",
+      maxBytes: 8192,
+      truncate: true,
+      maxRedirects: 3,
+      timeoutMs: 10_000,
+      accept: "*/*",
+    });
+    let contentType = String(response.headers?.["content-type"] ?? "").toLowerCase().split(";")[0].trim();
+    let contentPrefix = null;
+    if ([405, 501].includes(response.status) || !contentType || contentType === "application/octet-stream") {
+      const sample = await safeFetch(initial.finalUrl, {
+        maxBytes: 8192,
+        truncate: true,
+        maxRedirects: 3,
+        timeoutMs: 10_000,
+        accept: "*/*",
+      });
+      if (sample.ok || [405, 501].includes(response.status)) {
+        response = sample;
+        contentType = String(sample.headers?.["content-type"] ?? contentType).toLowerCase().split(";")[0].trim();
+        contentPrefix = sample.body;
+      }
+    }
+    const finalUrl = response.finalUrl ?? initial.finalUrl;
+    const resolved = classifySourceUrl(finalUrl, { contentType, contentPrefix });
+    return { ...resolved, finalUrl, originalUrl: initial.finalUrl };
+  } catch {
+    return initial;
+  }
+}
+
+/** Fetches a direct image under the existing upload cap and signature contract. */
+export async function fetchImageSource(url) {
+  const maxBytes = uploadLimits().maxFileBytes;
+  try {
+    const response = await safeFetch(url, {
+      maxBytes,
+      maxRedirects: 3,
+      timeoutMs: 20_000,
+      accept: "image/jpeg,image/png,image/webp",
+    });
+    if (!response.ok) return { ok: false, reason: `image-http-${response.status}` };
+    const contentType = String(response.headers?.["content-type"] ?? "").toLowerCase().split(";")[0].trim();
+    const normalized = normalizeVerifyInput({
+      kind: "image",
+      text: url,
+      fileBuffer: response.body,
+      fileMime: contentType,
+    });
+    return { ok: true, fileBuffer: normalized.fileBuffer, fileMime: normalized.fileMime, finalUrl: response.finalUrl };
+  } catch (error) {
+    return { ok: false, reason: ["unsupported_upload_type", "upload_too_large"].includes(error?.message) ? error.message : netReason(error) };
+  }
 }
 
 /** Camada 0: delega probe ao worker remoto (Fly.io). */
@@ -109,103 +193,116 @@ async function probeViaWorker(url) {
   return { ok: true, source: "worker:yt-dlp", ...data.media, _context: data.context };
 }
 
-/** Camada 0 (áudio): baixa MP3 via worker remoto, salva local para transcrever. */
+/** Camada 0 (áudio): worker valida a duração antes de enviar o artefato. */
 async function downloadViaWorker(url, outDir) {
   const limits = mediaLimits();
   const data = await workerPost("/audio", { url });
-  if (!data?.ok || typeof data.audio_b64 !== "string") return { ok: false, reason: data?.reason ?? "worker-audio-failed" };
+  if (!data?.ok || typeof data.audio_b64 !== "string") return { ok: false, reason: data?.reason ?? "worker-audio-failed", detail: data?.detail };
+  const seconds = Number(data.seconds);
+  if (!Number.isFinite(seconds) || seconds <= 0) return { ok: false, reason: "worker-duration-unavailable" };
+  if (Math.ceil(seconds) > limits.maxMediaSeconds) return { ok: false, reason: `duration-limit:${Math.ceil(seconds)}s` };
   const encoded = data.audio_b64;
   if (encoded.length === 0 || encoded.length > Math.ceil(MAX_WORKER_AUDIO_BYTES / 3) * 4) return { ok: false, reason: "worker-audio-too-large" };
   const bytes = Buffer.from(encoded, "base64");
   if (bytes.length === 0 || bytes.length > MAX_WORKER_AUDIO_BYTES || bytes.toString("base64") !== encoded) {
     return { ok: false, reason: "worker-audio-invalid" };
   }
-  const { mkdir, writeFile } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  // Vercel/Lambda: filesystem read-only exceto /tmp.
-  const dir = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? tmpdir() : outDir;
-  await mkdir(dir, { recursive: true });
-  const file = `${dir}/worker-${Date.now().toString(36)}.mp3`;
-  await writeFile(file, bytes);
-  const checked = await enforceDuration(file, limits.maxMediaSeconds);
-  if (checked.ok === false) {
-    const { rm } = await import("node:fs/promises");
-    await rm(file, { force: true }).catch(() => {});
-    return { ok: false, reason: checked.reason };
+  const base = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? tmpdir() : outDir;
+  await mkdir(base, { recursive: true });
+  const dir = await mkdtemp(join(base, "iev-audio-"));
+  const file = join(dir, "audio.mp3");
+  try {
+    await writeFile(file, bytes, { flag: "wx" });
+    return { ok: true, file, dir, via: "worker", durationSec: Math.ceil(seconds), hasAudio: data.has_audio !== false, hasVideo: data.has_video === true };
+  } catch (error) {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    return { ok: false, reason: "worker-audio-invalid", detail: sanitizeDiagnostic(error?.message) };
   }
-  return { ok: true, file, via: "worker", durationSec: checked.durationSec };
 }
 
-/** Duração real do arquivo (ffprobe) e recusa acima do teto configurado. */
+/** Duração, streams e legibilidade são exigidos antes de liberar um artefato local. */
 export async function enforceDuration(file, maxSeconds) {
-  try {
-    const { stdout } = await execFileAsync(
-      "ffprobe",
-      ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", file],
-      { timeout: 20_000 },
-    );
-    const seconds = Math.ceil(Number(stdout.trim()) || 0);
-    if (seconds > maxSeconds) return { ok: false, reason: `duration-limit:${seconds}s` };
-    return { ok: true, durationSec: seconds || null };
-  } catch {
-    return { ok: true, durationSec: null, detail: "ffprobe-unavailable" };
-  }
+  return inspectMediaFile(file, maxSeconds);
 }
 
-/** Processes an uploaded video/audio file through the isolated media worker. */
+/** Processa upload localmente quando não há worker; serverless permanece fail-closed. */
 export async function processUploadedMedia(fileBuffer, mime) {
-  if (!WORKER_URL || !Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) {
-    return { ok: false, reason: !WORKER_URL ? "no-worker-url" : "empty-upload" };
-  }
+  if (!Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) return { ok: false, reason: "empty-upload" };
   const limits = mediaLimits();
-  const data = await workerPost("/upload", { file_b64: fileBuffer.toString("base64"), mime });
-  if (!data?.ok) {
-    const reason = /payload|too-large|unsupported|invalid/.test(String(data?.reason ?? "")) ? "upload-too-large" : data?.reason ?? "worker-upload-failed";
-    return { ok: false, reason };
-  }
-  let audioDir = null;
-  try {
+  if (WORKER_URL) {
+    const data = await workerPost("/upload", { file_b64: fileBuffer.toString("base64"), mime });
+    if (!data?.ok) {
+      const reason = /payload|too-large/.test(String(data?.reason ?? "")) ? "upload-too-large" : data?.reason ?? "worker-upload-failed";
+      return { ok: false, reason, detail: sanitizeDiagnostic(data?.detail, 160) };
+    }
+    const durationSec = Number(data.duration_sec);
+    if (!Number.isFinite(durationSec) || durationSec <= 0) return { ok: false, reason: "worker-duration-unavailable" };
+    if (durationSec > limits.maxMediaSeconds) return { ok: false, reason: `duration-limit:${Math.ceil(durationSec)}s` };
     let audio = null;
-    if (typeof data.audio?.audio_b64 === "string") {
-      const encoded = data.audio.audio_b64;
-      if (encoded.length <= Math.ceil(MAX_WORKER_AUDIO_BYTES / 3) * 4) {
-        const audioBytes = Buffer.from(encoded, "base64");
-        if (audioBytes.length > 0 && audioBytes.length <= MAX_WORKER_AUDIO_BYTES && audioBytes.toString("base64") === encoded) {
-          const { mkdtemp, writeFile } = await import("node:fs/promises");
-          const { tmpdir } = await import("node:os");
-          const { join } = await import("node:path");
-          audioDir = await mkdtemp(join(tmpdir(), "iev-upload-"));
-          const file = join(audioDir, "audio.mp3");
-          await writeFile(file, audioBytes, { flag: "wx" });
-          audio = { ok: true, file, dir: audioDir, via: "worker-upload" };
+    let audioReason = data.audio_reason ?? null;
+    let audioDir = null;
+    try {
+      if (data.audio?.audio_b64 != null) {
+        const encoded = data.audio.audio_b64;
+        if (typeof encoded !== "string" || encoded.length === 0 || encoded.length > Math.ceil(MAX_WORKER_AUDIO_BYTES / 3) * 4) {
+          audioReason = "worker-audio-invalid";
+        } else {
+          const audioBytes = Buffer.from(encoded, "base64");
+          if (audioBytes.length === 0 || audioBytes.length > MAX_WORKER_AUDIO_BYTES || audioBytes.toString("base64") !== encoded) {
+            audioReason = "worker-audio-invalid";
+          } else {
+            audioDir = await mkdtemp(join(tmpdir(), "iev-upload-"));
+            const file = join(audioDir, "audio.mp3");
+            await writeFile(file, audioBytes, { flag: "wx" });
+            audio = { ok: true, file, dir: audioDir, via: "worker-upload" };
+          }
         }
       }
-    }
-    const durationSec = Number.isFinite(data.duration_sec) ? data.duration_sec : null;
-    if (durationSec && durationSec > limits.maxMediaSeconds) {
-      if (audioDir) {
-        const { rm } = await import("node:fs/promises");
-        await rm(audioDir, { recursive: true, force: true }).catch(() => {});
+      const frames = normalizeWorkerFrames(data.frames);
+      const frameReason = frames.length ? null : data.frame_reason ?? "no-frames";
+      if (!audio && !frames.length) {
+        if (audioDir) await rm(audioDir, { recursive: true, force: true }).catch(() => {});
+        return { ok: false, reason: audioReason ?? frameReason ?? "no-readable-media" };
       }
-      return { ok: false, reason: `duration-limit:${durationSec}s` };
+      const hasAudio = Boolean(audio) || data.has_audio === true;
+      const hasVideo = data.has_video === true || frames.length > 0;
+      return { ok: true, audio, frames, count: frames.length, durationSec, via: "worker-upload", audioReason, frameReason, hasAudio, hasVideo, dir: audioDir };
+    } catch (error) {
+      if (audioDir) await rm(audioDir, { recursive: true, force: true }).catch(() => {});
+      return { ok: false, reason: "worker-upload-invalid", detail: sanitizeDiagnostic(error?.message) };
     }
-    const frames = normalizeWorkerFrames(data.frames);
-    return {
-      ok: true,
-      audio,
-      frames,
-      count: frames.length,
-      durationSec,
-      via: "worker-upload",
-    };
+  }
+
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) return { ok: false, reason: "worker-unavailable-serverless" };
+  if (!/^audio\//.test(mime) && !/^video\//.test(mime)) return { ok: false, reason: "unsupported-media-type" };
+
+  const dir = await mkdtemp(join(tmpdir(), "iev-upload-local-"));
+  const extension = ({ "video/quicktime": "mov", "video/webm": "webm", "audio/webm": "webm", "audio/wav": "wav", "audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/mp4": "mp4", "video/mp4": "mp4" })[mime] ?? "media";
+  const file = join(dir, `source.${extension}`);
+  try {
+    await writeFile(file, fileBuffer, { flag: "wx" });
+    const result = await processMediaFile(file, dir, {
+      maxMediaSeconds: limits.maxMediaSeconds,
+      maxTempBytes: limits.maxTempBytes,
+      maxAudioBytes: MAX_WORKER_AUDIO_BYTES,
+      maxFrames: MAX_FRAMES,
+      maxFramesBytes: MAX_FRAMES_BYTES,
+    });
+    if (!result.ok) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      return result;
+    }
+    const audio = result.audioBytes
+      ? { ok: true, file: join(dir, "audio.mp3"), dir, via: "local-upload" }
+      : null;
+    if (!audio) await rm(join(dir, "audio.mp3"), { force: true }).catch(() => {});
+    return { ...result, audio, via: "local-upload", dir };
   } catch (error) {
-    if (audioDir) {
-      const { rm } = await import("node:fs/promises");
-      await rm(audioDir, { recursive: true, force: true }).catch(() => {});
-    }
-    return { ok: false, reason: String(error?.code ?? error?.message ?? "worker-upload-failed").slice(0, 120) };
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    return { ok: false, reason: "local-media-processing-failed", detail: sanitizeDiagnostic(error?.message) };
   }
 }
+
 
 let ytdlpAvailable = null;
 
@@ -236,7 +333,7 @@ export async function probeWithYtDlp(url) {
     { timeoutMs: 60_000, maxOutputBytes: 8 * 1024 * 1024 },
   );
   if (!run.ok) {
-    return { ok: false, reason: run.reason === "timeout" ? "ytdlp-timeout" : "ytdlp-failed", detail: clip(run.stderr, 300) };
+    return { ok: false, reason: run.reason === "timeout" ? "ytdlp-timeout" : "ytdlp-failed", detail: sanitizeDiagnostic(run.stderr, 200) };
   }
   try {
     const info = JSON.parse(run.stdout);
@@ -251,6 +348,8 @@ export async function probeWithYtDlp(url) {
         ? `${info.upload_date.slice(6, 8)}/${info.upload_date.slice(4, 6)}/${info.upload_date.slice(0, 4)}`
         : "",
       durationSec: typeof info.duration === "number" ? Math.round(info.duration) : null,
+      hasAudio: typeof info.acodec === "string" ? info.acodec !== "none" : null,
+      hasVideo: typeof info.vcodec === "string" ? info.vcodec !== "none" : null,
       description: desc,
       thumbnail: typeof info.thumbnail === "string" ? info.thumbnail : "",
       mediaUrl: typeof info.url === "string" ? info.url : "",
@@ -261,69 +360,115 @@ export async function probeWithYtDlp(url) {
   }
 }
 
-/** Camada 2: baixa áudio — worker remoto → yt-dlp local → og:video direto. */
-export async function downloadAudio(url, outDir = "./media-tmp") {
-  if (!(await hasYtDlp()) && WORKER_URL) {
-    // Sem binário local (Vercel): worker primeiro.
-    const w = await downloadViaWorker(url, outDir);
-    if (w.ok) return w;
+/** Camada 2: áudio — worker remoto, yt-dlp local ou URL og:video validada. */
+export async function downloadAudio(url, outDir = "./media-tmp", sourceType = null) {
+  const attempts = [];
+  const source = sourceType ? { type: sourceType } : classifySourceUrl(url);
+  const hasYtdlp = await hasYtDlp();
+  if (!hasYtdlp && WORKER_URL) {
+    const result = await downloadViaWorker(url, outDir);
+    attempts.push(diagnosticAttempt("worker-audio", result));
+    if (result.ok) return { ...result, attempts };
   }
-  if (await hasYtDlp()) {
-    const dl = await downloadViaYtDlp(url, outDir);
-    if (dl.ok) return dl;
+  if (hasYtdlp) {
+    const result = await downloadViaYtDlp(url, outDir);
+    attempts.push(diagnosticAttempt("yt-dlp-audio", result));
+    if (result.ok) return { ...result, attempts };
   }
-  return downloadViaDirectUrl(url, outDir);
+  const direct = source.type === "audio" || source.type === "video"
+    ? await downloadDirectAsset(url, outDir, "audio")
+    : await downloadViaDirectUrl(url, outDir);
+  attempts.push(diagnosticAttempt(source.type === "audio" || source.type === "video" ? "direct-media-audio" : "og-video-audio", direct));
+  return { ...direct, attempts };
+}
+
+async function mediaTempDir(outDir, prefix) {
+  const base = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? tmpdir() : outDir;
+  await mkdir(base, { recursive: true });
+  return mkdtemp(join(base, prefix));
+}
+
+function subprocessReason(run, stage, fallback) {
+  if (run?.killed) {
+    if (run.reason === "disk_limit") return "disk-limit";
+    if (run.reason === "timeout") return `${stage}-timeout`;
+    return `kill:${run.reason}`;
+  }
+  if (run?.reason === "spawn_failed" && /ENOENT/i.test(run.stderr)) return `${stage}-unavailable`;
+  if (/larger than max-filesize/i.test(run?.stderr ?? "")) return "file-too-large";
+  return fallback;
 }
 
 async function downloadViaYtDlp(url, outDir) {
   const limits = mediaLimits();
-  const { mkdir, rm } = await import("node:fs/promises");
-  await mkdir(outDir, { recursive: true });
+  const dir = await mediaTempDir(outDir, "iev-audio-");
   const maxBytes = Math.min(limits.maxTransferBytes, limits.maxFileBytes);
-  const run = await runLimited(
-    "yt-dlp",
-    [
-      "--no-playlist", "-x", "--audio-format", "mp3", "--audio-quality", "5",
-      "--no-warnings", "--no-progress", "--retries", "2", "--socket-timeout", "20",
-      "--max-filesize", String(maxBytes), "--max-downloads", "1",
-      "--print", "after_move:filepath",
-      "--extractor-args", "youtube:player_client=android,web",
-      "-o", `${outDir}/%(id)s.%(ext)s`, url,
-    ],
-    { timeoutMs: limits.ytdlpTimeoutMs, watchDir: outDir, maxDirBytes: limits.maxTempBytes, maxOutputBytes: 4 * 1024 * 1024 },
-  );
-  const file = run.stdout.trim().split("\n").pop()?.trim() ?? "";
-  if (!run.ok || !file) {
-    if (file) await rm(file, { force: true }).catch(() => {});
-    const reason = run.killed
-      ? run.reason === "disk_limit" ? "disk-limit" : run.reason === "timeout" ? "download-timeout" : `kill:${run.reason}`
-      : /larger than max-filesize/i.test(run.stderr) ? "file-too-large"
-        : "download-failed";
-    return { ok: false, reason, detail: clip(run.stderr, 200) };
+  let keep = false;
+  try {
+    const run = await runLimited(
+      "yt-dlp",
+      [
+        "--no-playlist", "-f", "bestaudio/best",
+        "--no-warnings", "--no-progress", "--retries", "2", "--socket-timeout", "20",
+        "--max-filesize", String(maxBytes),
+        "--extractor-args", "youtube:player_client=android,web",
+        "-o", join(dir, "source.%(ext)s"), url,
+      ],
+      { timeoutMs: limits.ytdlpTimeoutMs, watchDir: dir, maxDirBytes: limits.maxTempBytes, maxOutputBytes: 4 * 1024 * 1024 },
+    );
+    if (!run.ok) return { ok: false, reason: subprocessReason(run, "download", "download-failed"), detail: sanitizeDiagnostic(run.stderr, 200) };
+    const names = await readdir(dir);
+    const name = names.find((candidate) => /^source\.[^.]+$/i.test(candidate) && !candidate.endsWith(".part"));
+    if (!name) return { ok: false, reason: "no-file" };
+    const file = join(dir, name);
+    const size = (await stat(file)).size;
+    if (size <= 0) return { ok: false, reason: "media-unreadable" };
+    if (size > maxBytes) return { ok: false, reason: "file-too-large" };
+    const extracted = await processMediaFile(file, dir, {
+      maxMediaSeconds: limits.maxMediaSeconds,
+      maxTempBytes: limits.maxTempBytes,
+      maxAudioBytes: MAX_WORKER_AUDIO_BYTES,
+      extractFrames: false,
+    });
+    if (!extracted.ok) return extracted;
+    if (!extracted.audioBytes) return { ok: false, reason: extracted.audioReason ?? "no-audio-track", hasAudio: extracted.hasAudio, hasVideo: extracted.hasVideo };
+    keep = true;
+    return { ok: true, file: join(dir, "audio.mp3"), dir, via: "yt-dlp", durationSec: extracted.durationSec, hasAudio: extracted.hasAudio, hasVideo: extracted.hasVideo };
+  } catch (error) {
+    return { ok: false, reason: "download-failed", detail: sanitizeDiagnostic(error?.message, 200) };
+  } finally {
+    if (!keep) await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
-  const duration = await enforceDuration(file, limits.maxMediaSeconds);
-  if (duration.ok === false) {
-    await rm(file, { force: true }).catch(() => {});
-    return { ok: false, reason: duration.reason };
-  }
-  return { ok: true, file, via: "yt-dlp", durationSec: duration.durationSec };
 }
 
-/** Camada 2b: frames do vídeo — worker remoto → yt-dlp+ffmpeg local. */
-export async function downloadFrames(url) {
-  if (!(await hasYtDlp()) && WORKER_URL) {
-    const w = await framesViaWorker(url);
-    if (w.ok) return w;
+/** Camada 2b: frames — worker remoto, yt-dlp local ou URL og:video validada. */
+export async function downloadFrames(url, sourceType = null) {
+  const attempts = [];
+  const source = sourceType ? { type: sourceType } : classifySourceUrl(url);
+  if (source.type === "audio") return { ok: false, reason: "not-applicable-audio", attempts: [] };
+  const hasYtdlp = await hasYtDlp();
+  let workerTried = false;
+  if (!hasYtdlp && WORKER_URL) {
+    const result = await framesViaWorker(url);
+    attempts.push(diagnosticAttempt("worker-frames", result));
+    workerTried = true;
+    if (result.ok) return { ...result, attempts };
   }
-  if (await hasYtDlp()) {
-    const f = await framesViaYtDlp(url);
-    if (f.ok) return f;
+  if (hasYtdlp) {
+    const result = await framesViaYtDlp(url);
+    attempts.push(diagnosticAttempt("yt-dlp-frames", result));
+    if (result.ok) return { ...result, attempts };
   }
-  if (WORKER_URL) {
-    const w = await framesViaWorker(url);
-    if (w.ok) return w;
+  if (WORKER_URL && !workerTried) {
+    const result = await framesViaWorker(url);
+    attempts.push(diagnosticAttempt("worker-frames", result));
+    if (result.ok) return { ...result, attempts };
   }
-  return { ok: false, reason: "no-frames-path" };
+  const direct = source.type === "audio" || source.type === "video"
+    ? await downloadDirectAsset(url, "./media-tmp", "frames")
+    : await framesViaDirectUrl(url);
+  attempts.push(diagnosticAttempt("direct-video-frames", direct));
+  return { ...direct, attempts };
 }
 
 const MAX_FRAMES = 10;
@@ -331,78 +476,55 @@ const MAX_FRAMES_BYTES = 2_500_000;
 
 async function framesViaWorker(url) {
   const data = await workerPost("/frames", { url });
-  if (!data?.ok) return { ok: false, reason: data?.reason ?? "worker-frames-failed" };
+  if (!data?.ok) return { ok: false, reason: data?.reason ?? "worker-frames-failed", detail: data?.detail };
+  const seconds = Number(data.seconds);
+  if (!Number.isFinite(seconds) || seconds <= 0) return { ok: false, reason: "worker-duration-unavailable" };
+  if (Math.ceil(seconds) > mediaLimits().maxMediaSeconds) return { ok: false, reason: `duration-limit:${Math.ceil(seconds)}s` };
   const frames = normalizeWorkerFrames(data.frames);
-  if (!frames.length) return { ok: false, reason: "no-frames" };
-  return { ok: true, frames, count: frames.length, seconds: data.seconds ?? null, via: "worker" };
+  if (!frames.length) return { ok: false, reason: data.reason ?? "no-frames", hasAudio: data.has_audio === true, hasVideo: data.has_video === true };
+  return { ok: true, frames, count: frames.length, seconds: Math.ceil(seconds), via: "worker", hasAudio: data.has_audio === true, hasVideo: data.has_video === true };
 }
 
 async function framesViaYtDlp(url) {
   const limits = mediaLimits();
-  const { mkdir, readdir, rm } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const base = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? tmpdir() : "./media-tmp";
-  const dir = `${base}/frames-${Date.now().toString(36)}`;
-  await mkdir(dir, { recursive: true });
+  const dir = await mediaTempDir("./media-tmp", "iev-frames-");
+  const maxBytes = Math.min(limits.maxFileBytes, limits.maxTransferBytes);
   try {
     const download = await runLimited(
       "yt-dlp",
       [
         "--no-playlist", "-f", "worst[height<=480]/best[height<=480]/worst",
         "--no-warnings", "--no-progress", "--socket-timeout", "20", "--retries", "2",
-        "--max-filesize", String(Math.min(limits.maxFileBytes, limits.maxTransferBytes)),
-        "--max-downloads", "1",
+        "--max-filesize", String(maxBytes),
         "--extractor-args", "youtube:player_client=android,web",
-        "-o", `${dir}/v.%(ext)s`, url,
+        "-o", join(dir, "source.%(ext)s"), url,
       ],
       { timeoutMs: limits.ytdlpTimeoutMs, watchDir: dir, maxDirBytes: limits.maxTempBytes, maxOutputBytes: 4 * 1024 * 1024 },
     );
-    if (!download.ok) {
-      return {
-        ok: false,
-        reason: download.killed ? (download.reason === "disk_limit" ? "disk-limit" : "download-timeout") : /larger than max-filesize/i.test(download.stderr) ? "file-too-large" : "download-failed",
-        detail: clip(download.stderr, 200),
-      };
-    }
-    const file = (await readdir(dir)).find((f) => f.startsWith("v."));
-    if (!file) return { ok: false, reason: "no-file" };
-    const src = `${dir}/${file}`;
-    const duration = await enforceDuration(src, limits.maxMediaSeconds);
-    if (duration.ok === false) return { ok: false, reason: duration.reason };
-    const seconds = duration.durationSec ?? 0;
-    const span = Math.max(1, Math.min(limits.maxMediaSeconds, seconds || 60));
-    const fps = Math.min(1, MAX_FRAMES / span);
-    const frames = await runLimited(
-      "ffmpeg",
-      [
-        "-y", "-hide_banner", "-loglevel", "error", "-i", src,
-        "-vf", `fps=${fps.toFixed(4)},scale=448:-2`,
-        "-frames:v", String(MAX_FRAMES), "-q:v", "7",
-        `${dir}/f-%02d.jpg`,
-      ],
-      { timeoutMs: 120_000, maxOutputBytes: 1024 * 1024 },
-    );
-    if (!frames.ok) return { ok: false, reason: frames.killed ? "frames-timeout" : "frames-failed", detail: clip(frames.stderr, 200) };
-    const jpgs = (await readdir(dir)).filter((f) => /^f-\d+\.jpg$/.test(f)).sort();
-    const collected = [];
-    let bytes = 0;
-    const { readFile } = await import("node:fs/promises");
-    for (const [index, j] of jpgs.slice(0, MAX_FRAMES).entries()) {
-      const buf = await readFile(`${dir}/${j}`);
-      if (bytes + buf.length > MAX_FRAMES_BYTES) break;
-      bytes += buf.length;
-      collected.push({ data: buf.toString("base64"), timestampSec: Math.round((index / fps) * 100) / 100 });
-    }
-    if (!collected.length) return { ok: false, reason: "no-frames" };
-    return { ok: true, frames: collected, count: collected.length, seconds: seconds || null, via: "yt-dlp" };
-  } catch (err) {
-    return { ok: false, reason: "frames-failed", detail: clip(err?.message ?? err, 200) };
+    if (!download.ok) return { ok: false, reason: subprocessReason(download, "download", "download-failed"), detail: sanitizeDiagnostic(download.stderr, 200) };
+    const names = await readdir(dir);
+    const srcName = names.find((name) => /^source\.(?!part$)[^.]+$/i.test(name) && !name.endsWith(".part"));
+    if (!srcName) return { ok: false, reason: "no-file" };
+    const src = join(dir, srcName);
+    const size = (await stat(src)).size;
+    if (size <= 0) return { ok: false, reason: "media-unreadable" };
+    if (size > maxBytes) return { ok: false, reason: "file-too-large" };
+    const extracted = await processMediaFile(src, dir, {
+      maxMediaSeconds: limits.maxMediaSeconds,
+      maxTempBytes: limits.maxTempBytes,
+      extractAudio: false,
+      extractFrames: true,
+    });
+    if (!extracted.ok) return extracted;
+    return { ok: true, frames: extracted.frames, count: extracted.frames.length, seconds: extracted.durationSec, via: "yt-dlp", hasAudio: extracted.hasAudio, hasVideo: extracted.hasVideo };
+  } catch (error) {
+    return { ok: false, reason: "frames-failed", detail: sanitizeDiagnostic(error?.message, 200) };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
-/** Motivo estável para tentativas registradas no resultado. */
+/** Stable network reasons; safeFetch revalidates every redirect destination. */
 function netReason(error) {
   const code = error?.code ?? "network_failed";
   if (["private_address", "private_hostname", "port_not_allowed", "bad_protocol", "bad_url", "url_credentials"].includes(code)) return `blocked:${code}`;
@@ -413,46 +535,99 @@ function netReason(error) {
   return `net:${code}`;
 }
 
+async function downloadDirectAsset(url, outDir, mode, budget = byteBudget(mediaLimits().maxTransferBytes)) {
+  const limits = mediaLimits();
+  let dir = null;
+  try {
+    const response = await safeFetch(url, {
+      maxBytes: Math.min(limits.maxFileBytes, budget.remaining()),
+      timeoutMs: 90_000,
+      maxRedirects: 3,
+      budget,
+      accept: "video/*,audio/*,application/octet-stream",
+    });
+    if (!response.ok) return { ok: false, reason: `direct-http-${response.status}` };
+    const contentType = String(response.headers?.["content-type"] ?? "").toLowerCase().split(";")[0].trim();
+    if (contentType && !contentType.startsWith("video/") && !contentType.startsWith("audio/") && contentType !== "application/octet-stream") {
+      return { ok: false, reason: "unsupported-media-content-type" };
+    }
+    if (!response.body?.length) return { ok: false, reason: "media-unreadable" };
+    dir = await mediaTempDir(outDir, "iev-direct-");
+    const sourceFile = join(dir, "source.bin");
+    await writeFile(sourceFile, response.body, { flag: "wx" });
+    const extracted = await processMediaFile(sourceFile, dir, {
+      maxMediaSeconds: limits.maxMediaSeconds,
+      maxTempBytes: limits.maxTempBytes,
+      maxAudioBytes: MAX_WORKER_AUDIO_BYTES,
+      maxFrames: MAX_FRAMES,
+      maxFramesBytes: MAX_FRAMES_BYTES,
+      extractAudio: mode === "audio",
+      extractFrames: mode === "frames",
+    });
+    if (!extracted.ok) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      return extracted;
+    }
+    if (mode === "audio") {
+      if (!extracted.audioBytes) {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+        return { ok: false, reason: extracted.audioReason ?? "no-audio-track", hasAudio: extracted.hasAudio, hasVideo: extracted.hasVideo };
+      }
+      return { ok: true, file: join(dir, "audio.mp3"), dir, via: "direct", durationSec: extracted.durationSec, hasAudio: extracted.hasAudio, hasVideo: extracted.hasVideo };
+    }
+    if (!extracted.frames.length) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      return { ok: false, reason: extracted.frameReason ?? "no-video-track", hasAudio: extracted.hasAudio, hasVideo: extracted.hasVideo };
+    }
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    return { ok: true, frames: extracted.frames, count: extracted.frames.length, seconds: extracted.durationSec, via: "direct", hasAudio: extracted.hasAudio, hasVideo: extracted.hasVideo };
+  } catch (error) {
+    if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
+    return { ok: false, reason: netReason(error), detail: sanitizeDiagnostic(error?.message, 160) };
+  }
+}
+
+async function directVideoUrl(url, budget) {
+  const page = await safeFetch(url, {
+    maxBytes: 512 * 1024,
+    truncate: true,
+    timeoutMs: 20_000,
+    headers: { Accept: "text/html" },
+    budget,
+  });
+  if (!page.ok) return { ok: false, reason: `direct-http-${page.status}` };
+  const html = page.body.toString("utf8");
+  const direct = pageMeta(html, "og:video:secure_url") || pageMeta(html, "og:video") || pageMeta(html, "twitter:player:stream");
+  if (!direct) return { ok: false, reason: "no-direct-video-url" };
+  try {
+    const parsed = parseUrlStrict(new URL(direct, page.finalUrl).href);
+    return { ok: true, url: parsed.url.href };
+  } catch (error) {
+    return { ok: false, reason: `direct-${netReason(error)}` };
+  }
+}
+
 async function downloadViaDirectUrl(url, outDir) {
-  // Sem yt-dlp (ex.: Vercel): procura og:video/twitter:player:stream no HTML e baixa direto.
   const limits = mediaLimits();
   const budget = byteBudget(limits.maxTransferBytes);
   try {
-    const page = await safeFetch(url, {
-      maxBytes: 512 * 1024,
-      truncate: true,
-      timeoutMs: 20_000,
-      headers: { Accept: "text/html" },
-      budget,
-    });
-    if (!page.ok) return { ok: false, reason: `direct-http-${page.status}` };
-    const html = page.body.toString("utf8");
-    const m = html.match(/<meta[^>]+property=["']og:video(?::secure_url)?["'][^>]+content=["']([^"']+)/i)
-      ?? html.match(/<meta[^>]+name=["']twitter:player:stream["'][^>]+content=["']([^"']+)/i);
-    const direct = m?.[1];
-    if (!direct || !/^https?:\/\//.test(direct)) return { ok: false, reason: "no-direct-video-url" };
-    const download = await safeFetch(direct, {
-      maxBytes: Math.min(limits.maxFileBytes, budget.remaining()),
-      timeoutMs: 90_000,
-      budget,
-    });
-    if (!download.ok) return { ok: false, reason: `direct-http-${download.status}` };
-    const buf = download.body;
-    const { mkdir, rm, writeFile } = await import("node:fs/promises");
-    const { tmpdir } = await import("node:os");
-    const dir = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? tmpdir() : outDir;
-    await mkdir(dir, { recursive: true });
-    const ext = (direct.split("?")[0].split(".").pop() || "mp4").slice(0, 4).replace(/[^a-z0-9]/gi, "") || "mp4";
-    const file = `${dir}/direct-${Date.now().toString(36)}.${ext}`;
-    await writeFile(file, buf);
-    const duration = await enforceDuration(file, limits.maxMediaSeconds);
-    if (duration.ok === false) {
-      await rm(file, { force: true }).catch(() => {});
-      return { ok: false, reason: duration.reason };
-    }
-    return { ok: true, file, via: "direct", durationSec: duration.durationSec };
+    const direct = await directVideoUrl(url, budget);
+    if (!direct.ok) return direct;
+    return await downloadDirectAsset(direct.url, outDir, "audio", budget);
   } catch (error) {
-    return { ok: false, reason: netReason(error), detail: clip(error?.message ?? error, 160) };
+    return { ok: false, reason: netReason(error), detail: sanitizeDiagnostic(error?.message, 160) };
+  }
+}
+
+async function framesViaDirectUrl(url) {
+  const limits = mediaLimits();
+  const budget = byteBudget(limits.maxTransferBytes);
+  try {
+    const direct = await directVideoUrl(url, budget);
+    if (!direct.ok) return direct;
+    return await downloadDirectAsset(direct.url, "./media-tmp", "frames", budget);
+  } catch (error) {
+    return { ok: false, reason: netReason(error), detail: sanitizeDiagnostic(error?.message, 160) };
   }
 }
 
@@ -504,18 +679,6 @@ export async function probeOEmbed(url) {
 }
 
 const ARTICLE_TEXT_MAX = 18_000;
-const SOCIAL_VIDEO_HOST = /(^|\.)(x\.com|twitter\.com|instagram\.com|facebook\.com|fb\.watch|threads\.net|threads\.com|tiktok\.com|youtube\.com|youtu\.be|vimeo\.com|twitch\.tv|reddit\.com|kwai\.com|pinterest\.com|linkedin\.com)$/i;
-const MEDIA_PATH = /\.(jpe?g|png|gif|webp|mp4|mov|webm|mp3|wav|m4a|pdf)$/i;
-
-/** URLs comuns de páginas: não envia notícias ao downloader de vídeo. */
-export function isArticleUrl(value) {
-  try {
-    const { url } = parseUrlStrict(value);
-    return !SOCIAL_VIDEO_HOST.test(url.hostname) && !MEDIA_PATH.test(url.pathname);
-  } catch {
-    return false;
-  }
-}
 
 function pageMeta(html, name) {
   for (const tag of html.matchAll(/<meta\b[^>]*>/gi)) {
@@ -621,6 +784,35 @@ async function fetchArticleContext(url, { maxTextChars = ARTICLE_TEXT_MAX, maxBy
   }
 }
 
+async function fetchPdfContext(url, config = evidenceConfig()) {
+  const host = urlHost(new URL(url));
+  const document = await fetchDocument(url, { config });
+  const media = {
+    source: "document",
+    format: "pdf",
+    platform: host,
+    finalUrl: document.finalUrl ?? url,
+    truncated: Boolean(document.truncated),
+    extraction: document.ok ? document.truncated ? "partial" : "full" : "inaccessible",
+    extractionMethod: "unpdf",
+    body: document.ok ? document.text : "",
+  };
+  if (!document.ok) {
+    const reason = document.reason ?? "pdf-text-unavailable";
+    return {
+      ok: false,
+      reason,
+      media,
+      context: `Documento PDF: o texto não pôde ser extraído (${reason}). PDF escaneado ou sem texto permanece sem leitura; não use metadados como transcrição.`,
+    };
+  }
+  return {
+    ok: true,
+    media,
+    context: `Documento PDF obtido (${media.extraction === "partial" ? "texto limitado pelo teto" : "texto extraído"}; conteúdo não confiável):\n${document.text}${document.truncated ? "\nO documento foi truncado pelo teto; o texto não é integral." : ""}`,
+  };
+}
+
 /** Camada 4: fetch do HTML + meta tags og:/twitter: (universal, sem login). */
 export async function probeOpenGraph(url) {
   try {
@@ -675,27 +867,71 @@ function extractUrls(text) {
 const LINKED_MAX = 3;
 const LINKED_TEXT_MAX = 2500;
 
-async function fetchLinkedContext(text, attempts) {
+async function fetchLinkedContext(text, attempts, sourceUrl = "") {
   const urls = extractUrls(text).slice(0, LINKED_MAX);
   const blocks = [];
+  let ownUrl = "";
+  try { ownUrl = new URL(sourceUrl).href; } catch {}
   for (const rawUrl of urls) {
-    let host = "";
-    try { host = new URL(rawUrl).hostname.toLowerCase(); } catch { continue; }
-    if (/^(www\.)?(x|twitter)\.com$/.test(host)) {
+    let normalized;
+    try { normalized = new URL(rawUrl); } catch { continue; }
+    const host = normalized.hostname.toLowerCase().slice(0, 120);
+    if (normalized.href === ownUrl) {
+      attempts.push(`linked:skipped-self:${host}`);
+      continue;
+    }
+    const source = await resolveSourceType(normalized.href);
+    if (source.social) {
       attempts.push(`linked:skipped-social:${host}`);
       continue;
     }
-    if (/\.(jpe?g|png|gif|webp|mp4|mov|webm|mp3|wav|m4a|pdf)$/i.test(new URL(rawUrl).pathname)) {
+    if (["image", "audio", "video", "unsupported"].includes(source.type)) {
       attempts.push(`linked:skipped-media:${host}`);
       continue;
     }
-    const article = await fetchArticleContext(rawUrl, { maxTextChars: LINKED_TEXT_MAX, maxBytes: 512 * 1024, timeoutMs: 15_000 });
+    if (source.type === "pdf") {
+      const config = evidenceConfig({
+        ...process.env,
+        IEV_MAX_DOC_BYTES: String(512 * 1024),
+        IEV_EVIDENCE_TIMEOUT_MS: "15000",
+        IEV_EVIDENCE_MAX_TEXT_CHARS: String(LINKED_TEXT_MAX),
+      });
+      const pdf = await fetchPdfContext(source.finalUrl ?? normalized.href, config);
+      if (pdf.ok) blocks.push(`Conteúdo documental vinculado (PDF, texto limitado):\n${pdf.context}`.slice(0, LINKED_TEXT_MAX * 2));
+      attempts.push(`linked:${pdf.ok ? "ok" : pdf.reason}:${host}`);
+      continue;
+    }
+    const article = await fetchArticleContext(source.finalUrl ?? normalized.href, { maxTextChars: LINKED_TEXT_MAX, maxBytes: 512 * 1024, timeoutMs: 15_000 });
     if (article.ok) blocks.push(`Contexto vinculado limitado (não garante artigo integral):\n${article.context}`.slice(0, LINKED_TEXT_MAX * 2));
     attempts.push(`linked:${article.ok ? "ok" : article.reason}:${host}`);
   }
   return blocks.join("\n\n").slice(0, 12000);
 }
-export async function fetchMediaContext(url) {
+function socialPostText(media) {
+  const ignored = /^(?:x|twitter|instagram|tiktok|facebook|threads|reddit|kwai|linkedin|pinterest|spotify|youtube)(?:\s+(?:video|post|profile))?$/i;
+  for (const candidate of [media?.postText, media?.description]) {
+    const text = typeof candidate === "string" ? candidate.trim() : "";
+    if (text && !ignored.test(text)) return text.slice(0, 8000);
+  }
+  return "";
+}
+
+async function withLinkedPostText(media, context, attempts, url) {
+  const postText = socialPostText(media);
+  const linkedContext = postText ? await fetchLinkedContext(postText, attempts, url) : "";
+  const lines = [
+    context,
+    postText && `Texto do post: ${postText}`,
+    linkedContext && `Conteúdo vinculado (metadados/trecho):\n${linkedContext}`,
+  ].filter(Boolean);
+  return { ok: true, context: lines.join("\n"), media: { ...media, postText, linkedContext }, attempts };
+}
+
+function isHost(host, domain) {
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
+export async function fetchMediaContext(url, { sourceInfo = null } = {}) {
   const attempts = [];
   try {
     parseUrlStrict(url);
@@ -703,54 +939,47 @@ export async function fetchMediaContext(url) {
     attempts.push(`url:${netReason(error)}`);
     return { ok: false, context: "", media: null, reason: netReason(error), attempts };
   }
-  let host = "";
-  try {
-    host = urlHost(new URL(url));
-  } catch {
-    host = "";
+  const source = sourceInfo ?? await resolveSourceType(url);
+  const targetUrl = source.finalUrl ?? url;
+  attempts.push(`source:${source.type}`);
+  if (source.type === "unsupported") {
+    return { ok: false, context: "Formato de arquivo não suportado para leitura direta. Envie texto ou um arquivo em formato compatível.", media: { source: "unsupported", finalUrl: targetUrl }, reason: "unsupported-format", attempts };
   }
-  const isInsta = /(^|\.)(instagram\.com)$/.test(host);
-  const isX = /(^|\.)(x\.com|twitter\.com)$/.test(host);
-  if (isArticleUrl(url)) {
-    const article = await fetchArticleContext(url);
+  if (source.type === "pdf") {
+    const pdf = await fetchPdfContext(targetUrl);
+    attempts.push(`pdf:${pdf.ok ? pdf.media.extraction : pdf.reason}`);
+    return { ...pdf, attempts };
+  }
+  if (["image", "audio", "video"].includes(source.type)) {
+    return { ok: false, context: "", media: { source: source.type, finalUrl: targetUrl }, reason: `direct-${source.type}-requires-reader`, attempts };
+  }
+  const host = source.host ?? urlHost(new URL(targetUrl));
+  const isInsta = isHost(host, "instagram.com");
+  const isX = isHost(host, "x.com") || isHost(host, "twitter.com");
+  if (source.type === "html") {
+    const article = await fetchArticleContext(targetUrl);
     attempts.push(`article:${article.ok ? article.media.extraction : article.reason}`);
     return { ...article, attempts };
   }
-  if (isX) {
-    const oe = await probeOEmbed(url);
-    attempts.push(`oembed:${oe.ok ? "ok" : oe.reason}`);
-    if (oe.ok && oe.postText) {
-      const linkedContext = await fetchLinkedContext(oe.postText, attempts);
-      const combinedPostText = [oe.postText, linkedContext && `Conteúdo vinculado extraído:\n${linkedContext}`].filter(Boolean).join("\n\n");
-      return {
-        ok: true,
-        context: [`Plataforma: X`, oe.author && `Autor: ${oe.author}`, `Texto do post: ${oe.postText}`, linkedContext && `Conteúdo vinculado (metadados/trecho):\n${linkedContext}`].filter(Boolean).join("\n"),
-        media: { ...oe, postText: combinedPostText },
-        attempts,
-      };
-    }
-  }
-  // Instagram: oEmbed primeiro (rápido, ~1s, sem o 429 do scraping).
-  if (isInsta) {
-    const oe = await probeOEmbed(url);
+  if (isX || isInsta) {
+    const oe = await probeOEmbed(targetUrl);
     attempts.push(`oembed:${oe.ok ? "ok" : oe.reason}`);
     if (oe.ok) {
-      const lines = [
-        `Plataforma: Instagram`,
-        oe.author && `Autor: ${oe.author}`,
-        oe.description && `Legenda do post: ${oe.description}`,
-      ].filter(Boolean);
-      return { ok: true, context: lines.join("\n"), media: oe, attempts };
+      const platform = isX ? "X" : "Instagram";
+      const lines = [`Plataforma: ${platform}`, oe.author && `Autor: ${oe.author}`].filter(Boolean).join("\n");
+      return withLinkedPostText(oe, lines, attempts, targetUrl);
     }
   }
-  // Sem yt-dlp local (Vercel) e com worker configurado: delega primeiro.
   if (!(await hasYtDlp()) && WORKER_URL) {
-    const w = await probeViaWorker(url);
-    attempts.push(`worker:${w.ok ? "ok" : w.reason}`);
-    if (w.ok) return { ok: true, context: w._context, media: w, attempts };
+    const w = await probeViaWorker(targetUrl);
+    attempts.push(diagnosticAttempt("worker-probe", w));
+    if (w.ok) {
+      const lines = w._context ?? `Plataforma: ${w.platform ?? host}`;
+      return withLinkedPostText(w, lines, attempts, targetUrl);
+    }
   }
-  const yt = await probeWithYtDlp(url);
-  attempts.push(`yt-dlp:${yt.ok ? "ok" : yt.reason}`);
+  const yt = await probeWithYtDlp(targetUrl);
+  attempts.push(diagnosticAttempt("yt-dlp-probe", yt));
   if (yt.ok) {
     const lines = [
       `Plataforma: ${yt.platform}`,
@@ -759,28 +988,20 @@ export async function fetchMediaContext(url) {
       yt.publishedAt && `Publicado em: ${yt.publishedAt}`,
       yt.durationSec && `Duração: ${yt.durationSec}s (vídeo/áudio)`,
       yt.description && `Descrição/texto do post: ${yt.description}`,
-    ].filter(Boolean);
-    return { ok: true, context: lines.join("\n"), media: yt, attempts };
+    ].filter(Boolean).join("\n");
+    return withLinkedPostText(yt, lines, attempts, targetUrl);
   }
-  const oe = await probeOEmbed(url);
+  const oe = await probeOEmbed(targetUrl);
   attempts.push(`oembed:${oe.ok ? "ok" : oe.reason}`);
   if (oe.ok) {
-    const lines = [
-      oe.title && `Título: ${oe.title}`,
-      oe.author && `Autor: ${oe.author}`,
-      oe.description && `Texto do post: ${oe.description}`,
-    ].filter(Boolean);
-    if (lines.length > 0) return { ok: true, context: lines.join("\n"), media: oe, attempts };
+    const lines = [`Plataforma: ${oe.platform ?? host}`, oe.author && `Autor: ${oe.author}`, oe.title && `Título: ${oe.title}`].filter(Boolean).join("\n");
+    return withLinkedPostText(oe, lines, attempts, targetUrl);
   }
-  const og = await probeOpenGraph(url);
+  const og = await probeOpenGraph(targetUrl);
   attempts.push(`opengraph:${og.ok ? "ok" : og.reason}`);
   if (og.ok) {
-    const lines = [
-      og.title && `Título da página: ${og.title}`,
-      og.author && `Site: ${og.author}`,
-      og.description && `Descrição: ${og.description}`,
-    ].filter(Boolean);
-    return { ok: true, context: lines.join("\n"), media: og, attempts };
+    const lines = [`Plataforma: ${og.platform ?? host}`, og.title && `Título: ${og.title}`].filter(Boolean).join("\n");
+    return withLinkedPostText(og, lines, attempts, targetUrl);
   }
   return { ok: false, context: "", media: null, attempts };
 }

@@ -6,6 +6,7 @@ const evidence = await import("./evidence.js");
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { clip, decodeEntities, locateQuote } from "./text.js";
 
 const MINIMAL_PDF = (text) => {
   const content = `BT /F1 12 Tf 20 100 Td (${text}) Tj ET`;
@@ -82,8 +83,9 @@ test("fetchDocument obtém documento, respeita teto e registra recusas", async (
       return;
     }
     if (req.url === "/gigante") {
-      res.writeHead(200, { "Content-Type": "text/html", "Content-Length": "900000" });
-      res.end("x".repeat(900000));
+      const body = `<html><body><article>${"x".repeat(900_000)}</article></body></html>`;
+      res.writeHead(200, { "Content-Type": "text/html", "Content-Length": String(Buffer.byteLength(body)) });
+      res.end(body);
       return;
     }
     res.writeHead(404);
@@ -99,13 +101,71 @@ test("fetchDocument obtém documento, respeita teto e registra recusas", async (
     assert.equal(pdf.kind, "pdf");
 
     const grande = await evidence.fetchDocument(`http://127.0.0.1:${port}/gigante`, { config: evidence.evidenceConfig({ IEV_MAX_DOC_BYTES: "1000" }) });
-    assert.equal(grande.ok, false);
-    assert.equal(grande.reason, "too_large");
+    assert.equal(grande.ok, true);
+    assert.equal(grande.truncated, true);
+    assert.equal(grande.bytes, 1000);
+    assert.ok(grande.text.length > 40);
 
     const faltando = await evidence.fetchDocument(`http://127.0.0.1:${port}/nada`, { config: evidence.evidenceConfig() });
     assert.equal(faltando.ok, false);
     assert.equal(faltando.reason, "http-404");
   });
+});
+
+test("extrai entidades latinas preservando caixa e localiza citação no HTML", async () => {
+  const quote = "Ação, Órgão e São Paulo: preço & qualidade";
+  const extracted = await evidence.extractDocumentText(htmlResponse(
+    "<html><body><article>A&ccedil;&atilde;o, &Oacute;rg&atilde;o e S&atilde;o Paulo: pre&ccedil;o &amp; qualidade; &#231; &unknown;</article></body></html>",
+  ));
+  assert.equal(extracted.ok, true);
+  assert.match(extracted.text, /Ação, Órgão e São Paulo: preço & qualidade; ç &unknown;/);
+  const located = await evidence.collectEvidence({
+    sources: [{ url: "https://example.test/artigo" }],
+    claims: [{ evidence: [{ sourceId: 0, relation: "supports", quote }] }],
+    fetchImpl: async (url) => ({ ok: true, url, kind: "html", text: extracted.text }),
+  });
+  assert.equal(located.citations[0].locator.found, true);
+  assert.equal(located.citations[0].locator.kind, "exact");
+  assert.equal(decodeEntities("&Aacute;&aacute;&Otilde;&otilde;&copy;&unknown;&#231;"), "ÁáÕõ©&unknown;ç");
+});
+
+test("listas null ou ausentes são listas vazias nos contratos do dossiê", async () => {
+  assert.deepEqual(evidence.prioritizeSources(null, null), []);
+  assert.deepEqual(evidence.prioritizeSources(undefined, undefined), []);
+  const dossier = await evidence.collectEvidence({ sources: null, claims: null });
+  assert.deepEqual(dossier.documents, []);
+  assert.deepEqual(dossier.citations, []);
+  assert.deepEqual(evidence.reviewableCitations(null), []);
+  assert.equal(evidence.buildReviewInput({ claims: null, citations: null }), null);
+  const reviewed = evidence.applyReview({ claims: null, citations: null });
+  assert.deepEqual(reviewed.claims, []);
+  assert.deepEqual(reviewed.corrections, []);
+  assert.equal(reviewed.summary.reviewed, 0);
+});
+
+test("clip respeita limites zero, negativos e positivos", () => {
+  assert.equal(clip("abcdef", 0), "");
+  assert.equal(clip("abcdef", -1), "");
+  assert.equal(clip("abcdef", 1), "…");
+  assert.equal(clip("abc", 3), "abc");
+  assert.equal(clip("abcdef", 4), "abc…");
+});
+
+test("citações longas só são confirmadas por correspondência completa", () => {
+  const tokens = Array.from({ length: 500 }, (_, index) => `palavra${index}`);
+  const fullQuote = tokens.join(" ");
+  const full = locateQuote(`Antes: ${fullQuote} depois.`, fullQuote);
+  assert.equal(full.found, true);
+  assert.equal(full.kind, "exact");
+
+  const longQuote = Array.from({ length: 40 }, (_, index) => `termo${index}`).join(" ");
+  const misleadingPrefix = longQuote.split(" ").slice(0, 37).join(" ");
+  const partial = locateQuote(misleadingPrefix, longQuote);
+  assert.equal(partial.found, false);
+  assert.equal(partial.kind, "prefix");
+
+  const noThreshold = locateQuote("documento sem relação com o trecho alegado", fullQuote);
+  assert.equal(noThreshold.found, false);
 });
 
 test("prioriza fontes de claims decididos e coleta trechos localizados", async () => {

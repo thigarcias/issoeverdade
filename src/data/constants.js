@@ -53,6 +53,7 @@ export const ERROR_MESSAGES = {
   daily_budget: "O limite diário de checagens foi atingido. Tente novamente amanhã.",
   limits_unavailable: "Controles de uso não configurados nesta implantação; novas checagens estão suspensas.",
   private_url: "Esse endereço não é aceito: apenas páginas públicas em HTTP/HTTPS.",
+  empty_input: "Cole um link para checar.",
   invalid_url: "URL inválida.",
   text_too_long: "O texto enviado passa do limite aceito. Envie um trecho menor.",
   upload_too_large: "O arquivo excede o limite de envio.",

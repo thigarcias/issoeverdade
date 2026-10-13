@@ -13,11 +13,11 @@ Esta seção registra o que passou a existir no código depois do diagnóstico a
 | Área | Estado | Onde | Como foi verificado |
 |---|---|---|---|
 | Política de URL (SSRF) | Implementado: HTTP/HTTPS, sem credenciais, portas permitidas, IPv4/IPv6 internos (mapeados, NAT64, 6to4, Teredo), DNS com todos os endereços validados, conexão fixada no endereço validado e revalidação de cada redirect | `server/net.js` | `server/net.test.js` (matriz de endereços, redirect para metadados, timeout, tetos) |
-| Worker | Implementado: recusa iniciar sem `WORKER_SECRET`, valida URL com a mesma política, concorrência limitada, vigia de disco, limpeza de temporários órfãos, proxy de egresso opcional | `worker/server.js` | `worker/server.test.js` |
-| Tetos de download | Implementado: bytes por resposta, por arquivo, por job e por diretório, com interrupção da árvore de processos (`yt-dlp`/`ffmpeg`) | `server/proc.js`, `server/media.js` | `server/media.test.js` (arquivo acima do teto recusado, destino interno bloqueado) |
-| Duração de mídia | Implementado: recusa acima de `IEV_MAX_MEDIA_SECONDS` (ffprobe) e amostragem de frames limitada | `server/media.js`, `worker/server.js` | revisão de código + smoke |
+| Worker | Implementado: recusa iniciar sem `WORKER_SECRET`, valida URL com a mesma política, concorrência limitada, vigia de disco e limpeza de temporários; usa o processador de arquivo compartilhado com o servidor | `worker/server.js`, `server/local-media.js` | `worker/server.test.js` com uploads audiovisuais reais |
+| Tetos de download | Implementado: bytes por resposta, por arquivo, por job e por diretório, com interrupção da árvore de processos (`yt-dlp`/`ffmpeg`) | `server/proc.js`, `server/media.js` | `server/media.test.js` (teto, redirect, concorrência e diretórios exclusivos) |
+| Processamento audiovisual local/remoto | Implementado no código: sem worker, desenvolvimento usa `ffprobe`/`ffmpeg`; serverless sem worker recusa; worker configurado não tem fallback local silencioso. Duração positiva/finita e trilhas legíveis são exigidas antes da conversão. | `server/local-media.js`, `server/media.js`, `worker/server.js` | `server/media.test.js` e `worker/server.test.js` com fixtures reais; deploy remoto de produção não foi exercitado |
 | Texto excedente | Implementado: recusa com `text_too_long` (não trunca) e contador na interface | `server/uploads.js`, `src/components/Verifier.jsx` | `server/endpoint.test.js` |
-| Fora de escopo | Implementado: triagem determinística de pedido direto ao assistente → `no_verifiable_claims` antes de qualquer chamada de modelo | `server/moderation.js` | `server/moderation.test.js`, `server/endpoint.test.js` |
+| Fora de escopo | Implementado: triagem determinística recusa pedidos claros de tarefa antes do julgamento factual; números, links e comprimento incidental não os isentam, enquanto alegações, perguntas factuais e checagens identificáveis continuam elegíveis | `server/moderation.js` | `server/moderation.test.js`, `server/endpoint.test.js` |
 | Moderação de conteúdo | Implementado: texto enviado, texto trazido da página/post, imagens/frames e transcrição antes das etapas caras; recusa restrita a categorias que não podem ser processadas; falha em `required` interrompe como erro operacional (503), nunca como recusa de conteúdo | `server/moderation.js`, `server/verify.js` | `server/moderation.test.js`, `server/endpoint.test.js` |
 | Cobertura de vídeo | Implementado: `MEDIA_VIDEO_MODERATION` precisa ser declarado em produção; sem isso o vídeo é recusado (`moderation_uncovered`) | `server/moderation.js` | `server/moderation.test.js` |
 | Abuso e custo | Implementado: limite de taxa por origem, vagas com lease, orçamento diário em unidades e contagem de tokens em backend REST compatível com Redis; produção sem backend recusa (fail-closed) | `server/limits.js`, `server/endpoint.js` | `server/limits.test.js`, `server/endpoint.test.js` |
@@ -66,9 +66,9 @@ A aplicação deve separar três situações:
 2. **Material insuficiente ou inacessível:** ausência de conteúdo necessário, falha de leitura ou cobertura insuficiente. Resultado esperado: `insufficient_input` ou `inaccessible_media`, sem score e sem veredito factual.
 3. **Conteúdo proibido pela política do produto:** precisa de tratamento próprio de segurança, não de um selo verdadeiro/falso.
 
-Hoje, a orientação de escopo está nos prompts. Não há um filtro independente que garanta rejeição antes de baixar, transcrever ou enviar conteúdo ao modelo.
+Há uma triagem determinística antes do julgamento factual, sem chamada adicional de IA: pedidos claros de tarefa (por exemplo, resolver uma conta, resumir ou traduzir) são recusados independentemente de números, links ou comprimento. Alegações numéricas, perguntas factuais e pedidos de checagem com alegação identificável permanecem elegíveis; texto de terceiros entre aspas não é tratado como comando. A frase ambígua “me diga se é verdade” não basta, por si só, para recusar.
 
-A triagem não deve confundir linguagem ofensiva ou tema sensível com ausência de um fato verificável. Uma afirmação sobre violência, por exemplo, pode ser legítima para checagem. As regras de admissibilidade precisam ser explícitas.
+Essa decisão de propósito é distinta da moderação de conteúdo. Linguagem ofensiva ou tema sensível não implica ausência de fato verificável: uma afirmação sobre violência, por exemplo, pode ser legítima para checagem.
 
 ## 4. Mídia estranha, sensível ou abusiva
 

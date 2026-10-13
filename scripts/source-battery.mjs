@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-// Bateria de fontes: exercita leitura de URLs variadas sem chamar IA paga.
-// Camadas: parseUrlStrict/isArticleUrl + fetchMediaContext + probeOEmbed +
-// probeOpenGraph + fetchDocument/extractDocumentText + normalizeVerifyInput.
+// Bateria de fontes: exercita classificação, extração e controles sem IA paga.
+// Rede real mede compatibilidade observada; fixtures determinísticas ficam nas suítes.
 // Uso: node scripts/source-battery.mjs [--quick] [--out tmp-dl/source-battery.json]
-import { writeFile, mkdir } from "node:fs/promises";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 
 const QUICK = process.argv.includes("--quick");
 const outIdx = process.argv.indexOf("--out");
@@ -13,7 +12,7 @@ const media = await import("../server/media.js");
 const net = await import("../server/net.js");
 const evidence = await import("../server/evidence.js");
 const uploads = await import("../server/uploads.js");
-
+const localMedia = await import("../server/local-media.js");
 // ---------------------------------------------------------------------------
 // Casos: cada item {id, grupo, url|input, espera}
 // espera.ok: true/false/"qualquer" — só documentação; o relatório mostra real.
@@ -28,6 +27,7 @@ const CASES = [
   { id: "news-bbc-brasil", grupo: "noticia-br", url: "https://www.bbc.com/portuguese", espera: "qualquer" },
   { id: "news-agencia-brasil", grupo: "noticia-br", url: "https://agenciabrasil.ebc.com.br/", espera: "qualquer" },
   { id: "news-poder360", grupo: "noticia-br", url: "https://www.poder360.com.br/", espera: "qualquer" },
+  { id: "news-article-agenciabrasil", grupo: "artigo-concreto", url: "https://agenciabrasil.ebc.com.br/politica/noticia/2026-10/eleicoes-2026-acompanhe-apuracao-em-tempo-real-pela-agencia-brasil", espera: "qualquer" },
   // Internacional / estruturado
   { id: "news-bbc-world", grupo: "noticia-intl", url: "https://www.bbc.com/news", espera: "qualquer" },
   { id: "news-reuters", grupo: "noticia-intl", url: "https://www.reuters.com/", espera: "qualquer" },
@@ -93,8 +93,8 @@ const CASES = [
 ];
 
 const QUICK_IDS = new Set([
-  "news-wiki", "news-govbr", "soc-x", "soc-youtube", "soc-tiktok", "soc-instagram",
-  "file-pdf", "http-404", "http-500", "block-localhost", "block-metadata", "block-port",
+  "news-wiki", "news-govbr", "news-article-agenciabrasil", "soc-x", "soc-youtube", "soc-tiktok", "soc-instagram",
+  "file-pdf", "file-img", "file-mp4", "http-404", "http-500", "block-localhost", "block-metadata", "block-port",
   "block-ftp", "block-nohost", "enc-espaco", "enc-fragment", "redir-utm",
 ]);
 
@@ -109,57 +109,205 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
+function expectedModality(item) {
+  if (item.grupo === "bloqueio") return "policy-rejection";
+  if (item.id === "file-pdf") return "PDF document";
+  if (item.id === "file-img") return "image";
+  if (item.id === "file-mp4") return "video";
+  if (item.id === "soc-spotify") return "audio episode";
+  if (item.grupo === "social-video") return "social post with possible video";
+  if (item.grupo === "social") return "social post; media depends on attachment";
+  if (item.grupo === "artigo-concreto") return "concrete HTML article";
+  if (["noticia-br", "noticia-intl", "enciclopedia", "oficial", "blog"].includes(item.grupo)) return "HTML page/homepage; not proof of full article coverage";
+  if (item.grupo === "http-status") return "HTTP response";
+  if (item.grupo === "redirect") return "redirect target; modality resolved at final URL";
+  if (item.grupo === "url-borda") return "URL normalization then final resource modality";
+  return "modality resolved from final URL and MIME";
+}
+
+function safeUrl(value) {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+async function runMediaExtraction(url, sourceInfo) {
+  const limits = media.mediaLimits();
+  const audioResult = await withTimeout(
+    media.downloadAudio(url, "./tmp-dl/source-battery-media", sourceInfo.type),
+    limits.workerTimeoutMs + 15_000,
+    "audio-extraction",
+  ).catch((error) => ({ ok: false, reason: error?.message?.split(":")[0] ?? "audio-timeout" }));
+  let audio;
+  try {
+    if (!audioResult.ok || !audioResult.file) {
+      audio = { ok: false, reason: audioResult.reason ?? "audio-artifact-unavailable", via: audioResult.via ?? null };
+    } else {
+      const inspection = await localMedia.inspectMediaFile(audioResult.file, limits.maxMediaSeconds);
+      const bytes = (await stat(audioResult.file)).size;
+      audio = {
+        ok: inspection.ok && inspection.hasAudio && bytes > 0,
+        reason: inspection.ok && inspection.hasAudio && bytes > 0 ? null : inspection.reason ?? "audio-content-unreadable",
+        via: audioResult.via ?? null,
+        durationSec: inspection.durationSec ?? audioResult.durationSec ?? null,
+        bytes,
+      };
+    }
+  } catch (error) {
+    audio = { ok: false, reason: error?.code ?? "audio-validation-failed", via: audioResult.via ?? null };
+  } finally {
+    if (audioResult.dir) await rm(audioResult.dir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  if (sourceInfo.type === "audio") return { applicable: true, audio: { ...audio, applicable: true }, frames: { applicable: false, reason: "audio-only-source" }, attempts: audioResult.attempts ?? [] };
+  const frameResult = await withTimeout(
+    media.downloadFrames(url, sourceInfo.type),
+    limits.workerTimeoutMs + 15_000,
+    "frame-extraction",
+  ).catch((error) => ({ ok: false, reason: error?.message?.split(":")[0] ?? "frames-timeout" }));
+  const frames = media.normalizeWorkerFrames(frameResult.frames);
+  const framesBytes = frames.reduce((sum, frame) => sum + Buffer.from(frame.data, "base64").length, 0);
+  return {
+    applicable: true,
+    audio: { ...audio, applicable: true },
+    frames: {
+      applicable: true,
+      ok: Boolean(frameResult.ok && frames.length && frames.length === (frameResult.frames?.length ?? 0)),
+      reason: frameResult.ok && frames.length ? null : frameResult.reason ?? "no-readable-frames",
+      via: frameResult.via ?? null,
+      count: frames.length,
+      bytes: framesBytes,
+      durationSec: frameResult.seconds ?? null,
+    },
+    attempts: [...(audioResult.attempts ?? []), ...(frameResult.attempts ?? [])],
+  };
+}
+
 async function runCase(item) {
-  const out = { id: item.id, grupo: item.grupo, url: item.url, espera: item.espera, steps: {}, msTotal: 0 };
+  const out = {
+    id: item.id,
+    grupo: item.grupo,
+    url: safeUrl(item.url),
+    espera: item.espera,
+    expectedModality: expectedModality(item),
+    steps: {},
+    limitation: null,
+    msTotal: 0,
+  };
   const t0 = Date.now();
-  // 1. policy
   try {
     const parsed = net.parseUrlStrict(item.url);
     out.steps.policy = { ok: true, host: parsed.host, port: parsed.port };
-  } catch (e) {
-    out.steps.policy = { ok: false, code: e?.code ?? String(e?.message ?? e) };
+  } catch (error) {
+    out.steps.policy = { ok: false, code: error?.code ?? "invalid_url" };
+    out.steps.routing = { applicable: false, reason: "invalid-input" };
+    out.steps.fetch = { applicable: false, reason: "invalid-input" };
+    out.steps.document = { applicable: false, reason: "invalid-input" };
+    out.steps.extraction = { applicable: false, reason: "invalid-input" };
+    out.limitation = out.steps.policy.code;
+    out.msTotal = Date.now() - t0;
+    return out;
   }
-  // 2. roteamento
+
+  let sourceInfo;
   try {
-    out.steps.isArticle = { ok: true, value: media.isArticleUrl(item.url) };
-  } catch (e) {
-    out.steps.isArticle = { ok: false, threw: String(e?.message ?? e).slice(0, 160) };
-  }
-  // 3. fetchMediaContext (núcleo da leitura de links)
-  try {
-    const r = await withTimeout(media.fetchMediaContext(item.url), 75_000, "fetchMediaContext");
-    out.steps.fetch = {
-      ok: r.ok, attempts: r.attempts ?? [], reason: r.reason ?? null,
-      extraction: r.media?.extraction ?? null, method: r.media?.extractionMethod ?? null,
-      truncated: r.media?.truncated ?? null, platform: r.media?.platform ?? null,
-      source: r.media?.source ?? null, titleLen: r.media?.title?.length ?? 0,
-      descLen: r.media?.description?.length ?? 0, bodyLen: r.media?.body?.length ?? 0,
-      ctxLen: r.context?.length ?? 0, finalUrl: r.media?.finalUrl ?? null,
+    sourceInfo = await withTimeout(media.resolveSourceType(item.url), 15_000, "source-classification");
+    out.steps.routing = {
+      ok: true,
+      expected: out.expectedModality,
+      type: sourceInfo.type,
+      mediaCandidate: Boolean(sourceInfo.mediaCandidate),
+      social: Boolean(sourceInfo.social),
+      finalUrl: safeUrl(sourceInfo.finalUrl),
     };
-  } catch (e) {
-    out.steps.fetch = { ok: false, threw: `${e?.code ?? ""} ${String(e?.message ?? e).slice(0, 200)}`.trim() };
+  } catch (error) {
+    out.steps.routing = { ok: false, expected: out.expectedModality, reason: error?.code ?? "classification-failed" };
+    out.steps.fetch = { applicable: false, reason: "classification-failed" };
+    out.steps.document = { applicable: false, reason: "classification-failed" };
+    out.steps.extraction = { applicable: false, reason: "classification-failed" };
+    out.limitation = "classification-failed";
+    out.msTotal = Date.now() - t0;
+    return out;
   }
-  // 4. oEmbed direto
+
+  let fetched = null;
   try {
-    const r = await withTimeout(media.probeOEmbed(item.url), 30_000, "oembed");
-    out.steps.oembed = { ok: r.ok, reason: r.reason ?? null, platform: r.platform ?? null, textLen: (r.postText ?? r.description ?? "").length };
-  } catch (e) {
-    out.steps.oembed = { ok: false, threw: String(e?.message ?? e).slice(0, 160) };
+    fetched = await withTimeout(media.fetchMediaContext(item.url, { sourceInfo }), 75_000, "fetchMediaContext");
+    out.steps.fetch = {
+      ok: fetched.ok,
+      attempts: fetched.attempts ?? [],
+      reason: fetched.reason ?? null,
+      extraction: fetched.media?.extraction ?? null,
+      method: fetched.media?.extractionMethod ?? null,
+      truncated: fetched.media?.truncated ?? null,
+      platform: fetched.media?.platform ?? null,
+      source: fetched.media?.source ?? null,
+      titleLen: fetched.media?.title?.length ?? 0,
+      descLen: fetched.media?.description?.length ?? 0,
+      bodyLen: fetched.media?.body?.length ?? 0,
+      postTextLen: fetched.media?.postText?.length ?? 0,
+      linkedContextLen: fetched.media?.linkedContext?.length ?? 0,
+      ctxLen: fetched.context?.length ?? 0,
+      finalUrl: safeUrl(fetched.media?.finalUrl ?? sourceInfo.finalUrl),
+    };
+  } catch (error) {
+    out.steps.fetch = { ok: false, reason: error?.code ?? "fetch-failed" };
   }
-  // 5. openGraph direto
-  try {
-    const r = await withTimeout(media.probeOpenGraph(item.url), 30_000, "opengraph");
-    out.steps.opengraph = { ok: r.ok, reason: r.reason ?? null, titleLen: r.title?.length ?? 0, descLen: r.description?.length ?? 0 };
-  } catch (e) {
-    out.steps.opengraph = { ok: false, threw: String(e?.message ?? e).slice(0, 160) };
+
+  if (sourceInfo.type === "pdf") {
+    out.steps.document = {
+      applicable: true,
+      ok: Boolean(fetched?.ok),
+      kind: "pdf",
+      extraction: fetched?.media?.extraction ?? "inaccessible",
+      method: fetched?.media?.extractionMethod ?? "unpdf",
+      textLen: fetched?.media?.body?.length ?? 0,
+      reason: fetched?.reason ?? null,
+    };
+  } else if (sourceInfo.type === "html") {
+    try {
+      const document = await withTimeout(evidence.fetchDocument(item.url), 40_000, "fetchDocument");
+      out.steps.document = { applicable: true, ok: document.ok, kind: document.kind ?? null, bytes: document.bytes ?? 0, textLen: document.text?.length ?? 0, status: document.status ?? null, truncated: document.truncated ?? false, reason: document.reason ?? null };
+    } catch (error) {
+      out.steps.document = { applicable: true, ok: false, reason: error?.code ?? "document-failed" };
+    }
+  } else {
+    out.steps.document = { applicable: false, reason: `not-document:${sourceInfo.type}` };
   }
-  // 6. evidence fetchDocument
-  try {
-    const r = await withTimeout(evidence.fetchDocument(item.url), 40_000, "fetchDocument");
-    out.steps.document = { ok: r.ok, reason: r.reason ?? null, kind: r.kind ?? null, bytes: r.bytes ?? 0, textLen: r.text?.length ?? 0, status: r.status ?? null, truncated: r.truncated ?? false };
-  } catch (e) {
-    out.steps.document = { ok: false, threw: String(e?.message ?? e).slice(0, 160) };
+
+  if (sourceInfo.type === "image") {
+    try {
+      const image = await withTimeout(media.fetchImageSource(sourceInfo.finalUrl ?? item.url), 25_000, "image-fetch");
+      out.steps.image = {
+        applicable: true,
+        ok: image.ok,
+        reason: image.reason ?? null,
+        mime: image.fileMime ?? null,
+        bytes: image.fileBuffer?.length ?? 0,
+        finalUrl: safeUrl(image.finalUrl),
+      };
+    } catch (error) {
+      out.steps.image = { applicable: true, ok: false, reason: error?.code ?? "image-fetch-failed" };
+    }
+  } else {
+    out.steps.image = { applicable: false, reason: `not-image:${sourceInfo.type}` };
   }
+
+  if (["audio", "video"].includes(sourceInfo.type) || sourceInfo.mediaCandidate) {
+    out.steps.extraction = await runMediaExtraction(sourceInfo.finalUrl ?? item.url, sourceInfo);
+  } else {
+    out.steps.extraction = { applicable: false, reason: "no-audiovisual-candidate" };
+  }
+  const limitations = [];
+  if (fetched?.reason && !["image", "audio", "video"].includes(sourceInfo.type)) limitations.push(`fetch:${fetched.reason}`);
+  if (out.steps.image?.applicable && !out.steps.image.ok) limitations.push(`image:${out.steps.image.reason}`);
+  if (out.steps.extraction?.audio && !out.steps.extraction.audio.ok) limitations.push(`audio:${out.steps.extraction.audio.reason}`);
+  if (out.steps.extraction?.frames?.applicable && !out.steps.extraction.frames.ok) limitations.push(`frames:${out.steps.extraction.frames.reason}`);
+  if (out.steps.document?.applicable && !out.steps.document.ok) limitations.push(`document:${out.steps.document.reason ?? out.steps.document.extraction}`);
+  out.limitation = limitations.length ? limitations.join("; ").slice(0, 300) : null;
   out.msTotal = Date.now() - t0;
   return out;
 }
@@ -180,9 +328,9 @@ async function runUploadCases() {
   for (const c of cases) {
     try {
       const norm = uploads.normalizeVerifyInput(c.input);
-      results.push({ id: c.id, ok: true, mime: norm.fileMime, bytes: norm.fileBuffer?.length ?? 0, esperaOk: c.esperaOk });
+      results.push({ id: c.id, ok: true, expectedModality: c.input.kind, extraction: "upload-validation", path: "normalizeVerifyInput", mime: norm.fileMime, bytes: norm.fileBuffer?.length ?? 0, esperaOk: c.esperaOk });
     } catch (e) {
-      results.push({ id: c.id, ok: false, error: e?.message ?? String(e), status: e?.status ?? null, esperaOk: c.esperaOk });
+      results.push({ id: c.id, ok: false, expectedModality: c.input.kind, extraction: "upload-validation", path: "normalizeVerifyInput", error: e?.message ?? String(e), status: e?.status ?? null, esperaOk: c.esperaOk });
     }
   }
   return results;
@@ -196,7 +344,12 @@ for (const [i, item] of selected.entries()) {
   const r = await runCase(item);
   urlResults.push(r);
   const f = r.steps.fetch;
-  console.log(`[${i + 1}/${selected.length}] ${r.id} policy=${r.steps.policy.ok ? "ok" : r.steps.policy.code} article=${r.steps.isArticle.value} fetch=${f.ok ? "OK" : "FAIL"}[${(f.attempts ?? []).join(",") || f.reason || f.threw || "?"}] doc=${r.steps.document.ok ? r.steps.document.kind : r.steps.document.reason} ${r.msTotal}ms`);
+  const extraction = r.steps.extraction;
+  const paths = [...(f?.attempts ?? []), ...(extraction?.attempts ?? [])].join(",") || "n/a";
+  const coverage = extraction?.audio?.applicable === false
+    ? `audio=${extraction.audio.reason}`
+    : `audio=${extraction?.audio?.ok ? "ok" : extraction?.audio?.reason ?? "n/a"} frames=${extraction?.frames?.applicable ? extraction.frames.ok ? "ok" : extraction.frames.reason : "n/a"}`;
+  console.log(`[${i + 1}/${selected.length}] ${r.id} expected=${r.expectedModality} type=${r.steps.routing?.type ?? "unresolved"} fetch=${f?.ok ? "OK" : f?.reason ?? "n/a"} coverage=${coverage} paths=[${paths}] limitation=${r.limitation ?? "none"} ${r.msTotal}ms`);
 }
 const uploadResults = await runUploadCases();
 for (const u of uploadResults) console.log(`[upload] ${u.id} => ${u.ok ? "aceito" : "recusado:" + u.error} (esperado ${u.esperaOk ? "aceito" : "recusado"})`);

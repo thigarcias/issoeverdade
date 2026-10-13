@@ -272,7 +272,7 @@ export function createGuard(config = limitsConfig()) {
         }
         waitedMs = Date.now() - (deadline - waitMs);
         if (Date.now() >= deadline) {
-          throw new LimitsExceeded("capacity_full", "Capacidade de checagens simultâneas esgotada. Tente novamente em instantes.", Math.ceil(config.slotLeaseSec / 2));
+          throw new LimitsExceeded("capacity_full", "Capacidade de checagens simultâneas esgotada. Tente novamente em instantes.", Math.min(30, Math.max(1, Math.ceil(config.slotLeaseSec / 2))));
         }
         await new Promise((resolve) => setTimeout(resolve, pollMs));
       }

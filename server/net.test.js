@@ -84,10 +84,20 @@ test("safeFetch respeita teto declarado, teto real e truncamento", async () => {
       pump();
       return;
     }
+    if (req.url === "/budget-chunk") {
+      res.writeHead(200, { "Content-Type": "text/plain", "Transfer-Encoding": "chunked" });
+      res.end("z".repeat(1000));
+      return;
+    }
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("corpo curto");
   }, async (port, policy) => {
-    await assert.rejects(() => safeFetch(`http://127.0.0.1:${port}/declarado`, { maxBytes: 1000, policy }), (error) => error.code === "too_large");
+    await assert.rejects(() => safeFetch(`http://127.0.0.1:${port}/declarado`, { maxBytes: 1024, policy }), (error) => error.code === "too_large");
+    const declared = await safeFetch(`http://127.0.0.1:${port}/declarado`, {
+      maxBytes: 1024, truncate: true, policy, budget: byteBudget(10000),
+    });
+    assert.equal(declared.truncated, true);
+    assert.equal(declared.body.length, 1024);
     await assert.rejects(() => safeFetch(`http://127.0.0.1:${port}/sem-tamanho`, { maxBytes: 4000, policy }), (error) => error.code === "too_large");
     const ok = await safeFetch(`http://127.0.0.1:${port}/ok`, { maxBytes: 1000, policy });
     assert.equal(ok.ok, true);
@@ -95,6 +105,12 @@ test("safeFetch respeita teto declarado, teto real e truncamento", async () => {
     const parcial = await safeFetch(`http://127.0.0.1:${port}/sem-tamanho`, { maxBytes: 4000, truncate: true, policy });
     assert.equal(parcial.truncated, true);
     assert.equal(parcial.body.length, 4000);
+    const budget = byteBudget(100);
+    await assert.rejects(
+      () => safeFetch(`http://127.0.0.1:${port}/budget-chunk`, { maxBytes: 1024, truncate: true, policy, budget }),
+      (error) => error.code === "budget_exhausted",
+    );
+    assert.ok(budget.used > budget.totalBytes);
     await assert.rejects(
       () => safeFetch(`http://127.0.0.1:${port}/ok`, { maxBytes: 1000, policy, budget: byteBudget(5) }),
       (error) => error.code === "budget_exhausted",

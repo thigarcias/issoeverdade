@@ -6,7 +6,21 @@
 const ENTITIES = {
   amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", ndash: "–", mdash: "—",
   hellip: "…", lsquo: "\u2018", rsquo: "\u2019", ldquo: "\u201c", rdquo: "\u201d", deg: "°",
+  copy: "©", reg: "®", trade: "™", euro: "€", cent: "¢", pound: "£", yen: "¥",
+  Agrave: "À", Aacute: "Á", Acirc: "Â", Atilde: "Ã", Auml: "Ä", Aring: "Å", AElig: "Æ",
+  Ccedil: "Ç", Egrave: "È", Eacute: "É", Ecirc: "Ê", Euml: "Ë",
+  Igrave: "Ì", Iacute: "Í", Icirc: "Î", Iuml: "Ï", ETH: "Ð", Ntilde: "Ñ",
+  Ograve: "Ò", Oacute: "Ó", Ocirc: "Ô", Otilde: "Õ", Ouml: "Ö", times: "×",
+  Oslash: "Ø", Ugrave: "Ù", Uacute: "Ú", Ucirc: "Û", Uuml: "Ü", Yacute: "Ý", THORN: "Þ",
+  szlig: "ß", agrave: "à", aacute: "á", acirc: "â", atilde: "ã", auml: "ä", aring: "å",
+  aelig: "æ", ccedil: "ç", egrave: "è", eacute: "é", ecirc: "ê", euml: "ë",
+  igrave: "ì", iacute: "í", icirc: "î", iuml: "ï", eth: "ð", ntilde: "ñ",
+  ograve: "ò", oacute: "ó", ocirc: "ô", otilde: "õ", ouml: "ö", divide: "÷",
+  oslash: "ø", ugrave: "ù", uacute: "ú", ucirc: "û", uuml: "ü", yacute: "ý", thorn: "þ",
+  yuml: "ÿ",
 };
+
+const MAX_LOOSE_TOKENS = 30;
 
 export function decodeEntities(value) {
   return String(value ?? "").replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (match, entity) => {
@@ -14,7 +28,7 @@ export function decodeEntities(value) {
       const code = entity[1]?.toLowerCase() === "x" ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10);
       return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
     }
-    return ENTITIES[entity.toLowerCase()] ?? match;
+    return ENTITIES[entity] ?? match;
   });
 }
 
@@ -119,10 +133,11 @@ function escapeRegExp(value) {
  * Só usa tokens com dois ou mais caracteres e nunca gera backreference.
  */
 function looseMatcher(quote) {
-  const parts = tokens(quote).map(escapeRegExp);
-  if (parts.length < 3) return null;
+  const parts = tokens(quote);
+  if (parts.length < 3 || parts.length > MAX_LOOSE_TOKENS) return null;
+  const escaped = parts.map(escapeRegExp);
   try {
-    return new RegExp(parts.join(LOOSE_GAP), "iu");
+    return new RegExp(escaped.join(LOOSE_GAP), "iu");
   } catch {
     return null;
   }
@@ -205,13 +220,14 @@ export function locateQuote(documentText, quote, { excerptChars = 400 } = {}) {
   result.index = span.start;
   result.similarity = similarity;
   result.excerpt = excerptFrom(span.start, span.end);
-  result.kind = similarity >= FUZZY_THRESHOLD ? "approximate" : "prefix";
-  result.found = similarity >= FUZZY_THRESHOLD;
+  result.kind = similarity >= FUZZY_THRESHOLD && tokens(foldedQuote).length <= MAX_LOOSE_TOKENS ? "approximate" : "prefix";
+  result.found = result.kind === "approximate";
   return result;
 }
 
 /** Corte seguro por frases, usado em resumos públicos e logs. */
 export function clip(value, max) {
   const text = String(value ?? "");
+  if (max <= 0) return "";
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }

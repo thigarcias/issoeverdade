@@ -34,8 +34,9 @@ a identificação de alegações, não provam o conteúdo. A síntese declara qu
 o artigo integral não foi lido. Uma notícia não termina como mídia inacessível
 só por falha de acesso: sem alegações identificáveis, `insufficient_input`;
 claims identificados sem evidência suficiente ficam `unproven`. A revisão de
-extração `article-content-v3` integra o cache sem alterar as regras
-`fact-check-5` para perguntas e alegações futuras.
+extração `article-content-v4` integra o cache sem alterar as regras
+`fact-check-5` para perguntas e alegações futuras. Resultados do namespace anterior
+continuam históricos, não são apagados nem reaproveitados como cache atual.
 
 #### Evidência local de extração e pesquisa
 
@@ -130,9 +131,31 @@ A pontuação não é probabilidade calibrada, nem medida de precisão. A média
 
 ## Imagens, vídeos e uploads
 
-Uploads de imagem/vídeo enviam os bytes reais do arquivo. O servidor limita o arquivo ao teto configurado (padrão 3 MiB), confere assinatura e tipo antes de processar e recusa texto acima de `IEV_MAX_TEXT_CHARS` em vez de truncar. Imagens usam o modelo de visão configurado. Vídeo/áudio requer um caminho de extração disponível; o worker pode extrair áudio e até 10 frames ao longo do vídeo, respeitando `IEV_MAX_MEDIA_SECONDS` (padrão 900 s) — acima disso a mídia não é processada. Downloads remotos têm teto de bytes por resposta, por arquivo e por job, com vigia de disco que interrompe a árvore de processos do `yt-dlp`/`ffmpeg`. A transcrição usa um modelo OpenAI elegível; frames/OCR usam o modelo de visão configurado. O worker não é uma dependência garantida em todo ambiente e não foi confirmado como implantado em produção nesta entrega.
+Uploads de imagem/vídeo/áudio respeitam o teto de 3 MiB, assinatura e MIME
+compatível; texto acima de `IEV_MAX_TEXT_CHARS` é recusado. O processador
+compartilhado (`server/local-media.js`) valida arquivo, trilhas e duração finita
+positiva com `ffprobe` antes da conversão. Sem worker, apenas desenvolvimento
+usa `ffprobe`/`ffmpeg` locais; em serverless sem worker a extração informa
+indisponibilidade. Worker configurado processa remotamente e sua falha não aciona
+fallback local. A duração original, `IEV_MAX_MEDIA_SECONDS`, disco, tempo, áudio
+e frames permanecem limitados. Áudio sem vídeo não exige frames; vídeo sem áudio
+não é apresentado como fala transcrita.
 
-A mídia pode falhar parcialmente: transcrição sem timestamps, áudio ausente, OCR/visão indisponível, link inacessível ou frames limitados. A resposta e o painel registram cobertura e tentativas quando disponíveis. Dez frames e uma transcrição não significam cobertura integral. Não há autenticação de autoria, data, montagem ou contexto de uma imagem/vídeo. Links de plataformas — inclusive X — dependem do extractor/worker e podem resultar apenas em metadados ou post; o sistema não garante download de todo vídeo.
+Links são classificados por modalidade após redirects e por indicação de host,
+caminho, MIME ou assinatura obtida em amostra. Notícias HTML não disparam
+extração audiovisual; post social não prova que exista vídeo. Episódios Spotify
+são candidatos a áudio. PDF textual reutiliza `fetchDocument`/`unpdf`; imagem
+direta usa `safeFetch`, validação de bytes/MIME e o mesmo caminho de moderação e
+visão do upload; áudio/vídeo passa por validação de stream e duração antes de
+transcrição ou visão. Formatos não suportados, conteúdo não lido e falhas não
+recebem score/veredito com base em metadados.
+
+Quando texto de post está acessível, o resolvedor pode seguir até 3 links
+documentais (512 KiB e 15 s por página), limitar o corpo a 2.500 caracteres e
+o contexto conjunto a 12.000. Dedupe URLs, ignora o próprio post, links sociais e
+arquivos de mídia; não percorre links recursivamente nem contorna login-wall.
+
+A mídia pode falhar parcialmente: transcrição sem timestamps, áudio ausente, OCR/visão indisponível, link inacessível ou frames limitados. A resposta e o painel registram cobertura e tentativas quando disponíveis. Dez frames e uma transcrição não significam cobertura integral. Não há autenticação de autoria, data, montagem ou contexto de uma imagem/vídeo. Links de plataformas dependem dos extratores públicos disponíveis; login-wall, captcha, paywall, conteúdo removido e streams protegidos podem permanecer inacessíveis.
 
 Downloads de metadados, áudio e frames têm subetapas medidas. Depois da extração, transcrição e visão rodam em paralelo; falha de uma não descarta a outra. O painel mostra subetapas e fase principal: elas se sobrepõem e suas durações não devem ser somadas. Quantidade real de frames, timestamps fornecidos e duração retornada pelo worker são preservados, sem inventar timestamps ausentes.
 

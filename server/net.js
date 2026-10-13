@@ -272,7 +272,7 @@ function requestOnce(url, addresses, { method, headers, body, maxBytes, truncate
       },
       (res) => {
         const declared = Number(res.headers["content-length"]);
-        if (Number.isFinite(declared) && declared > cap) {
+        if (Number.isFinite(declared) && declared > cap && !truncate) {
           res.destroy();
           req.destroy();
           done(reject, new NetError("too_large", undefined, { declared, limit: cap }));

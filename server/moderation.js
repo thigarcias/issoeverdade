@@ -10,11 +10,17 @@ const OPENAI_MODERATION_URL = "https://api.openai.com/v1/moderations";
 const HARD_CATEGORIES = ["sexual/minors", "sexual"];
 const DEFAULT_THRESHOLDS = { "sexual/minors": 0.1, sexual: 0.7 };
 const MAX_TEXT_CHARS = 4000;
-const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 
-/** Pedido direto ao assistente, sem conteúdo factual verificável. */
-const ASSISTANT_REQUEST = /^(escreva|redija|gere|crie|faça|monte|traduza|resuma|explique|calcule|resolva|invente|imagine|me (diga|dê|conte|ajude)|qual (é|e) a sua|quem é você|ignore|desconsidere|aja como|atue como|finja|finja ser)\b/i;
 
+/** Verbos que deixam explícito um pedido de tarefa ao assistente. */
+const ASSISTANT_TASK = /^(?:escreva|redija|gere|crie|faça|monte|traduza|resuma|explique|calcule|resolva|invente|imagine|me (?:diga(?!\s+se\s+é\s+verdade)|dê|conte|ajude)|ignore|desconsidere|aja como|atue como|finja(?: ser)?)(?:\b|\s|$)/i;
+
+function withoutQuotedText(text) {
+  return text
+    .replace(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»/g, " ")
+    .replace(/^\s*>.*$/gm, " ")
+    .trim();
+}
 export function moderationConfig(env = process.env) {
   const production = env.VERCEL_ENV === "production" || env.NODE_ENV === "production" || env.IEV_PRODUCTION === "1";
   const raw = String(env.MODERATION_REFUSE_CATEGORIES ?? "").trim();
@@ -161,48 +167,12 @@ export function checkVideoCoverage(config = moderationConfig()) {
   return { allowed: true, report: { checked: false, what: "video_coverage", coverage: "uncovered-dev" } };
 }
 
-/** Pedido direto ao assistente não é afirmação verificável. */
+/** Recusa apenas pedidos claros de tarefa, não o assunto nem indicadores incidentais. */
 export function purposeTriage(input) {
   if (input?.kind !== "text") return { blocked: false };
-  const text = String(input.text ?? "").trim();
-  if (!text || text.length > 600) return { blocked: false };
-  if (/https?:\/\//i.test(text) || /\d/.test(text)) return { blocked: false };
-  if (!ASSISTANT_REQUEST.test(text)) return { blocked: false };
+  const text = withoutQuotedText(String(input.text ?? ""));
+  if (!text || !ASSISTANT_TASK.test(text)) return { blocked: false };
   return { blocked: true, reason: "assistant_request" };
-}
-
-/** Moderação aplicada antes das etapas caras, conforme a modalidade. */
-export async function moderateInput(input, opts = {}) {
-  const env = opts.env ?? process.env;
-  const config = opts.config ?? moderationConfig(env);
-  const purpose = purposeTriage(input);
-  if (purpose.blocked) return { allowed: true, purpose, report: { checked: false, what: "purpose", reason: purpose.reason } };
-  if (input?.kind === "image" && Buffer.isBuffer(input.fileBuffer)) {
-    if (input.fileBuffer.length > MAX_IMAGE_BYTES) {
-      return { allowed: false, error: "moderation_unavailable", status: 413, message: "Imagem acima do limite para triagem de conteúdo." };
-    }
-    const result = await moderateImages([{ data: input.fileBuffer.toString("base64"), mime: input.fileMime }], { env, config, fetchImpl: opts.fetchImpl });
-    if (!result.allowed) {
-      return { allowed: false, error: "content_refused", status: 403, message: refusalMessage(result.categories), categories: result.categories, report: result.report };
-    }
-    return { allowed: true, purpose, report: result.report };
-  }
-  const text = input?.kind === "text" || input?.kind === "link" ? String(input.text ?? "") : "";
-  if (text && input?.kind === "text") {
-    const result = await moderateText(text, { env, config, fetchImpl: opts.fetchImpl });
-    if (!result.allowed) {
-      return {
-        allowed: false,
-        error: result.error ?? "content_refused",
-        status: result.status ?? 403,
-        message: result.message ?? refusalMessage(result.categories),
-        categories: result.categories,
-        report: result.report,
-      };
-    }
-    return { allowed: true, purpose, report: result.report };
-  }
-  return { allowed: true, purpose, report: { checked: false, what: input?.kind ?? "unknown", reason: "deferred" } };
 }
 
 /** Resumo curto para o registro de checagem (sem conteúdo sensível). */

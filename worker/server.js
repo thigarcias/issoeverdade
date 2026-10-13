@@ -14,12 +14,13 @@
 // Limites: áudio até 20MB, frames até 10 e 2.5MB, duração IEV_MAX_MEDIA_SECONDS,
 // disco IEV_MAX_TEMP_BYTES (vigia mata a árvore de processos), concorrência limitada.
 import { createServer } from "node:http";
-import { readFile, readdir, rm, writeFile, stat } from "node:fs/promises";
+import { readdir, rm, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { hostPolicy, parseUrlStrict, resolvePublicHost } from "../server/net.js";
 import { runLimited } from "../server/proc.js";
+import { processMediaFile } from "../server/local-media.js";
 
 const PORT = Number(process.env.PORT || 8080);
 const SECRET = process.env.WORKER_SECRET || "";
@@ -107,7 +108,6 @@ function ytdlpArgs(extra, url) {
     "--no-progress",
     "--socket-timeout", "20",
     "--retries", "2",
-    "--max-downloads", "1",
     "--max-filesize", String(LIMITS.maxFileBytes),
     ...(EGRESS_PROXY ? ["--proxy", EGRESS_PROXY] : []),
     ...extra,
@@ -120,7 +120,7 @@ async function probe(url) {
     timeoutMs: 60_000,
     maxOutputBytes: 8 * 1024 * 1024,
   });
-  if (!run.ok) return { ok: false, reason: run.reason === "timeout" ? "probe-timeout" : "probe-failed", detail: run.stderr.slice(0, 300) };
+  if (!run.ok) return { ok: false, reason: run.reason === "timeout" ? "probe-timeout" : "probe-failed", detail: safeDetail(run.stderr) };
   const info = JSON.parse(run.stdout);
   const desc = [info.description, info.title].find((s) => typeof s === "string" && s.trim()) ?? "";
   const media = {
@@ -131,6 +131,8 @@ async function probe(url) {
       ? `${info.upload_date.slice(6, 8)}/${info.upload_date.slice(4, 6)}/${info.upload_date.slice(0, 4)}`
       : "",
     durationSec: typeof info.duration === "number" ? Math.round(info.duration) : null,
+    hasAudio: typeof info.acodec === "string" ? info.acodec !== "none" : null,
+    hasVideo: typeof info.vcodec === "string" ? info.vcodec !== "none" : null,
     description: desc.trim().slice(0, 2000),
     thumbnail: typeof info.thumbnail === "string" ? info.thumbnail : "",
     id: String(info.id ?? ""),
@@ -151,44 +153,67 @@ async function mkdtempSafe() {
   return mkdtemp(join(tmpdir(), "iev-"));
 }
 
-/** Duração do arquivo (ffprobe) com teto operacional; ausência de ffprobe não bloqueia. */
-async function checkDuration(file) {
+function subprocessReason(run, stage, fallback) {
+  if (run?.killed) {
+    if (run.reason === "disk_limit") return "disk-limit";
+    if (run.reason === "timeout") return `${stage}-timeout`;
+    return `kill:${run.reason}`;
+  }
+  if (run?.reason === "spawn_failed" && /ENOENT/i.test(run.stderr)) return `${stage}-unavailable`;
+  if (/larger than max-filesize/i.test(run?.stderr ?? "")) return "file-too-large";
+  return fallback;
+}
+
+function safeDetail(value) {
+  return String(value ?? "")
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[url]")
+    .replace(/\b(?:bearer\s+)[A-Za-z0-9._~-]+/gi, "Bearer [redacted]")
+    .replace(/\b(token|secret|signature|sig|auth|key)\s*[:=]\s*[^\s&]+/gi, "$1=[redacted]")
+    .replace(/\b[A-Za-z]:\\[^\s"'<>]+/g, "[path]")
+    .replace(/\/(?:tmp|var\/tmp)\/[^\s"'<>]+/g, "[path]")
+    .slice(0, 200);
+}
+
+async function downloadSource(url, dir, format) {
   const run = await runLimited(
-    "ffprobe",
-    ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", file],
-    { timeoutMs: 30_000, maxOutputBytes: 64 * 1024 },
+    "yt-dlp",
+    ytdlpArgs([...(format ? ["-f", format] : []), "-o", join(dir, "source.%(ext)s")], url),
+    { timeoutMs: LIMITS.ytdlpTimeoutMs, watchDir: dir, maxDirBytes: LIMITS.maxTempBytes, maxOutputBytes: 4 * 1024 * 1024 },
   );
-  if (!run.ok) return { ok: true, seconds: null };
-  const seconds = Math.ceil(Number(run.stdout.trim()) || 0);
-  if (seconds > LIMITS.maxMediaSeconds) return { ok: false, reason: `duration-limit:${seconds}s` };
-  return { ok: true, seconds: seconds || null };
+  if (!run.ok) return { ok: false, reason: subprocessReason(run, "download", "download-failed"), detail: safeDetail(run.stderr) };
+  const name = (await readdir(dir)).find((candidate) => /^source\.[^.]+$/i.test(candidate) && !candidate.endsWith(".part"));
+  if (!name) return { ok: false, reason: "no-file" };
+  const file = join(dir, name);
+  const size = (await stat(file)).size;
+  if (size <= 0) return { ok: false, reason: "media-unreadable" };
+  if (size > LIMITS.maxFileBytes) return { ok: false, reason: "file-too-large" };
+  return { ok: true, file };
 }
 
 async function fetchAudio(url) {
   const dir = await mkdtempSafe();
   try {
-    const run = await runLimited(
-      "yt-dlp",
-      ytdlpArgs(["-x", "--audio-format", "mp3", "--audio-quality", "5", "--print", "after_move:filepath",
-        "-o", `${dir}/%(id)s.%(ext)s`], url),
-      { timeoutMs: LIMITS.ytdlpTimeoutMs, watchDir: dir, maxDirBytes: LIMITS.maxTempBytes, maxOutputBytes: 4 * 1024 * 1024 },
-    );
-    if (!run.ok) {
-      return {
-        ok: false,
-        reason: run.killed
-          ? run.reason === "disk_limit" ? "disk-limit" : run.reason === "timeout" ? "audio-timeout" : `kill:${run.reason}`
-          : /larger than max-filesize/i.test(run.stderr) ? "file-too-large" : "audio-failed",
-        detail: run.stderr.slice(0, 200),
-      };
-    }
-    const file = run.stdout.trim().split("\n").pop()?.trim() ?? "";
-    if (!file) return { ok: false, reason: "no-file" };
-    const duration = await checkDuration(file);
-    if (duration.ok === false) return { ok: false, reason: duration.reason };
-    const buf = await readFile(file);
-    if (buf.length > MAX_AUDIO_BYTES) return { ok: false, reason: "audio-too-large" };
-    return { ok: true, audio_b64: buf.toString("base64"), mime: "audio/mpeg", bytes: buf.length, seconds: duration.seconds };
+    const download = await downloadSource(url, dir, "bestaudio/best");
+    if (!download.ok) return download;
+    const processed = await processMediaFile(download.file, dir, {
+      maxMediaSeconds: LIMITS.maxMediaSeconds,
+      maxTempBytes: LIMITS.maxTempBytes,
+      maxAudioBytes: MAX_AUDIO_BYTES,
+      maxFrames: MAX_FRAMES,
+      maxFramesBytes: MAX_FRAMES_BYTES,
+      extractFrames: false,
+    });
+    if (!processed.ok) return processed;
+    if (!processed.audioBytes) return { ok: false, reason: processed.audioReason ?? "no-audio-track" };
+    return {
+      ok: true,
+      audio_b64: processed.audioBytes.toString("base64"),
+      mime: "audio/mpeg",
+      bytes: processed.audioBytes.length,
+      seconds: processed.durationSec,
+      has_audio: processed.hasAudio,
+      has_video: processed.hasVideo,
+    };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -198,62 +223,29 @@ async function fetchAudio(url) {
 async function fetchFrames(url) {
   const dir = await mkdtempSafe();
   try {
-    const download = await runLimited(
-      "yt-dlp",
-      ytdlpArgs(["-f", "worst[height<=480]/best[height<=480]/worst", "-o", `${dir}/v.%(ext)s`], url),
-      { timeoutMs: LIMITS.ytdlpTimeoutMs, watchDir: dir, maxDirBytes: LIMITS.maxTempBytes, maxOutputBytes: 4 * 1024 * 1024 },
-    );
-    if (!download.ok) {
-      return {
-        ok: false,
-        reason: download.killed
-          ? download.reason === "disk_limit" ? "disk-limit" : download.reason === "timeout" ? "download-timeout" : `kill:${download.reason}`
-          : /larger than max-filesize/i.test(download.stderr) ? "file-too-large" : "download-failed",
-        detail: download.stderr.slice(0, 200),
-      };
-    }
-    const files = await readdir(dir);
-    const file = files.find((f) => f.startsWith("v."));
-    if (!file) return { ok: false, reason: "no-file" };
-    const src = join(dir, file);
-    const duration = await checkDuration(src);
-    if (duration.ok === false) return { ok: false, reason: duration.reason };
-    const seconds = duration.seconds ?? 0;
-    // Amostra no máximo MAX_FRAMES ao longo do vídeo, limitada pelo teto de duração.
-    const span = Math.max(1, Math.min(LIMITS.maxMediaSeconds, seconds || 60));
-    const fps = Math.min(1, MAX_FRAMES / span);
-    const framesResult = await runLimited(
-      "ffmpeg",
-      [
-        "-y", "-hide_banner", "-loglevel", "error", "-i", src,
-        "-vf", `fps=${fps.toFixed(4)},scale=448:-2`,
-        "-frames:v", String(MAX_FRAMES), "-q:v", "7",
-        `${dir}/f-%02d.jpg`,
-      ],
-      { timeoutMs: 120_000, maxOutputBytes: 1024 * 1024 },
-    );
-    if (!framesResult.ok) return { ok: false, reason: framesResult.killed ? "frames-timeout" : "frames-failed", detail: framesResult.stderr.slice(0, 200) };
-    const jpgs = (await readdir(dir)).filter((f) => /^f-\d+\.jpg$/.test(f)).sort();
-    const frames = [];
-    let bytes = 0;
-    for (const [index, j] of jpgs.slice(0, MAX_FRAMES).entries()) {
-      const buf = await readFile(join(dir, j));
-      if (bytes + buf.length > MAX_FRAMES_BYTES) break;
-      bytes += buf.length;
-      frames.push({
-        image_b64: buf.toString("base64"),
-        timestamp_sec: Math.round((index / fps) * 100) / 100,
-      });
-    }
-    if (!frames.length) return { ok: false, reason: "no-frames" };
-    return { ok: true, frames, count: frames.length, seconds: seconds || null, bytes };
+    const download = await downloadSource(url, dir, "worst[height<=480]/best[height<=480]/worst");
+    if (!download.ok) return download;
+    const processed = await processMediaFile(download.file, dir, {
+      maxMediaSeconds: LIMITS.maxMediaSeconds,
+      maxTempBytes: LIMITS.maxTempBytes,
+      maxAudioBytes: MAX_AUDIO_BYTES,
+      maxFrames: MAX_FRAMES,
+      maxFramesBytes: MAX_FRAMES_BYTES,
+      extractAudio: false,
+    });
+    if (!processed.ok) return processed;
+    if (!processed.frames.length) return { ok: false, reason: processed.frameReason ?? "no-video-track" };
+    const frames = processed.frames.map((frame) => ({
+      image_b64: frame.data,
+      timestamp_sec: frame.timestampSec,
+    }));
+    return { ok: true, frames, count: frames.length, seconds: processed.durationSec, bytes: frames.reduce((sum, frame) => sum + Math.floor(frame.image_b64.length * 3 / 4), 0), has_audio: processed.hasAudio, has_video: processed.hasVideo };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
 
 async function processUpload(encoded, mime) {
-  const limits = LIMITS;
   if (!UPLOAD_MIMES.has(mime) || typeof encoded !== "string" || encoded.length === 0 || encoded.length > Math.ceil(MAX_UPLOAD_BYTES / 3) * 4) {
     return { ok: false, reason: "unsupported-upload" };
   }
@@ -268,49 +260,30 @@ async function processUpload(encoded, mime) {
         : mime === "audio/wav" ? "wav"
           : mime === "audio/ogg" ? "ogg"
             : mime === "audio/mpeg" ? "mp3" : "mp4";
-    const src = join(dir, `input.${ext}`);
-    await writeFile(src, bytes, { flag: "wx" });
-    const duration = await checkDuration(src);
-    if (duration.ok === false) return { ok: false, reason: duration.reason };
-    const durationSec = duration.seconds ?? 0;
-
-    let audio = null;
-    const audioRun = await runLimited(
-      "ffmpeg",
-      ["-y", "-hide_banner", "-loglevel", "error", "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k",
-        "-t", String(Math.min(limits.maxMediaSeconds, 3600)), join(dir, "audio.mp3")],
-      { timeoutMs: 150_000, maxOutputBytes: 1024 * 1024, watchDir: dir, maxDirBytes: limits.maxTempBytes },
-    );
-    if (audioRun.ok) {
-      try {
-        const audioBytes = await readFile(join(dir, "audio.mp3"));
-        if (audioBytes.length <= MAX_AUDIO_BYTES) audio = { audio_b64: audioBytes.toString("base64"), mime: "audio/mpeg", bytes: audioBytes.length };
-      } catch { /* arquivo sem trilha de áudio */ }
-    }
-
-    let frames = [];
-    if (mime.startsWith("video/")) {
-      const span = Math.max(1, Math.min(limits.maxMediaSeconds, durationSec || 60));
-      const fps = Math.min(1, MAX_FRAMES / span);
-      const framesRun = await runLimited(
-        "ffmpeg",
-        ["-y", "-hide_banner", "-loglevel", "error", "-i", src, "-vf", `fps=${fps.toFixed(4)},scale=448:-2`,
-          "-frames:v", String(MAX_FRAMES), "-q:v", "7", `${dir}/f-%02d.jpg`],
-        { timeoutMs: 120_000, maxOutputBytes: 1024 * 1024 },
-      );
-      if (framesRun.ok) {
-        const jpgs = (await readdir(dir)).filter((file) => /^f-\d+\.jpg$/.test(file)).sort();
-        let totalBytes = 0;
-        for (const [index, file] of jpgs.slice(0, MAX_FRAMES).entries()) {
-          const frame = await readFile(join(dir, file));
-          if (totalBytes + frame.length > MAX_FRAMES_BYTES) break;
-          totalBytes += frame.length;
-          frames.push({ image_b64: frame.toString("base64"), timestamp_sec: Math.round((index / fps) * 100) / 100 });
-        }
-      }
-    }
-    if (!audio && frames.length === 0) return { ok: false, reason: "no-readable-media" };
-    return { ok: true, audio, frames, duration_sec: durationSec || null };
+    const source = join(dir, `source.${ext}`);
+    await writeFile(source, bytes, { flag: "wx" });
+    const processed = await processMediaFile(source, dir, {
+      maxMediaSeconds: LIMITS.maxMediaSeconds,
+      maxTempBytes: LIMITS.maxTempBytes,
+      maxAudioBytes: MAX_AUDIO_BYTES,
+      maxFrames: MAX_FRAMES,
+      maxFramesBytes: MAX_FRAMES_BYTES,
+    });
+    if (!processed.ok) return processed;
+    const audio = processed.audioBytes
+      ? { audio_b64: processed.audioBytes.toString("base64"), mime: "audio/mpeg", bytes: processed.audioBytes.length }
+      : null;
+    if (!audio && !processed.frames.length) return { ok: false, reason: processed.audioReason ?? processed.frameReason ?? "no-readable-media" };
+    return {
+      ok: true,
+      audio,
+      frames: processed.frames.map((frame) => ({ image_b64: frame.data, timestamp_sec: frame.timestampSec })),
+      duration_sec: processed.durationSec,
+      has_audio: processed.hasAudio,
+      has_video: processed.hasVideo,
+      audio_reason: processed.audioReason,
+      frame_reason: processed.frameReason,
+    };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -357,7 +330,7 @@ const server = createServer(async (req, res) => {
         try {
           return send(res, 200, await processUpload(body?.file_b64, String(body?.mime ?? "")));
         } catch (error) {
-          return send(res, 200, { ok: false, reason: "upload-processing-failed", detail: String(error?.message ?? error).slice(0, 200) });
+          return send(res, 200, { ok: false, reason: "upload-processing-failed", detail: safeDetail(error?.message ?? error) });
         }
       }
       const url = String(body?.url ?? "");
@@ -372,21 +345,21 @@ const server = createServer(async (req, res) => {
           const out = await probe(url);
           return send(res, 200, { ok: true, ...out, attempts: ["worker:yt-dlp:ok"] });
         } catch (err) {
-          return send(res, 200, { ok: false, reason: "probe-failed", detail: String(err?.message ?? err).slice(0, 300) });
+          return send(res, 200, { ok: false, reason: "probe-failed", detail: safeDetail(err?.message ?? err) });
         }
       }
       if (req.url === "/audio") {
         try {
           return send(res, 200, await fetchAudio(url));
         } catch (err) {
-          return send(res, 200, { ok: false, reason: "audio-failed", detail: String(err?.message ?? err).slice(0, 300) });
+          return send(res, 200, { ok: false, reason: "audio-failed", detail: safeDetail(err?.message ?? err) });
         }
       }
       if (req.url === "/frames") {
         try {
           return send(res, 200, await fetchFrames(url));
         } catch (err) {
-          return send(res, 200, { ok: false, reason: "frames-failed", detail: String(err?.message ?? err).slice(0, 300) });
+          return send(res, 200, { ok: false, reason: "frames-failed", detail: safeDetail(err?.message ?? err) });
         }
       }
       return send(res, 404, { ok: false, reason: "not_found" });

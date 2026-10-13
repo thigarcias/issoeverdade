@@ -62,11 +62,13 @@ export async function handleVerifyRequest({ method, headers = {}, body, socketAd
   } catch (error) {
     return jsonError(error.status ?? 400, { error: error.message ?? "invalid_input" });
   }
-  if (!input.text && !input.fileName && !input.fileBuffer) return jsonError(400, { error: "empty_input" });
+  if (input.kind === "link" ? !String(input.text ?? "").trim() : !input.text && !input.fileName && !input.fileBuffer) {
+    return jsonError(400, { error: "empty_input" });
+  }
 
   // Política de URL antes de qualquer etapa paga (a mídia revalida na busca).
   const maybeUrl = String(input.text ?? "").trim();
-  if (input.kind === "link" && /^https?:\/\//i.test(maybeUrl)) {
+  if (input.kind === "link") {
     try {
       parseUrlStrict(maybeUrl);
     } catch (error) {

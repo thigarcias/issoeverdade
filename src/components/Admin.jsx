@@ -243,7 +243,79 @@ export default function Admin({ showToast }) {
               {detail.transcriptSegs > 0 && <> · transcrição: {detail.transcriptSegs} segmentos</>}
               {detail.origin?.title && <> · origem: {detail.origin.title} ({detail.origin.author})</>}
             </dd>
+            {detail.corrections?.length > 0 && (
+              <>
+                <dt>Correções</dt>
+                <dd>{detail.corrections.join(" · ")}</dd>
+              </>
+            )}
           </dl>
+          <div className="admin-sections">
+            {(detail.claims ?? []).length > 0 && (
+              <details className="admin-sec" open>
+                <summary>Afirmações ({detail.claims.length})</summary>
+                <ul className="admin-claims">
+                  {detail.claims.map((c, i) => (
+                    <li key={i}>
+                      <span className={`chip ${c.status === "true" ? "tint-up" : c.status === "false" ? "tint-down" : "tint-warn"}`}>
+                        <i /> {c.status} · {c.score}
+                      </span>{" "}
+                      {c.text}
+                      {c.note && <small> — {c.note}</small>}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+            {(detail.sources ?? []).length > 0 && (
+              <details className="admin-sec" open>
+                <summary>Fontes consultadas ({detail.sources.length})</summary>
+                <ul className="admin-sources">
+                  {detail.sources.map((s, i) => (
+                    <li key={i}>
+                      <b>{s.outlet}</b> <small>{s.detail}</small>
+                      <br />
+                      {s.url && s.url !== "#" ? (
+                        <a href={s.url} target="_blank" rel="noreferrer">{s.url}</a>
+                      ) : (
+                        <small>(sem link válido)</small>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+            {detail.transcriptPreview && (
+              <details className="admin-sec">
+                <summary>Transcrição usada ({detail.transcriptSegs} segmentos)</summary>
+                <pre className="admin-pre">{detail.transcriptPreview}</pre>
+              </details>
+            )}
+            {detail.judgePromptPreview && (
+              <details className="admin-sec">
+                <summary>Prompt passo 1 (judge)</summary>
+                <pre className="admin-pre">{detail.judgePromptPreview}</pre>
+              </details>
+            )}
+            {detail.judgeRawPreview && (
+              <details className="admin-sec">
+                <summary>Resposta bruta passo 1</summary>
+                <pre className="admin-pre">{detail.judgeRawPreview}</pre>
+              </details>
+            )}
+            {detail.finalPromptPreview && (
+              <details className="admin-sec">
+                <summary>Prompt passo 2 (final)</summary>
+                <pre className="admin-pre">{detail.finalPromptPreview}</pre>
+              </details>
+            )}
+            {detail.finalRawPreview && (
+              <details className="admin-sec">
+                <summary>Resposta bruta passo 2</summary>
+                <pre className="admin-pre">{detail.finalRawPreview}</pre>
+              </details>
+            )}
+          </div>
         </div>
       )}
     </div>

@@ -104,7 +104,8 @@ async function callOpenAI({ instructions, input, timeoutMs }) {
     } catch {
       fail(502, "upstream_bad_json", { model: DEFAULT_MODEL });
     }
-    return parseModelJson(extractText(parsed), DEFAULT_MODEL);
+    const text = extractText(parsed);
+    return { result: parseModelJson(text, DEFAULT_MODEL), raw: text };
   } catch (err) {
     if (err?.payload) throw err;
     if (err?.name === "AbortError") fail(504, "upstream_timeout", { model: DEFAULT_MODEL });
@@ -151,7 +152,8 @@ async function callGo({ apiKey, instructions, input, timeoutMs }) {
     } catch {
       fail(502, "upstream_bad_json", { model: FALLBACK_MODEL });
     }
-    return parseModelJson(extractText(parsed), FALLBACK_MODEL);
+    const text = extractText(parsed);
+    return { result: parseModelJson(text, FALLBACK_MODEL), raw: text };
   } catch (err) {
     if (err?.payload) throw err;
     if (err?.name === "AbortError") fail(504, "upstream_timeout", { model: FALLBACK_MODEL });
@@ -164,14 +166,14 @@ async function callGo({ apiKey, instructions, input, timeoutMs }) {
 async function callModel({ apiKey, instructions, input, timeoutMs }) {
   // GPT Luna (com web_search) primeiro; Muse Spark (Go) como fallback.
   try {
-    const result = await callOpenAI({ instructions, input, timeoutMs });
-    return { result, model: DEFAULT_MODEL };
+    const { result, raw } = await callOpenAI({ instructions, input, timeoutMs });
+    return { result, model: DEFAULT_MODEL, raw };
   } catch (openaiErr) {
     if (!apiKey) throw openaiErr;
     if (openaiErr?.payload?.error === "missing_openai_key") throw openaiErr;
     console.error(`[iev] Luna falhou (${openaiErr?.payload?.error ?? openaiErr?.message}), usando fallback Go`);
-    const result = await callGo({ apiKey, instructions, input, timeoutMs });
-    return { result, model: FALLBACK_MODEL };
+    const { result, raw } = await callGo({ apiKey, instructions, input, timeoutMs });
+    return { result, model: FALLBACK_MODEL, raw };
   }
 }
 
@@ -294,11 +296,12 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
       }
     });
   }
-  const { result: first, model: firstModel } = await phase("judge", () =>
+  const judgeInput = buildUserContent(input, mediaContext);
+  const { result: first, model: firstModel, raw: firstRaw } = await phase("judge", () =>
     callModel({
       apiKey,
       instructions: SYSTEM_PROMPT_JUDGE,
-      input: buildUserContent(input, mediaContext),
+      input: judgeInput,
       timeoutMs,
     }),
   );
@@ -323,16 +326,17 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
     });
     if (transcript || mediaContext) {
       const kindLabel = input?.kind === "video" ? "vídeo/áudio" : "link";
-      const { result: second, model: secondModel } = await phase("final", () =>
+      const finalInput = `Cheque este ${kindLabel}: ${maybeUrl}\n\nDados extraídos (confie nestes dados):\n${mediaContext}`;
+      const { result: second, model: secondModel, raw: secondRaw } = await phase("final", () =>
         callModel({
           apiKey,
           instructions: SYSTEM_PROMPT_FINAL,
-          input: `Cheque este ${kindLabel}: ${maybeUrl}\n\nDados extraídos (confie nestes dados):\n${mediaContext}`,
+          input: finalInput,
           timeoutMs,
         }),
       );
       second.sources = await sanitizeSources(second.sources);
-      return await finish({ result: second, model: secondModel });
+      return await finish({ result: second, model: secondModel, debug: { finalInput, secondRaw } });
     }
   }
 
@@ -352,7 +356,7 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
   first.sources = await sanitizeSources(first.sources);
   return await finish({ result: first, model: firstModel });
 
-  async function finish({ result, model }) {
+  async function finish({ result, model, debug }) {
     const totalMs = Date.now() - t0;
     const checkId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     // Validação determinística: recalcula score/veredito pela rubrica.
@@ -371,11 +375,20 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
       model,
       verdict: fixed?.verdict ?? null,
       score: typeof fixed?.score === "number" ? fixed.score : null,
+      summary: fixed?.summary ?? "",
+      claims: fixed?.claims ?? [],
+      sources: fixed?.sources ?? [],
       claimsCount: Array.isArray(fixed?.claims) ? fixed.claims.length : 0,
       sourcesCount: Array.isArray(fixed?.sources) ? fixed.sources.length : 0,
       mediaAttempts: mediaDebug,
       transcriptSegs: transcript?.segments?.length ?? 0,
+      transcriptPreview: transcriptToPrompt(transcript),
       origin,
+      judgePromptPreview: judgeInput,
+      judgeRawPreview: firstRaw ?? "",
+      finalPromptPreview: debug?.finalInput ?? "",
+      finalRawPreview: debug?.secondRaw ?? "",
+      corrections,
       error: null,
     };
     await Promise.race([

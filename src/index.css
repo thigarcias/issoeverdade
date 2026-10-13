@@ -897,6 +897,74 @@ main {
   gap: 6px;
 }
 
+.admin-sections {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.admin-sec {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.admin-sec summary {
+  cursor: pointer;
+  font: 500 var(--t-body) / 1.4 var(--sans);
+  padding: 10px 14px;
+  list-style: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.admin-sec summary::-webkit-details-marker {
+  display: none;
+}
+
+.admin-sec summary:hover {
+  background: var(--ov-1);
+}
+
+.admin-sec[open] summary {
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.admin-pre {
+  margin: 0;
+  padding: 12px 14px;
+  font: 400 12px / 1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--panel-2);
+  color: var(--fg-2);
+}
+
+.admin-claims,
+.admin-sources {
+  list-style: none;
+  margin: 0;
+  padding: 10px 14px 12px;
+  display: grid;
+  gap: 8px;
+  font: 400 var(--t-body) / 1.5 var(--sans);
+}
+
+.admin-claims small,
+.admin-sources small {
+  color: var(--fg-4);
+}
+
+.admin-sources a {
+  font-size: var(--t-label);
+  color: var(--info);
+  overflow-wrap: anywhere;
+}
+
 .verify-processing-mode .pipeline {
   text-align: left;
   max-width: 560px;

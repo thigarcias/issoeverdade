@@ -48,9 +48,10 @@ export default function ResultCard({ result, showToast, titleId, onShareCard }) 
   const [imgOk, setImgOk] = useState(true);
 
   function share() {
-    const url = `${location.origin}${location.pathname}#checagem-${result.id}`;
+    const url = `${location.origin}${location.pathname}`;
+    const plain = result.verdict === "true" || result.verdict === "mostly_true" ? "verdade" : result.verdict === "false" || result.verdict === "misleading" ? "mentira" : "sem comprovação";
     copyText(
-      `${result.title} — nota ${result.score}/100 (${verdict.label}). ${url}`,
+      `🔍 ${result.title} — nota ${result.score}/100 (${plain}).\n\nViu algo suspeito? Confira você também em ${url}`,
       showToast,
     );
   }

@@ -61,19 +61,24 @@ export default function ShareDialog({ result, onClose, showToast }) {
     showToast("Card salvo. Compartilhe onde quiser.");
   }
 
+  function shareText() {
+    const url = `${location.origin}${location.pathname}`;
+    return `🔍 ${result.title} — nota ${result.score}/100 (${result.verdict === "true" || result.verdict === "mostly_true" ? "verdade" : result.verdict === "false" || result.verdict === "misleading" ? "mentira" : "sem comprovação"}).\n\nViu algo suspeito? Confira você também em ${url}`;
+  }
+
   async function share() {
     if (!blob) return;
     const file = new File([blob], `nota-${result.score}.png`, { type: "image/png" });
     const data = {
       title: "isso é verdade?",
-      text: `${result.title} — nota ${result.score}/100`,
+      text: shareText(),
       files: [file],
     };
     try {
       if (navigator.canShare?.(data)) {
         await navigator.share(data);
       } else {
-        await navigator.share({ title: data.title, text: data.text, url: location.href });
+        await navigator.share({ title: data.title, text: data.text });
       }
     } catch (err) {
       if (err?.name !== "AbortError") {

@@ -149,6 +149,7 @@ async function downloadViaYtDlp(url, outDir) {
       [
         "--no-playlist", "-x", "--audio-format", "mp3", "--audio-quality", "5",
         "--no-warnings", "--print", "after_move:filepath",
+        "--extractor-args", "youtube:player_client=android,web",
         "-o", `${outDir}/%(id)s.%(ext)s`, url,
       ],
       { timeout: 180_000, maxBuffer: 4 * 1024 * 1024 },

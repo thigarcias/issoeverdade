@@ -142,7 +142,7 @@ export default function Feed({ items: allItems, onOpen }) {
                   <p className="excerpt">{item.summary}</p>
                   <div className="feed-bottom">
                     <span className="meta">
-                      {item.claims.length} afirmações · {item.sources.length} fontes
+                      {item.claims.length} {item.claims.length === 1 ? "afirmação" : "afirmações"} · {item.sources.length} {item.sources.length === 1 ? "fonte" : "fontes"}
                     </span>
                     <span className="quiet-link">Ler checagem</span>
                   </div>

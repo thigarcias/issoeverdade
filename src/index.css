@@ -193,6 +193,11 @@ main {
   transform: none;
 }
 
+.btn.primary[disabled] {
+  background: var(--panel-3);
+  color: var(--fg-4);
+}
+
 .btn.big {
   min-height: 46px;
   font-size: var(--t-name);
@@ -1422,6 +1427,7 @@ textarea.input-plain {
   font: 400 20px / 1.25 var(--serif);
   letter-spacing: -0.01em;
   text-wrap: balance;
+  overflow-wrap: anywhere;
 }
 
 .result-title .meta {
@@ -1492,6 +1498,7 @@ textarea.input-plain {
   font: 500 var(--t-body) / 1.45 var(--sans);
   flex: 1;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .claim-text small {
@@ -1554,6 +1561,7 @@ textarea.input-plain {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .origin-meta small {
@@ -1863,6 +1871,7 @@ textarea.input-plain {
 .feed-card h3 {
   font: 400 17px / 1.3 var(--serif);
   letter-spacing: -0.005em;
+  overflow-wrap: anywhere;
 }
 
 .feed-card .excerpt {
@@ -2146,6 +2155,16 @@ dialog::backdrop {
   .origin-card img {
     width: 72px;
     height: 54px;
+  }
+
+  .claim > summary {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .claim-badge {
+    align-self: flex-start;
   }
 }
 

@@ -503,7 +503,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
       {result && (
         <p className="verify-hint" style={{ marginTop: 10 }}>
           Veredito: <b>{VERDICTS[result.verdict].label}</b> · nota {result.score}/100 ·{" "}
-          {result.claims.length} afirmações · {result.sources.length} fontes
+          {result.claims.length} {result.claims.length === 1 ? "afirmação" : "afirmações"} · {result.sources.length} {result.sources.length === 1 ? "fonte" : "fontes"}
           {typeof result.elapsedMs === "number" && <> · checada em {formatDuration(result.elapsedMs)}</>}.
         </p>
       )}

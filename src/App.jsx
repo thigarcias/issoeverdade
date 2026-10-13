@@ -5,6 +5,7 @@ import Verifier from "./components/Verifier.jsx";
 import Feed from "./components/Feed.jsx";
 import DetailDialog from "./components/DetailDialog.jsx";
 import ShareDialog from "./components/ShareDialog.jsx";
+import Admin from "./components/Admin.jsx";
 import HowItWorks from "./components/HowItWorks.jsx";
 import { VERDICTS } from "./data/constants.js";
 import { useToast } from "./lib/hooks.js";
@@ -21,11 +22,14 @@ function loadHistory() {
 }
 
 export default function App() {
+  const { message, show } = useToast();
   const [openResult, setOpenResult] = useState(null);
   const [shareResult, setShareResult] = useState(null);
   const [history, setHistory] = useState(loadHistory);
   const [quickInput, setQuickInput] = useState(null);
   const [heroCollapsed, setHeroCollapsed] = useState(false);
+  const aboutRef = useRef(null);
+  const howRef = useRef(null);
 
   useEffect(() => {
     try {

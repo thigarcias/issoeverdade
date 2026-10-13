@@ -65,7 +65,9 @@ export default function ShareDialog({ result, onClose, showToast }) {
   function shareText() {
     const url = `${location.origin}${location.pathname}`;
     const label = VERDICTS[result.verdict]?.label ?? "Sem veredito";
-    return `🔍 ${result.title} — nota ${result.score}/100 (${label.toLowerCase()}).\n\nViu algo suspeito? Confira você também em ${url}`;
+    const nota = result.score == null ? "sem nota ou veredito factual" : `nota ${result.score}/100 (${label.toLowerCase()})`;
+    const id = result.id ? `\nChecagem automática ${result.id}. Confira correções em ${location.origin}/correcoes.html?checkId=${encodeURIComponent(result.id)}` : "\nChecagem automática.";
+    return `🔍 ${result.title} — ${nota}.${id}\n\nViu algo suspeito? Confira você também em ${url}`;
   }
 
   async function share() {

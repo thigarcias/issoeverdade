@@ -3,6 +3,7 @@
 import { activeGuard, blockedPayload, LimitsExceeded, LimitsUnavailable } from "./limits.js";
 import { clientIp } from "./endpoint.js";
 import {
+  correctionsForCheck,
   correctionsMode,
   createCorrection,
   getCorrection,
@@ -25,6 +26,12 @@ export async function handleCorrectionsRequest({
 } = {}) {
   const mode = correctionsMode(env);
   if (method === "GET") {
+    const checkId = String(query.checkId ?? "");
+    if (checkId) {
+      const listed = await correctionsForCheck(checkId);
+      if (!listed.ok) return jsonError(400, { error: listed.error });
+      return { status: 200, body: { checkId: listed.checkId, corrections: listed.corrections, correctedAt: listed.correctedAt } };
+    }
     const protocol = String(query.protocol ?? "");
     if (!protocol) return jsonError(400, { error: "missing_protocol" });
     const record = await getCorrection(protocol);

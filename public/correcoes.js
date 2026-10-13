@@ -41,6 +41,32 @@
   const prefill = params.get("checkId");
   if (prefill) document.getElementById("checkId").value = prefill.slice(0, 80);
 
+  // Link vindo do card compartilhado: mostra se o resultado já foi corrigido.
+  const avisoCheck = document.getElementById("check-status");
+  if (prefill && avisoCheck) {
+    say(avisoCheck, "Consultando o histórico deste resultado…");
+    fetch(`/api/corrections?checkId=${encodeURIComponent(prefill)}`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (!data) {
+          say(avisoCheck, "Não foi possível consultar o histórico deste resultado agora.", "warning");
+          return;
+        }
+        if (data.correctedAt) {
+          const quando = new Date(data.correctedAt).toLocaleString("pt-BR");
+          say(avisoCheck, `Este resultado tem correção editorial aplicada em ${quando}. A versão vigente é a corrigida.`, "warning");
+          return;
+        }
+        if ((data.corrections ?? []).length > 0) {
+          const ultimo = data.corrections[0];
+          say(avisoCheck, `Há ${data.corrections.length} contestação(ões) registrada(s); situação mais recente: ${ultimo.statusLabel}. O resultado ainda não foi alterado.`, "warning");
+          return;
+        }
+        say(avisoCheck, "Nenhuma contestação registrada para este resultado até agora.");
+      })
+      .catch(() => say(avisoCheck, "Falha de rede ao consultar o histórico deste resultado.", "warning"));
+  }
+
   messageField?.addEventListener("input", () => {
     if (counter) counter.textContent = String(messageField.value.length);
   });

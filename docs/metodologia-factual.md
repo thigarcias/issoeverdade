@@ -76,6 +76,8 @@ A mídia pode falhar parcialmente: transcrição sem timestamps, áudio ausente,
 Downloads de metadados, áudio e frames têm subetapas medidas. Depois da extração, transcrição e visão rodam em paralelo; falha de uma não descarta a outra. O painel mostra subetapas e fase principal: elas se sobrepõem e suas durações não devem ser somadas. Quantidade real de frames, timestamps fornecidos e duração retornada pelo worker são preservados, sem inventar timestamps ausentes.
 
 
+O card compartilhável inclui o **ID da checagem**, a indicação de que a análise é automatizada (e que a nota não é probabilidade calibrada) e o endereço para conferir correções daquele resultado. Cards já baixados não podem ser recolhidos ou atualizados automaticamente: o link é o que permite verificar a versão vigente.
+
 ## Avaliação reproduzível
 
 O repositório inclui `scripts/evaluate-factual.mjs`, um harness que lê JSONL e calcula métricas por versão metodológica, configuração de modelo e modalidade. Nenhum corpus humano foi entregue nesta implementação; portanto, **não há resultados, taxa de precisão ou benchmark a publicar**. A recomendação inicial é reunir pelo menos 200 casos únicos, com cobertura por modalidade e categoria, antes de interpretar métricas como avaliação ampla.

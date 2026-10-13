@@ -305,17 +305,30 @@ export async function renderShareCard(result) {
     }
   }
 
-  // Rodapé: meta da checagem + CTA de divulgação
+  // Rodapé: meta da checagem + ID verificável + CTA de divulgação
   ctx.textAlign = "center";
   ctx.fillStyle = FG3;
   ctx.font = `400 22px ${SANS}`;
   const meta = [result.kind, result.publishedAt ? `checada em ${result.publishedAt}` : ""].filter(Boolean).join("  ·  ");
-  if (meta) ctx.fillText(meta, W / 2, H - 152);
+  if (meta) ctx.fillText(meta, W / 2, H - 214);
+  // Análise automatizada, identificador e caminho para conferir correções:
+  // o card pode circular fora do site, então precisa apontar para a versão vigente.
+  ctx.fillStyle = FG2;
+  ctx.font = `400 22px ${SANS}`;
+  const aviso = result.score == null
+    ? "Checagem automática · sem nota ou veredito factual"
+    : "Checagem automática · a nota não é probabilidade calibrada";
+  ctx.fillText(aviso, W / 2, H - 176);
+  if (result.id) {
+    ctx.fillStyle = FG3;
+    ctx.font = `400 22px ${SANS}`;
+    ctx.fillText(`ID ${result.id} · confira correções em ${location.host}/correcoes.html?checkId=${result.id}`, W / 2, H - 140);
+  }
   ctx.font = `400 26px ${SANS}`;
-  ctx.fillText("Viu algo suspeito? Confira você também em", W / 2, H - 110);
+  ctx.fillText("Viu algo suspeito? Confira você também em", W / 2, H - 100);
   ctx.fillStyle = ACCENT;
   ctx.font = `600 40px ${SANS}`;
-  ctx.fillText(location.host, W / 2, H - 62);
+  ctx.fillText(location.host, W / 2, H - 52);
 
   return new Promise((resolve, reject) => {
     canvas.toBlob(

@@ -223,6 +223,29 @@ export function publicCorrection(record) {
   };
 }
 
+/**
+ * Estado público das contestações de uma checagem: permite ao link do card
+ * verificar se o resultado foi corrigido sem expor a entrada original, o
+ * contato do solicitante ou as notas internas.
+ */
+export async function correctionsForCheck(checkId) {
+  const id = clean(checkId, 80);
+  if (!id || !/^[a-z0-9-]+$/i.test(id)) return { ok: false, error: "bad_check_id" };
+  const { items } = await readIndex();
+  const related = items
+    .filter((item) => item.checkId === id)
+    .sort((a, b) => String(b.updatedAt ?? b.at).localeCompare(String(a.updatedAt ?? a.at)))
+    .slice(0, 5)
+    .map((item) => ({
+      protocol: item.protocol,
+      status: item.status,
+      updatedAt: item.updatedAt ?? item.at,
+      statusLabel: CORRECTION_STATUSES.find((status) => status.id === item.status)?.label ?? item.status,
+    }));
+  const correctedAt = related.find((item) => item.status === "corrected")?.updatedAt ?? null;
+  return { ok: true, checkId: id, corrections: related, correctedAt };
+}
+
 /** Resumo para o painel administrativo (inclui contato, uso interno). */
 export function adminCorrection(record) {
   return {

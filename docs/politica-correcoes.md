@@ -12,6 +12,8 @@ Registros antigos descrevem a execução preservada. Não são reexecutados auto
 
 A página [correcoes.html](../public/correcoes.html) tem formulário próprio que envia o pedido para `POST /api/corrections`. Cada pedido recebe um **protocolo** (`corr-...`) e entra numa fila privada com estados: `received`, `in_review`, `awaiting_info`, `corrected`, `maintained`, `closed`. O estado pode ser consultado em `GET /api/corrections?protocol=<protocolo>`, que devolve apenas protocolo, estado, datas, vínculo com a checagem e o histórico de estados — **nunca** o contato nem as notas internas.
 
+O card compartilhável inclui o **ID da checagem** e o endereço `correcoes.html?checkId=<ID>`; quem recebeu o card pode conferir, sem ver a entrada original nem os logs, se aquele resultado já foi corrigido. A consulta `GET /api/corrections?checkId=<ID>` devolve apenas protocolos vinculados, estado e data da correção editorial (quando houver).
+
 O formulário aceita: ID da checagem (opcional, pré-preenchido pelo link "Contestar este resultado" do card), tipo do pedido (correção, direito de resposta, remoção), mensagem obrigatória (20 a 4000 caracteres), link de evidência (opcional) e contato para retorno (opcional). Há limite de pedidos por origem e um campo armadilha contra envio automatizado.
 
 ## Revisão e correção versionada

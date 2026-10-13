@@ -118,3 +118,29 @@ test("consulta pública exige protocolo existente", async () => {
   const inexistente = await handleCorrectionsRequest({ method: "GET", headers: {}, query: { protocol: "corr-nada" }, guard, env: {} });
   assert.equal(inexistente.status, 404);
 });
+
+test("link do card consulta o estado por checagem sem expor contato nem mensagem", async () => {
+  const guard = createGuard(limitsConfig({ IEV_LIMITS_MODE: "memory" }));
+  const criado = await handleCorrectionsRequest({
+    method: "POST",
+    headers: {},
+    body: validBody({ checkId: "mv-card-123", contact: "leitor@example.org" }),
+    socketAddress: "203.0.113.30",
+    guard,
+    env: {},
+  });
+  assert.equal(criado.status, 201);
+  const porChecagem = await handleCorrectionsRequest({ method: "GET", headers: {}, query: { checkId: "mv-card-123" }, guard, env: {} });
+  assert.equal(porChecagem.status, 200);
+  assert.equal(porChecagem.body.correctedAt, null);
+  assert.equal(porChecagem.body.corrections.length, 1);
+  assert.equal(porChecagem.body.corrections[0].status, "received");
+  const serializado = JSON.stringify(porChecagem.body);
+  assert.doesNotMatch(serializado, /leitor@example\.org|pertence a outra rodada|@example/);
+  const idInvalido = await handleCorrectionsRequest({ method: "GET", headers: {}, query: { checkId: "id com espaço" }, guard, env: {} });
+  assert.equal(idInvalido.status, 400);
+  const semContestacao = await handleCorrectionsRequest({ method: "GET", headers: {}, query: { checkId: "mv-sem-nada" }, guard, env: {} });
+  assert.equal(semContestacao.status, 200);
+  assert.deepEqual(semContestacao.body.corrections, []);
+  assert.equal(semContestacao.body.correctedAt, null);
+});

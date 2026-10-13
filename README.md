@@ -45,6 +45,7 @@ Sem armazenamento compartilhado de limites, **produção recusa novas checagens*
 | `GET /api/health` | limites e modos vigentes, sem segredos (smoke de implantação) |
 | `POST /api/corrections` | contestação pública: cria protocolo e entra na fila de revisão |
 | `GET /api/corrections?protocol=` | estado público de um protocolo |
+| `GET /api/corrections?checkId=` | estado público das contestações de uma checagem (usado pelo link do card) |
 | `GET/POST /api/admin` | registros, catálogo+configuração de IA, fila de correções, métricas e invalidação de cache (Bearer `ADMIN_SECRET`) |
 | `/metodologia.html`, `/correcoes.html`, `/privacidade.html` | transparência pública |
 

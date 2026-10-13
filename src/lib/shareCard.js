@@ -28,17 +28,46 @@ function rr(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+function breakWord(ctx, word, maxW) {
+  // Quebra palavra longa (URL sem espaços) em pedaços que cabem.
+  const parts = [];
+  let part = "";
+  for (const ch of word) {
+    if (ctx.measureText(part + ch).width > maxW && part) {
+      parts.push(part);
+      part = ch;
+    } else {
+      part += ch;
+    }
+  }
+  if (part) parts.push(part);
+  return parts;
+}
+
 function wrap(ctx, text, maxW) {
   const words = String(text).split(/\s+/);
   const lines = [];
   let line = "";
-  for (const w of words) {
-    const t = line ? `${line} ${w}` : w;
+  function push(word) {
+    const t = line ? `${line} ${word}` : word;
     if (ctx.measureText(t).width > maxW && line) {
       lines.push(line);
-      line = w;
+      line = word;
     } else {
       line = t;
+    }
+  }
+  for (const w of words) {
+    if (ctx.measureText(w).width > maxW) {
+      if (line) {
+        lines.push(line);
+        line = "";
+      }
+      for (const part of breakWord(ctx, w, maxW)) {
+        lines.push(part);
+      }
+    } else {
+      push(w);
     }
   }
   if (line) lines.push(line);
@@ -171,10 +200,17 @@ export async function renderShareCard(result) {
   ctx.fill();
   ctx.fillText(chipLabel, chipX + 52, chipY + 41);
 
-  // Título serifado (igual .result-title h3)
+  // Título serifado (igual .result-title h3). URL longa vira host curto.
   ctx.fillStyle = INK;
   ctx.font = `400 44px ${SERIF}`;
-  const cleanTitle = result.title.replace(/^\[MOCK\]\s*/, "");
+  let cleanTitle = result.title.replace(/^\[MOCK\]\s*/, "");
+  const urlMatch = cleanTitle.match(/https?:\/\/[^\s]+/);
+  if (urlMatch) {
+    try {
+      const host = new URL(urlMatch[0]).hostname.replace(/^www\./, "");
+      cleanTitle = cleanTitle.replace(urlMatch[0], host).trim();
+    } catch { /* mantém original, wrap quebra */ }
+  }
   const titleLines = wrap(ctx, cleanTitle, cw - 300).slice(0, 3);
   let ty = chipY + 120;
   for (const line of titleLines) {
@@ -182,19 +218,23 @@ export async function renderShareCard(result) {
     ty += 56;
   }
 
-  // Claims como linhas do site (badge + texto)
+  // Claims como linhas do site (badge + texto). Para antes do rodapé.
+  const FOOTER_TOP = H - 150;
   let y = 990;
+  const roomFor = (lines) => y + 40 + lines * 40 + 22 < FOOTER_TOP - (sources.length > 0 ? 130 : 0);
   for (const c of claims) {
     const st = CLAIM_STATUS[c.status] ?? CLAIM_STATUS.unproven;
-    ctx.font = `600 26px ${SANS}`;
     const badge = `${CLAIM_ICON[c.status] ?? "?"}  ${st.label.toUpperCase()} · ${c.score}`;
+    const text = c.text.replace(/^["“]|["”]$/g, "");
+    ctx.font = `400 30px ${SANS}`;
+    const clines = wrap(ctx, text, W - 220).slice(0, 2);
+    if (!roomFor(clines.length)) break;
     ctx.fillStyle = st.color;
+    ctx.font = `600 26px ${SANS}`;
     ctx.fillText(badge, 110, y);
     y += 40;
     ctx.fillStyle = FG2;
     ctx.font = `400 30px ${SANS}`;
-    const text = c.text.replace(/^["“]|["”]$/g, "");
-    const clines = wrap(ctx, text, W - 220).slice(0, 2);
     for (const line of clines) {
       ctx.fillText(line, 110, y);
       y += 40;

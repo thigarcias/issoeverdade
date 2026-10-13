@@ -332,13 +332,13 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
         }),
       );
       second.sources = await sanitizeSources(second.sources);
-      return finish({ result: second, model: secondModel });
+      return await finish({ result: second, model: secondModel });
     }
   }
 
   if (first?.needs_media === true && !transcript) {
     // IA pediu mídia mas não conseguimos extrair nada: veredito honesto.
-    return finish({
+    return await finish({
       result: {
         verdict: "unproven",
         score: 30,
@@ -350,9 +350,9 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
     });
   }
   first.sources = await sanitizeSources(first.sources);
-  return finish({ result: first, model: firstModel });
+  return await finish({ result: first, model: firstModel });
 
-  function finish({ result, model }) {
+  async function finish({ result, model }) {
     const totalMs = Date.now() - t0;
     const checkId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     // Validação determinística: recalcula score/veredito pela rubrica.
@@ -360,8 +360,8 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
     if (corrections.length > 0) {
       phases.push({ name: "score-fix", ms: 0, ok: true, corrections });
     }
-    // Fire-and-forget: log nunca quebra a checagem.
-    saveLog({
+    // Log aguardado (até 8s): fire-and-forget morre no freeze da serverless.
+    const entry = {
       id: checkId,
       kind: input?.kind,
       inputPreview: String(input?.text ?? ""),
@@ -377,7 +377,11 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
       transcriptSegs: transcript?.segments?.length ?? 0,
       origin,
       error: null,
-    }).catch(() => {});
+    };
+    await Promise.race([
+      saveLog(entry).catch(() => {}),
+      new Promise((r) => setTimeout(r, 8000)),
+    ]);
     const out = { result: fixed, model, media: mediaDebug, transcript, origin, checkId, totalMs };
     setCached(input, out).catch(() => {});
     return out;

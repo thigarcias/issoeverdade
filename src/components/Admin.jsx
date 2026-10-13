@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CLAIM_STATUS, VERDICTS } from "../data/constants.js";
+import { CLAIM_STATUS, VERDICTS, migrateVerdict } from "../data/constants.js";
 
 const SECRET_KEY = "iev-admin-secret";
 const PAGE_SIZE = 15;
@@ -408,7 +408,8 @@ export default function Admin({ showToast }) {
           return;
         }
         setHint(data.hint ?? "");
-        setItems(data.items ?? []);
+        // Migra registros antigos ("mixed" → nova escala) para exibição.
+        setItems((data.items ?? []).map((e) => ({ ...e, verdict: migrateVerdict(e?.verdict, e?.score) })));
         setPage(0);
         if (!silent) showToast("Lista atualizada.");
       } catch (err) {
@@ -431,7 +432,8 @@ export default function Admin({ showToast }) {
     setDetailLoading(true);
     try {
       const data = await authedFetch(`/api/admin?id=${encodeURIComponent(id)}`);
-      setDetail(data.record ?? null);
+      const rec = data.record ?? null;
+      setDetail(rec ? { ...rec, verdict: migrateVerdict(rec.verdict, rec.score) } : null);
     } catch (err) {
       showToast(err.message);
     } finally {

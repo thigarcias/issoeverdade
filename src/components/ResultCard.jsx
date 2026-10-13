@@ -114,8 +114,9 @@ export default function ResultCard({ result, showToast, titleId, onShareCard }) 
         </div>
       </div>
       <p className="score-legend">
-        Escala 0–100: <b>0–39</b> falso/enganoso · <b>40–69</b> misto/sem
-        comprovação · <b>70–100</b> verdadeiro
+        Escala 0–100: <b>0–34</b> falso/enganoso · <b>35–54</b> sem comprovação ·{" "}
+        <b>55–64</b> distorcido · <b>65–74</b> parcialmente verdadeiro · <b>75–100</b>{" "}
+        verdadeiro
       </p>
 
       <p className="result-summary">{result.summary}</p>

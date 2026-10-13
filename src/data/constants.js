@@ -4,11 +4,21 @@
 export const VERDICTS = {
   true: { label: "Verdadeiro", tint: "tint-up", color: "#2f6b44" },
   mostly_true: { label: "Maioria verdadeira", tint: "tint-up", color: "#2f6b44" },
-  mixed: { label: "Misto", tint: "tint-warn", color: "#7a5b1e" },
+  partially_true: { label: "Parcialmente verdadeiro", tint: "tint-warn", color: "#7a5b1e" },
+  distorted: { label: "Distorcido", tint: "tint-down", color: "#c22a17" },
   unproven: { label: "Sem comprovação", tint: "tint-warn", color: "#7a5b1e" },
   misleading: { label: "Enganoso", tint: "tint-down", color: "#c22a17" },
   false: { label: "Falso", tint: "tint-down", color: "#c22a17" },
 };
+
+/**
+ * Escala antiga: "mixed" (Misto, 55–74) foi dividido em "partially_true" (65–74)
+ * e "distorted" (55–64). Migra registros antigos pelo score para exibição.
+ */
+export function migrateVerdict(verdict, score) {
+  if (verdict === "mixed") return (Number(score) || 0) >= 65 ? "partially_true" : "distorted";
+  return VERDICTS[verdict] ? verdict : "unproven";
+}
 
 export const CLAIM_STATUS = {
   true: { label: "Verdade", tint: "tint-up", color: "#2f6b44" },

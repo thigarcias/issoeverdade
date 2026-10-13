@@ -3,12 +3,7 @@ import { VERDICTS } from "../data/constants.js";
 
 const FILTERS = [
   { id: "all", label: "Todas" },
-  { id: "true", label: "Verdadeiras" },
-  { id: "mostly_true", label: "Maioria verdadeira" },
-  { id: "mixed", label: "Mistas" },
-  { id: "unproven", label: "Sem comprovação" },
-  { id: "misleading", label: "Enganosas" },
-  { id: "false", label: "Falsas" },
+  ...Object.keys(VERDICTS).map((id) => ({ id, label: VERDICTS[id].label })),
 ];
 
 /** Checagens feitas neste navegador (histórico local). */

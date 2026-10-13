@@ -7,7 +7,7 @@ import DetailDialog from "./components/DetailDialog.jsx";
 import ShareDialog from "./components/ShareDialog.jsx";
 import Admin from "./components/Admin.jsx";
 import HowItWorks from "./components/HowItWorks.jsx";
-import { VERDICTS } from "./data/constants.js";
+import { VERDICTS, migrateVerdict } from "./data/constants.js";
 import { useToast } from "./lib/hooks.js";
 const HISTORY_KEY = "iev-history-v2";
 
@@ -15,7 +15,10 @@ function loadHistory() {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.slice(0, 20) : [];
+    // Migra registros antigos ("mixed" → nova escala) uma vez, na leitura.
+    return Array.isArray(parsed)
+      ? parsed.slice(0, 20).map((r) => ({ ...r, verdict: migrateVerdict(r?.verdict, r?.score) }))
+      : [];
   } catch {
     return [];
   }

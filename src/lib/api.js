@@ -4,7 +4,7 @@
 // Retorna `{ result, steps }`. Detalhes do modelo ficam no servidor.
 // ---------------------------------------------------------------------------
 
-import { PIPELINE_STEPS } from "../data/constants.js";
+import { PIPELINE_STEPS, migrateVerdict } from "../data/constants.js";
 
 export const ERROR_MESSAGES = {
   missing_api_key: "Serviço de checagem indisponível no momento.",
@@ -35,7 +35,6 @@ function titleFrom(input) {
 
 /** Normaliza o JSON do modelo para o formato que o ResultCard espera. */
 function normalize(raw, input, origin) {
-  const verdicts = ["true", "mostly_true", "mixed", "unproven", "misleading", "false"];
   const statuses = ["true", "false", "unproven", "context"];
   const clamp = (n, dflt) => {
     const v = Number(n);
@@ -70,7 +69,7 @@ function normalize(raw, input, origin) {
     : [];
   return {
     id: `r-${Date.now().toString(36)}`,
-    verdict: verdicts.includes(raw?.verdict) ? raw.verdict : "unproven",
+    verdict: migrateVerdict(raw?.verdict, raw?.score),
     score: clamp(raw?.score, 50),
     title: origin?.title ?? titleFrom(input),
     kind: kindLabel(input),

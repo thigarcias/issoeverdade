@@ -25,13 +25,15 @@ mesma afirmação em dois. Cite o texto LITERAL entre aspas.
 Com 1 claim só, o score geral É o score do claim. Nunca invente outro número.
 
 5) VEREDITO pela tabela (score geral → veredito):
-- 90-100: "true" | 75-89: "mostly_true" | 55-74: "mixed"
-- 35-54: "unproven" | 15-34: "misleading" | 0-14: "false"
-Exceção: qualquer claim "false" total (5) limita o veredito a no máximo "mixed".`;
+- 90-100: "true" (verdadeiro) | 75-89: "mostly_true" (maioria verdadeira)
+- 65-74: "partially_true" (parcialmente verdadeiro — fato base real, falta nuance)
+- 55-64: "distorted" (distorcido — fato base real, mas apresentação induz a erro)
+- 35-54: "unproven" (sem comprovação) | 15-34: "misleading" (enganoso) | 0-14: "false" (falso)
+Exceção: qualquer claim "false" total (5) limita o veredito a no máximo "distorted".`;
 
 const BASE_RULES = `Regras: seja cético com prints sem origem e correntes de WhatsApp; USE A BUSCA NA WEB para verificar cada afirmação com dados atuais (não confie só na memória) — busque nomes, datas, números e eventos citados; cite no mínimo 3 fontes VARIADAS por checagem vindas dos resultados da busca, nunca repetindo o mesmo outlet — alterne entre categorias como: fontes oficiais (TSE, Câmara, Senado, Planalto, STF, IBGE, Banco Central), agências de checagem (Lupa, Aos Fatos, Estadão Verifica, UOL Confere, AFP Checamos), veículos grandes (G1, Folha, Estadão, O Globo, UOL, Poder360, Metrópoles, CNN Brasil) e regionais quando relevante; esta lista é EXEMPLIFICATIVA, não exaustiva — se encontrar outros portais válidos e confiáveis nos resultados da busca (outros veículos, órgãos oficiais, documentos públicos), use-os também; o critério é confiabilidade + URL exata, não estar na lista; cada URL deve ser o link EXATO da matéria que confirma o fato, copiado dos resultados da busca — nunca invente, complete, encurte ou altere nem um caractere (sem trocar .htm por .amp.htm, sem adivinhar slug); PROIBIDO citar homepage ou raiz de site (ex.: https://g1.globo.com, https://www.youtube.com, https://expatsba.com) — só vale URL de matéria/página específica com slug; se não tiver a URL exata da matéria, NÃO cite a fonte — cite outra que tenha URL exata, mesmo que sejam menos de 3 fontes (2 fontes exatas valem mais que 3 com enchimento); VINCULE cada fonte ao claim que ela comprova: no campo "sources" de cada claim, liste os NÚMEROS (1-based, na ordem do array sources) das fontes que confirmam ESSE claim específico — [] se nenhuma fonte confirma aquele claim; NUNCA vincule fonte a claim que ela não comprova (fonte sobre moradia não confirma claim sobre remédio); claims "true" EXIGEM pelo menos 1 fonte vinculada — sem fonte, o status máximo é "unproven". Tudo em pt-BR.`;
 
-export const RESULT_SHAPE = `{"verdict":"true|mostly_true|mixed|unproven|misleading|false","score":0-100,"summary":"resumo em pt-BR, 1-2 frases","claims":[{"status":"true|false|unproven|context","score":0-100,"text":"a afirmação entre aspas","note":"justificativa curta em pt-BR","sources":[1] (números das fontes que confirmam ESTE claim, [] se nenhuma)],"sources":[{"outlet":"nome da fonte","detail":"tipo · data","url":"https://..."}]}`;
+export const RESULT_SHAPE = `{"verdict":"true|mostly_true|partially_true|distorted|unproven|misleading|false","score":0-100,"summary":"resumo em pt-BR, 1-2 frases","claims":[{"status":"true|false|unproven|context","score":0-100,"text":"a afirmação entre aspas","note":"justificativa curta em pt-BR","sources":[1] (números das fontes que confirmam ESTE claim, [] se nenhuma)],"sources":[{"outlet":"nome da fonte","detail":"tipo · data","url":"https://..."}]}`;
 
 // Passo 1: julga com o que tem; se faltar conteúdo, pede mídia em vez de chutar.
 export const SYSTEM_PROMPT_JUDGE = `Você é o verificador de fatos do "isso é verdade?", especializado na política do Brasil, segundo turno das Eleições 2026. Responda ESTRITAMENTE em JSON válido, sem markdown, sem texto fora do JSON.
@@ -54,7 +56,8 @@ Quando houver transcrição com timestamps, cheque frase por frase da transcriç
 const VERDICT_TABLE = [
   [90, "true"],
   [75, "mostly_true"],
-  [55, "mixed"],
+  [65, "partially_true"],
+  [55, "distorted"],
   [35, "unproven"],
   [15, "misleading"],
   [0, "false"],
@@ -113,10 +116,10 @@ export function validateResult(raw) {
     fixed.score = Math.abs(claimed - mean) > tol ? mean : claimed;
     let verdict = verdictForScore(fixed.score);
     if (fixed.claims.some((c) => c.status === "false" && c.score <= 10)) {
-      const order = ["false", "misleading", "unproven", "mixed", "mostly_true", "true"];
-      if (order.indexOf(verdict) > order.indexOf("mixed")) {
-        corrections.push(`veredito ${verdict} → mixed (teto: há false total)`);
-        verdict = "mixed";
+      const order = ["false", "misleading", "unproven", "distorted", "partially_true", "mostly_true", "true"];
+      if (order.indexOf(verdict) > order.indexOf("distorted")) {
+        corrections.push(`veredito ${verdict} → distorted (teto: há false total)`);
+        verdict = "distorted";
       }
     }
     if (verdict !== raw?.verdict) {

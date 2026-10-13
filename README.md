@@ -66,7 +66,9 @@ métricas (volume, latência, abstenção, alertas e estado dos controles).
 - **Abuso/custo** (`server/limits.js`): limite de taxa por origem, vagas de
   concorrência com lease, orçamento diário em unidades e contagem de tokens —
   tudo em armazenamento compartilhado quando configurado; sem ele, produção
-  recusa (fail-closed).
+  recusa (fail-closed). Conciliação pós-checagem cobra unidades pelos tokens
+  observados (`IEV_TOKENS_PER_UNIT`). Chave de interrupção operacional:
+  `IEV_LIMITS_MODE=off` para novas checagens mantendo as páginas públicas no ar.
 - **Moderação** (`server/moderation.js`): triagem de propósito, moderação de
   texto e de imagens/frames, recusa só de conteúdo que não pode ser processado
   (abuso sexual infantil, sexual explícito) e cobertura de vídeo declarada

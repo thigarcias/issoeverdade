@@ -98,6 +98,16 @@ test("cobertura de vídeo exige declaração explícita em produção", () => {
   const declarado = checkVideoCoverage(moderationConfig({ VERCEL_ENV: "production", MEDIA_VIDEO_MODERATION: "partial_frames_transcript" }));
   assert.equal(declarado.allowed, true);
   assert.equal(declarado.report.coverage, "partial_frames_transcript");
+  const opcionalProd = checkVideoCoverage(moderationConfig({ VERCEL_ENV: "production", MODERATION_MODE: "optional" }));
+  assert.equal(opcionalProd.allowed, false, "em produção a declaração é exigida mesmo com moderação opcional");
+  const dev = checkVideoCoverage(moderationConfig({}));
+  assert.equal(dev.allowed, true);
+  assert.equal(dev.report.coverage, "partial_frames_transcript", "em dev a cobertura parcial é declarada por padrão");
+  const devSemDeclaracao = checkVideoCoverage(moderationConfig({ MEDIA_VIDEO_MODERATION: "nenhuma" }));
+  assert.equal(devSemDeclaracao.allowed, true);
+  assert.equal(devSemDeclaracao.report.coverage, "uncovered-dev");
+  const desligado = checkVideoCoverage(moderationConfig({ VERCEL_ENV: "production", MODERATION_MODE: "off" }));
+  assert.equal(desligado.allowed, true);
 });
 
 test("triagem de propósito separa pedido ao assistente de afirmação pública", () => {

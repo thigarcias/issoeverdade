@@ -147,7 +147,9 @@ export function checkVideoCoverage(config = moderationConfig()) {
   if (config.videoCoverage === "partial_frames_transcript") {
     return { allowed: true, report: { checked: false, what: "video_coverage", coverage: "partial_frames_transcript" } };
   }
-  if (config.mode === "required") {
+  // Em produção a declaração é exigida independentemente do modo de moderação:
+  // sem ela, o vídeo não é processado até haver decisão explícita do produto.
+  if (config.production) {
     return {
       allowed: false,
       error: "moderation_uncovered",

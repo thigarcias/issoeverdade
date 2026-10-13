@@ -11,7 +11,10 @@ import {
   validateResult,
 } from "./scoring.js";
 
-
+export const OPENCODE_URL = "https://opencode.ai/zen/go/v1/responses";
+export const OPENAI_URL = "https://api.openai.com/v1/responses";
+export const DEFAULT_MODEL = "gpt-6-luna"; // OpenAI com web_search nativo
+export const FALLBACK_MODEL = "muse-spark-1.3-contributor"; // OpenCode Go, sem busca
 export function buildUserContent(input, mediaContext = "") {
   const text = String(input?.text ?? "").slice(0, 8000);
   const fileName = input?.fileName ? String(input.fileName).slice(0, 200) : null;

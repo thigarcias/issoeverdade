@@ -5,6 +5,7 @@
 import { downloadAudio, fetchMediaContext } from "./media.js";
 import { transcribe, transcriptToPrompt } from "./transcribe.js";
 import { saveCheckLog as saveLog } from "./checklog.js";
+import { getCached, setCached } from "./cache.js";
 import {
   SYSTEM_PROMPT_FINAL,
   SYSTEM_PROMPT_JUDGE,
@@ -254,6 +255,9 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
   if (!apiKey && !process.env.OPENAI_API_KEY) {
     fail(503, "missing_api_key", { message: "Nenhuma chave de IA configurada no servidor." });
   }
+  // Cache: mesma entrada em <24h = resultado idêntico, sem custo.
+  const hit = await getCached(input).catch(() => null);
+  if (hit) return hit;
   const t0 = Date.now();
   const phases = [];
   async function phase(name, fn) {
@@ -374,6 +378,8 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
       origin,
       error: null,
     }).catch(() => {});
-    return { result: fixed, model, media: mediaDebug, transcript, origin, checkId, totalMs };
+    const out = { result: fixed, model, media: mediaDebug, transcript, origin, checkId, totalMs };
+    setCached(input, out).catch(() => {});
+    return out;
   }
 }

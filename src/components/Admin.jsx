@@ -259,6 +259,13 @@ function DetailDialog({ detail, loading, onClose, showToast }) {
                       </span>
                       <p>{c.text}</p>
                       {c.note && <small>{c.note}</small>}
+                      {Array.isArray(c.sourceIds) && (
+                        <small className="admin-mut">
+                          {c.sourceIds.length === 0
+                            ? " — nenhuma fonte vinculada"
+                            : ` — fontes: ${c.sourceIds.map((n) => `#${n + 1}`).join(", ")}`}
+                        </small>
+                      )}
                     </li>
                   );
                 })}

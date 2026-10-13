@@ -29,9 +29,9 @@ Com 1 claim só, o score geral É o score do claim. Nunca invente outro número.
 - 35-54: "unproven" | 15-34: "misleading" | 0-14: "false"
 Exceção: qualquer claim "false" total (5) limita o veredito a no máximo "mixed".`;
 
-  const BASE_RULES = `Regras: seja cético com prints sem origem e correntes de WhatsApp; USE A BUSCA NA WEB para verificar cada afirmação com dados atuais (não confie só na memória) — busque nomes, datas, números e eventos citados; cite no mínimo 3 fontes VARIADAS por checagem vindas dos resultados da busca, nunca repetindo o mesmo outlet — alterne entre categorias como: fontes oficiais (TSE, Câmara, Senado, Planalto, STF, IBGE, Banco Central), agências de checagem (Lupa, Aos Fatos, Estadão Verifica, UOL Confere, AFP Checamos), veículos grandes (G1, Folha, Estadão, O Globo, UOL, Poder360, Metrópoles, CNN Brasil) e regionais quando relevante; esta lista é EXEMPLIFICATIVA, não exaustiva — se encontrar outros portais válidos e confiáveis nos resultados da busca (outros veículos, órgãos oficiais, documentos públicos), use-os também; o critério é confiabilidade + URL exata, não estar na lista; cada URL deve ser o link EXATO da matéria que confirma o fato, copiado dos resultados da busca — nunca invente, complete, encurte ou altere nem um caractere (sem trocar .htm por .amp.htm, sem adivinhar slug); PROIBIDO citar homepage ou raiz de site (ex.: https://g1.globo.com, https://www.youtube.com, https://expatsba.com) — só vale URL de matéria/página específica com slug; se não tiver a URL exata da matéria, NÃO cite a fonte — cite outra que tenha URL exata, mesmo que sejam menos de 3 fontes (2 fontes exatas valem mais que 3 com enchimento). Tudo em pt-BR.`;
+const BASE_RULES = `Regras: seja cético com prints sem origem e correntes de WhatsApp; USE A BUSCA NA WEB para verificar cada afirmação com dados atuais (não confie só na memória) — busque nomes, datas, números e eventos citados; cite no mínimo 3 fontes VARIADAS por checagem vindas dos resultados da busca, nunca repetindo o mesmo outlet — alterne entre categorias como: fontes oficiais (TSE, Câmara, Senado, Planalto, STF, IBGE, Banco Central), agências de checagem (Lupa, Aos Fatos, Estadão Verifica, UOL Confere, AFP Checamos), veículos grandes (G1, Folha, Estadão, O Globo, UOL, Poder360, Metrópoles, CNN Brasil) e regionais quando relevante; esta lista é EXEMPLIFICATIVA, não exaustiva — se encontrar outros portais válidos e confiáveis nos resultados da busca (outros veículos, órgãos oficiais, documentos públicos), use-os também; o critério é confiabilidade + URL exata, não estar na lista; cada URL deve ser o link EXATO da matéria que confirma o fato, copiado dos resultados da busca — nunca invente, complete, encurte ou altere nem um caractere (sem trocar .htm por .amp.htm, sem adivinhar slug); PROIBIDO citar homepage ou raiz de site (ex.: https://g1.globo.com, https://www.youtube.com, https://expatsba.com) — só vale URL de matéria/página específica com slug; se não tiver a URL exata da matéria, NÃO cite a fonte — cite outra que tenha URL exata, mesmo que sejam menos de 3 fontes (2 fontes exatas valem mais que 3 com enchimento); VINCULE cada fonte ao claim que ela comprova: no campo "sources" de cada claim, liste os NÚMEROS (1-based, na ordem do array sources) das fontes que confirmam ESSE claim específico — [] se nenhuma fonte confirma aquele claim; NUNCA vincule fonte a claim que ela não comprova (fonte sobre moradia não confirma claim sobre remédio); claims "true" EXIGEM pelo menos 1 fonte vinculada — sem fonte, o status máximo é "unproven". Tudo em pt-BR.`;
 
-export const RESULT_SHAPE = `{"verdict":"true|mostly_true|mixed|unproven|misleading|false","score":0-100,"summary":"resumo em pt-BR, 1-2 frases","claims":[{"status":"true|false|unproven|context","score":0-100,"text":"a afirmação entre aspas","note":"justificativa curta em pt-BR"}],"sources":[{"outlet":"nome da fonte","detail":"tipo · data","url":"https://..."}]}`;
+export const RESULT_SHAPE = `{"verdict":"true|mostly_true|mixed|unproven|misleading|false","score":0-100,"summary":"resumo em pt-BR, 1-2 frases","claims":[{"status":"true|false|unproven|context","score":0-100,"text":"a afirmação entre aspas","note":"justificativa curta em pt-BR","sources":[1] (números das fontes que confirmam ESTE claim, [] se nenhuma)],"sources":[{"outlet":"nome da fonte","detail":"tipo · data","url":"https://..."}]}`;
 
 // Passo 1: julga com o que tem; se faltar conteúdo, pede mídia em vez de chutar.
 export const SYSTEM_PROMPT_JUDGE = `Você é o verificador de fatos do "isso é verdade?", especializado na política do Brasil, segundo turno das Eleições 2026. Responda ESTRITAMENTE em JSON válido, sem markdown, sem texto fora do JSON.
@@ -89,7 +89,16 @@ export function validateResult(raw) {
         if (status !== c?.status) corrections.push(`claim${i + 1}: status inválido → unproven`);
         const score = clampScore(c?.score, 50);
         if (score !== Math.round(Number(c?.score))) corrections.push(`claim${i + 1}: score clamped → ${score}`);
-        return { ...c, status, score };
+        // Claim 'true' sem fonte vinculada = rebaixa para unproven (máx 45).
+        let finalStatus = status, finalScore = score;
+        const linked = Array.isArray(c?.sourceIds) ? c.sourceIds.length : 0;
+        const newSchema = c && typeof c === 'object' && 'sources' in c;
+        if (status === 'true' && linked === 0 && newSchema) {
+          finalStatus = 'unproven';
+          finalScore = Math.min(score, 45);
+          corrections.push(`claim${i + 1}: true sem fonte válida → unproven (${finalScore})`);
+        }
+        return { ...c, status: finalStatus, score: finalScore };
       })
     : [];
   if (fixed.claims.length > 0) {

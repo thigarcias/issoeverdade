@@ -179,17 +179,22 @@ async function callModel({ apiKey, instructions, input, timeoutMs }) {
 }
 
 /**
- * Sanitiza fontes do modelo: remove outlets duplicados (case-insensitive) e
- * DESCARTA fontes sem URL válida (HEAD rápido, 8s; falha = remove).
+ * Sanitiza fontes do modelo: remove outlets duplicados (case-insensitive),
+ * rejeita URLs genéricas (homepage/raiz/seção) e DESCARTA fontes sem URL
+ * válida (HEAD rápido, 8s; falha = remove). Com `claims` (vínculos 1-based
+ * no campo `sources` de cada claim), poda fontes ÓRFÃS — não vinculadas a
+ * nenhum claim — e remapeia os vínculos para os índices finais (0-based).
  * Fonte sem link clicável não entra na lista — nome sem URL não é fonte.
  * @returns {{ sources: object[], dropped: string[] }}
- */
-async function sanitizeSources(sources) {
+*/
+async function sanitizeSources(sources, claims = null) {
   if (!Array.isArray(sources)) return { sources: [], dropped: [] };
   const seen = new Set();
   const unique = [];
   const dropped = [];
-  for (const s of sources.slice(0, 8)) {
+  const capped = sources.slice(0, 8);
+  for (let si = 0; si < capped.length; si++) {
+    const s = capped[si];
     const key = String(s?.outlet ?? "").trim().toLowerCase();
     if (!key || seen.has(key)) continue;
     seen.add(key);
@@ -213,6 +218,7 @@ async function sanitizeSources(sources) {
       continue;
     }
     unique.push({
+      _orig: si + 1,
       outlet: String(s.outlet).slice(0, 120),
       detail: String(s?.detail ?? "").slice(0, 120),
       url,
@@ -250,7 +256,37 @@ async function sanitizeSources(sources) {
       }
     }),
   );
-  return { sources: alive.filter(Boolean), dropped };
+  let final = alive.filter(Boolean);
+  // Poda órfãs: mantém só fontes vinculadas a ≥1 claim; remapeia vínculos.
+  // Sem vínculos (modelo antigo): mantém todas (compat).
+  if (Array.isArray(claims)) {
+    const used = new Set();
+    for (const c of claims) {
+      const refs = Array.isArray(c?.sources) ? c.sources : [];
+      for (const n of refs) {
+        const idx = Number(n) - 1;
+        if (Number.isInteger(idx)) used.add(idx);
+      }
+    }
+    const anyRefs = used.size > 0;
+    if (anyRefs) {
+      const kept = [];
+      const remap = new Map();
+      final.forEach((s) => {
+        if (used.has(s._orig - 1)) { remap.set(s._orig, kept.length); kept.push(s); }
+        else dropped.push(s.outlet + ' (não vinculada a nenhum claim)');
+      });
+      for (const c of claims) {
+        const refs = Array.isArray(c?.sources) ? c.sources : [];
+        c.sourceIds = refs.map((n) => remap.get(Number(n))).filter((v) => v !== undefined);
+      }
+      final = kept;
+    } else {
+      for (const c of claims) c.sourceIds = [];
+    }
+  }
+  for (const s of final) delete s._orig;
+  return { sources: final, dropped };
 }
 
 function toOrigin(media, url) {
@@ -460,7 +496,7 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
           timeoutMs,
         }),
       );
-      const clean = await sanitizeSources(second.sources);
+      const clean = await sanitizeSources(second.sources, second.claims);
       second.sources = clean.sources;
       return await finish({ result: second, model: secondModel, debug: { finalInput, secondRaw }, dropped: clean.dropped });
     }
@@ -479,7 +515,7 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
       model: firstModel,
     });
   }
-  const clean = await sanitizeSources(first.sources);
+  const clean = await sanitizeSources(first.sources, first.claims);
   first.sources = clean.sources;
   return await finish({ result: first, model: firstModel, dropped: clean.dropped });
 

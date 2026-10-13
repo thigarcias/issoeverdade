@@ -53,14 +53,20 @@ function normalize(raw, input, origin) {
         }))
     : [];
   const claims = Array.isArray(raw?.claims)
-    ? raw.claims.slice(0, 10).map((c, i) => ({
-        id: `c${i + 1}`,
-        status: statuses.includes(c?.status) ? c.status : "unproven",
-        score: clamp(c?.score, 50),
-        text: String(c?.text ?? "Afirmação").slice(0, 400),
-        note: String(c?.note ?? "").slice(0, 400),
-        sourceIds: sources.map((_, idx) => idx),
-      }))
+    ? raw.claims.slice(0, 10).map((c, i) => {
+        // Servidor novo envia sourceIds (0-based, podados); sem eles, vincula todas (compat).
+        const ids = Array.isArray(c?.sourceIds)
+          ? c.sourceIds.filter((n) => Number.isInteger(n) && n >= 0 && n < sources.length)
+          : sources.map((_, idx) => idx);
+        return {
+          id: `c${i + 1}`,
+          status: statuses.includes(c?.status) ? c.status : "unproven",
+          score: clamp(c?.score, 50),
+          text: String(c?.text ?? "Afirmação").slice(0, 400),
+          note: String(c?.note ?? "").slice(0, 400),
+          sourceIds: ids,
+        };
+      })
     : [];
   return {
     id: `r-${Date.now().toString(36)}`,

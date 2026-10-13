@@ -166,7 +166,33 @@ export async function renderShareCard(result) {
     } catch { /* mantém original, wrap quebra */ }
   }
   const titleLines = wrap(ctx, cleanTitle, cw - 120).slice(0, 3);
-  const cardBottom = 640 + titleLines.length * 54 + 40;
+  // Layout em 2 passes: mede claims/fontes primeiro; resumo encolhe (2→0 linhas)
+  // para garantir pelo menos 1 claim + fontes sempre visíveis.
+  ctx.font = `400 30px ${SANS}`;
+  const claimBlocks = claims.map((c) => {
+    const text = c.text.replace(/^["“]|["”]$/g, "");
+    const clines = wrap(ctx, text, W - 220).slice(0, 2);
+    ctx.font = `400 25px ${SANS}`;
+    const nlines = c.note ? wrap(ctx, c.note, W - 220).slice(0, 1) : [];
+    ctx.font = `400 30px ${SANS}`;
+    return { c, clines, nlines, h: 40 + clines.length * 40 + nlines.length * 34 + 22 };
+  });
+  ctx.font = `400 27px ${SANS}`;
+  const sourceBlocks = sources.map((s) => {
+    const label = s.detail ? `•  ${s.outlet} — ${s.detail}` : `•  ${s.outlet}`;
+    return wrap(ctx, label, W - 220).slice(0, 2);
+  });
+  const sourcesH = sources.length > 0 ? 36 + 36 + sourceBlocks.reduce((a, b) => a + b.length * 36, 0) : 0;
+  const firstClaimH = claimBlocks.length > 0 ? claimBlocks[0].h : 0;
+  ctx.font = `400 26px ${SANS}`;
+  const fullSummary = wrap(ctx, result.summary ?? "", cw - 120);
+  // Orçamento: header(200) + anel/título(600→) + claims + fontes + rodapé(150).
+  const TITLE_Y = 600;
+  const titleH = titleLines.length * 54;
+  let summaryLines = fullSummary.slice(0, 2);
+  const fits = (n) => TITLE_Y + titleH + 12 + n * 34 + 32 + 40 + firstClaimH + sourcesH < H - 150;
+  while (summaryLines.length > 0 && !fits(summaryLines.length)) summaryLines = summaryLines.slice(0, -1);
+  const cardBottom = TITLE_Y + titleH + 12 + summaryLines.length * 34 + 32;
   hardShadow(ctx, cx0, cardTop, cw, cardBottom - cardTop, 28);
   ctx.fillStyle = PANEL;
   ctx.strokeStyle = INK;
@@ -215,24 +241,28 @@ export async function renderShareCard(result) {
   ctx.fillStyle = INK;
   ctx.font = `400 42px ${SERIF}`;
   ctx.textAlign = "center";
-  let ty = 640;
+  let ty = TITLE_Y;
   for (const line of titleLines) {
     ctx.fillText(line, W / 2, ty);
     ty += 54;
   }
+  ty += 12;
+  ctx.fillStyle = FG2;
+  ctx.font = `400 26px ${SANS}`;
+  for (const line of summaryLines) {
+    ctx.fillText(line, W / 2, ty);
+    ty += 34;
+  }
 
-  // Claims como linhas do site (badge + texto). Para antes do rodapé.
+  // Claims como linhas do site (badge + texto + justificativa). Para antes do rodapé.
   ctx.textAlign = "left";
   const FOOTER_TOP = H - 150;
   let y = cardBottom + 40;
-  const roomFor = (lines) => y + 40 + lines * 40 + 22 < FOOTER_TOP - (sources.length > 0 ? 130 : 0);
-  for (const c of claims) {
+  const roomFor = (h) => y + h < FOOTER_TOP - sourcesH;
+  for (const { c, clines, nlines, h } of claimBlocks) {
     const st = CLAIM_STATUS[c.status] ?? CLAIM_STATUS.unproven;
     const badge = `${CLAIM_ICON[c.status] ?? "?"}  ${st.label.toUpperCase()} · ${c.score}`;
-    const text = c.text.replace(/^["“]|["”]$/g, "");
-    ctx.font = `400 30px ${SANS}`;
-    const clines = wrap(ctx, text, W - 220).slice(0, 2);
-    if (!roomFor(clines.length)) break;
+    if (!roomFor(h)) break;
     ctx.fillStyle = st.color;
     ctx.font = `600 26px ${SANS}`;
     ctx.fillText(badge, 110, y);
@@ -243,10 +273,16 @@ export async function renderShareCard(result) {
       ctx.fillText(line, 110, y);
       y += 40;
     }
+    ctx.fillStyle = FG3;
+    ctx.font = `400 25px ${SANS}`;
+    for (const line of nlines) {
+      ctx.fillText(line, 110, y);
+      y += 34;
+    }
     y += 22;
   }
 
-  // Divisória + fontes
+  // Divisória + fontes (com detalhe tipo · data quando houver)
   if (sources.length > 0) {
     ctx.strokeStyle = LINE;
     ctx.lineWidth = 2;
@@ -257,20 +293,24 @@ export async function renderShareCard(result) {
     y += 36;
     ctx.fillStyle = FG3;
     ctx.font = `600 22px ${SANS}`;
-    ctx.fillText("FONTES CONSULTADAS", 110, y);
+    ctx.fillText(`FONTES CONSULTADAS · ${result.sources.length}`, 110, y);
     y += 36;
     ctx.font = `400 27px ${SANS}`;
     ctx.fillStyle = FG2;
-    for (const s of sources) {
-      const lines = wrap(ctx, `•  ${s.outlet}`, W - 220).slice(0, 1);
-      ctx.fillText(lines[0] ?? "", 110, y);
-      y += 36;
+    for (const lines of sourceBlocks) {
+      for (const line of lines) {
+        ctx.fillText(line, 110, y);
+        y += 36;
+      }
     }
   }
 
-  // Rodapé: CTA de divulgação
+  // Rodapé: meta da checagem + CTA de divulgação
   ctx.textAlign = "center";
   ctx.fillStyle = FG3;
+  ctx.font = `400 22px ${SANS}`;
+  const meta = [result.kind, result.publishedAt ? `checada em ${result.publishedAt}` : ""].filter(Boolean).join("  ·  ");
+  if (meta) ctx.fillText(meta, W / 2, H - 152);
   ctx.font = `400 26px ${SANS}`;
   ctx.fillText("Viu algo suspeito? Confira você também em", W / 2, H - 110);
   ctx.fillStyle = ACCENT;

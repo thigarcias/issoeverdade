@@ -222,8 +222,9 @@ export async function renderShareCard(result) {
   }
 
   // Claims como linhas do site (badge + texto). Para antes do rodapé.
+  ctx.textAlign = "left";
   const FOOTER_TOP = H - 150;
-  let y = 640 + titleLines.length * 54 + 50;
+  let y = cardBottom + 40;
   const roomFor = (lines) => y + 40 + lines * 40 + 22 < FOOTER_TOP - (sources.length > 0 ? 130 : 0);
   for (const c of claims) {
     const st = CLAIM_STATUS[c.status] ?? CLAIM_STATUS.unproven;

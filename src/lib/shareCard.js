@@ -140,23 +140,27 @@ export async function renderShareCard(result) {
     const text = c.text.replace(/^["“]|["”]$/g, "");
     ctx.font = `400 29px ${SANS}`;
     const clines = wrap(ctx, text, W - 320).slice(0, 2);
-    const blockH = 24 + clines.length * 40 + 20;
+    const blockH = 48 + clines.length * 40 + 16;
     // barra lateral
     ctx.fillStyle = st.color;
     rr(ctx, 110, y, 10, blockH, 5);
     ctx.fill();
-    // selo
+    // selo com fundo creme (contraste no fundo escuro)
     ctx.font = `600 24px ${SANS}`;
     const badge = `${CLAIM_ICON[c.status] ?? "?"} ${st.label.toUpperCase()} · ${c.score}`;
+    const badgeW = ctx.measureText(badge).width + 32;
+    ctx.fillStyle = CREAM;
+    rr(ctx, 145, y + 2, badgeW, 36, 8);
+    ctx.fill();
     ctx.fillStyle = st.color;
-    ctx.fillText(badge, 145, y + 28);
+    ctx.fillText(badge, 161, y + 28);
     // texto
     ctx.fillStyle = CREAM;
     ctx.font = `400 29px ${SANS}`;
     clines.forEach((line, i) => {
-      ctx.fillText(line, 145, y + 28 + 40 * (i + 1));
+      ctx.fillText(line, 145, y + 48 + 40 * (i + 1));
     });
-    y += blockH + 22;
+    y += blockH + 34;
   }
 
   // Fontes

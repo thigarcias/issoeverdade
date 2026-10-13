@@ -1,0 +1,196 @@
+// Regressões do dossiê de evidências: extração de texto (HTML/PDF), tetos de
+// transferência, localização de trechos e rebaixamento por revisão de fidelidade.
+process.env.IEV_ALLOW_PRIVATE_HOSTS = "1";
+const evidence = await import("./evidence.js");
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+
+const MINIMAL_PDF = (text) => {
+  const content = `BT /F1 12 Tf 20 100 Td (${text}) Tj ET`;
+  return Buffer.from(`%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length ${content.length} >>
+stream
+${content}
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+trailer
+<< /Root 1 0 R /Size 6 >>
+%%EOF
+`, "latin1");
+};
+
+const htmlResponse = (body, type = "text/html; charset=utf-8") => ({ headers: { "content-type": type }, body: Buffer.from(body, "utf8") });
+
+test("extrai texto de HTML e de PDF, e recusa formatos sem texto", async () => {
+  const html = await evidence.extractDocumentText(htmlResponse("<html><body><p>O instituto divulgou 52% na rodada de outubro.</p></body></html>"));
+  assert.equal(html.ok, true);
+  assert.equal(html.kind, "html");
+  assert.match(html.text, /52%/);
+
+  const pdf = await evidence.extractDocumentText({ headers: { "content-type": "application/pdf" }, body: MINIMAL_PDF("Rodada de outubro com 52 por cento das intencoes de voto") });
+  assert.equal(pdf.ok, true);
+  assert.equal(pdf.kind, "pdf");
+  assert.match(pdf.text, /52 por cento/);
+
+  const zip = await evidence.extractDocumentText({ headers: { "content-type": "application/zip" }, body: Buffer.from("PK\u0003\u0004lixo") });
+  assert.equal(zip.ok, false);
+  assert.match(zip.reason, /unsupported-type/);
+
+  const curto = await evidence.extractDocumentText(htmlResponse("<html><body>oi</body></html>"));
+  assert.equal(curto.ok, false);
+  assert.equal(curto.reason, "document-too-short");
+});
+
+async function comServidor(handler, fn) {
+  const server = createServer(handler);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  process.env.IEV_HTTP_PORTS = String(port);
+  try {
+    return await fn(port);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+test("fetchDocument obtém documento, respeita teto e registra recusas", async () => {
+  await comServidor((req, res) => {
+    if (req.url === "/noticia") {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end("<html><body><article>O instituto divulgou 52% das intenções de voto na rodada de outubro, contra 48%.</article></body></html>");
+      return;
+    }
+    if (req.url === "/relatorio.pdf") {
+      const pdf = MINIMAL_PDF("Pesquisa de outubro registrada com 52 por cento");
+      res.writeHead(200, { "Content-Type": "application/pdf", "Content-Length": String(pdf.length) });
+      res.end(pdf);
+      return;
+    }
+    if (req.url === "/gigante") {
+      res.writeHead(200, { "Content-Type": "text/html", "Content-Length": "900000" });
+      res.end("x".repeat(900000));
+      return;
+    }
+    res.writeHead(404);
+    res.end("não encontrado");
+  }, async (port) => {
+    const ok = await evidence.fetchDocument(`http://127.0.0.1:${port}/noticia`, { config: evidence.evidenceConfig({ IEV_MAX_DOC_BYTES: "500000" }) });
+    assert.equal(ok.ok, true);
+    assert.equal(ok.kind, "html");
+    assert.match(ok.text, /52%/);
+
+    const pdf = await evidence.fetchDocument(`http://127.0.0.1:${port}/relatorio.pdf`, { config: evidence.evidenceConfig({ IEV_MAX_DOC_BYTES: "500000" }) });
+    assert.equal(pdf.ok, true);
+    assert.equal(pdf.kind, "pdf");
+
+    const grande = await evidence.fetchDocument(`http://127.0.0.1:${port}/gigante`, { config: evidence.evidenceConfig({ IEV_MAX_DOC_BYTES: "1000" }) });
+    assert.equal(grande.ok, false);
+    assert.equal(grande.reason, "too_large");
+
+    const faltando = await evidence.fetchDocument(`http://127.0.0.1:${port}/nada`, { config: evidence.evidenceConfig() });
+    assert.equal(faltando.ok, false);
+    assert.equal(faltando.reason, "http-404");
+  });
+});
+
+test("prioriza fontes de claims decididos e coleta trechos localizados", async () => {
+  const sources = [
+    { url: "https://a.example/contexto", outlet: "A" },
+    { url: "https://b.example/principal", outlet: "B" },
+  ];
+  const claims = [
+    { status: "true", evidence: [{ sourceId: 1, relation: "supports", quote: "o instituto divulgou 52% das intenções de voto na rodada de outubro" }] },
+    { status: "context", evidence: [{ sourceId: 0, relation: "context", quote: "" }] },
+  ];
+  assert.deepEqual(evidence.prioritizeSources(sources, claims).map((source) => source.sourceId), [1, 0]);
+
+  const documentos = {
+    "https://b.example/principal": "O instituto divulgou 52% das intenções de voto, na rodada de outubro, contra 48% do adversário.",
+    "https://a.example/contexto": "Página sem relação com o número citado.",
+  };
+  const dossier = await evidence.collectEvidence({
+    sources,
+    claims,
+    config: evidence.evidenceConfig({ IEV_EVIDENCE_MAX_DOCS: "4" }),
+    fetchImpl: async (url) => ({ ok: true, url, kind: "html", text: documentos[url], bytes: 100 }),
+  });
+  assert.equal(dossier.summary.documents, 2);
+  assert.equal(dossier.summary.citations, 2);
+  assert.equal(dossier.summary.located, 1);
+  assert.equal(dossier.summary.missing, 0, "citação sem trecho é estado próprio, não 'não localizada'");
+  const principal = dossier.citations.find((citation) => citation.sourceId === 1);
+  assert.equal(principal.locator.found, true);
+  assert.ok(["exact", "normalized", "approximate"].includes(principal.locator.kind));
+  const semTrecho = dossier.citations.find((citation) => citation.sourceId === 0);
+  assert.equal(semTrecho.locator.kind, "empty_quote");
+});
+
+test("dossiê respeita teto de documentos e orçamento de bytes", async () => {
+  const sources = Array.from({ length: 5 }, (_, index) => ({ url: `https://s${index}.example/x`, outlet: `S${index}` }));
+  const claims = sources.map((_, index) => ({ status: "true", evidence: [{ sourceId: index, relation: "supports", quote: "trecho citado de teste com mais de oito caracteres" }] }));
+  let chamadas = 0;
+  const dossier = await evidence.collectEvidence({
+    sources,
+    claims,
+    config: evidence.evidenceConfig({ IEV_EVIDENCE_MAX_DOCS: "2" }),
+    fetchImpl: async (url) => { chamadas++; return { ok: false, url, reason: "blocked:private_address" }; },
+  });
+  assert.equal(chamadas, 2);
+  assert.equal(dossier.summary.blocked, 2);
+  assert.equal(dossier.documents.length, 2);
+});
+
+test("revisão de fidelidade rebaixa citação não confirmada e preserva confirmada", () => {
+  const claims = [
+    { status: "true", evidence: [{ sourceId: 0, relation: "supports", quote: "trecho do documento sobre a pesquisa" }] },
+    { status: "false", evidence: [{ sourceId: 1, relation: "refutes", quote: "trecho do documento sobre o outro número" }] },
+    { status: "true", evidence: [{ sourceId: 2, relation: "supports", quote: "trecho do terceiro documento" }] },
+  ];
+  const citations = [
+    { claimIndex: 0, evidenceIndex: 0, sourceId: 0, relation: "supports", quote: "trecho do documento sobre a pesquisa", excerpt: "trecho do documento sobre a pesquisa" },
+    { claimIndex: 1, evidenceIndex: 0, sourceId: 1, relation: "refutes", quote: "trecho do documento sobre o outro número", excerpt: "trecho do documento sobre o outro número" },
+    { claimIndex: 2, evidenceIndex: 0, sourceId: 2, relation: "supports", quote: "trecho do terceiro documento", excerpt: "trecho do terceiro documento" },
+  ];
+  const applied = evidence.applyReview({
+    claims,
+    citations,
+    review: { items: [{ id: 1, verdict: "supports" }, { id: 2, verdict: "unclear" }, { id: 3, verdict: "contradicts" }] },
+    config: evidence.evidenceConfig(),
+  });
+  assert.equal(applied.claims[0].status, "true");
+  assert.equal(applied.claims[1].status, "unproven");
+  assert.equal(applied.claims[2].status, "unproven");
+  assert.match(applied.claims[2].note, /diz algo diferente/);
+  assert.equal(applied.downgraded.length, 2);
+  assert.ok(applied.corrections.some((message) => /revisão de fidelidade/.test(message)));
+  assert.match(evidence.evidenceNote({ enabled: true, citations: 3, located: 2, missing: 1, blocked: 1 }), /2\/3 trecho/);
+  assert.equal(evidence.evidenceNote({ enabled: true, citations: 0 }), "");
+});
+
+test("prompt de revisão só inclui citações com trecho localizado", () => {
+  const input = evidence.buildReviewInput({
+    claims: [{ text: "afirmação" }],
+    citations: [
+      { claimIndex: 0, evidenceIndex: 0, quote: "citação localizada", excerpt: "trecho localizado no documento" },
+      { claimIndex: 0, evidenceIndex: 1, quote: "citação ausente", excerpt: null },
+    ],
+  });
+  assert.match(input, /citação localizada/);
+  assert.doesNotMatch(input, /citação ausente/);
+  assert.equal(evidence.buildReviewInput({ claims: [], citations: [] }), null);
+});

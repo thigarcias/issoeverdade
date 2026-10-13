@@ -4,9 +4,34 @@
 
 Registrar as proteções existentes e as lacunas para texto, links, uploads e processamento de mídia, incluindo entradas fora do propósito de verificar fatos, conteúdo sensível, prompt injection, SSRF e abuso de recursos.
 
-Este documento é um diagnóstico e plano, não uma declaração de que as melhorias foram implementadas. A inspeção foi feita no código local; não houve teste com conteúdo sensível nem download de arquivo gigante em produção.
+Este documento é um diagnóstico e plano; a seção 1.1 registra o que foi implementado depois. A inspeção foi feita no código local; não houve teste com conteúdo sensível nem download de arquivo gigante em produção.
 
-## 2. Estado atual
+## 1.1 Estado de implementação (após execução do plano)
+
+Esta seção registra o que passou a existir no código depois do diagnóstico acima. As lacunas descritas nas seções 2 a 9 continuam sendo o histórico da inspeção; onde há conflito, vale o que está aqui.
+
+| Área | Estado | Onde | Como foi verificado |
+|---|---|---|---|
+| Política de URL (SSRF) | Implementado: HTTP/HTTPS, sem credenciais, portas permitidas, IPv4/IPv6 internos (mapeados, NAT64, 6to4, Teredo), DNS com todos os endereços validados, conexão fixada no endereço validado e revalidação de cada redirect | `server/net.js` | `server/net.test.js` (matriz de endereços, redirect para metadados, timeout, tetos) |
+| Worker | Implementado: recusa iniciar sem `WORKER_SECRET`, valida URL com a mesma política, concorrência limitada, vigia de disco, limpeza de temporários órfãos, proxy de egresso opcional | `worker/server.js` | `worker/server.test.js` |
+| Tetos de download | Implementado: bytes por resposta, por arquivo, por job e por diretório, com interrupção da árvore de processos (`yt-dlp`/`ffmpeg`) | `server/proc.js`, `server/media.js` | `server/media.test.js` (arquivo acima do teto recusado, destino interno bloqueado) |
+| Duração de mídia | Implementado: recusa acima de `IEV_MAX_MEDIA_SECONDS` (ffprobe) e amostragem de frames limitada | `server/media.js`, `worker/server.js` | revisão de código + smoke |
+| Texto excedente | Implementado: recusa com `text_too_long` (não trunca) e contador na interface | `server/uploads.js`, `src/components/Verifier.jsx` | `server/endpoint.test.js` |
+| Fora de escopo | Implementado: triagem determinística de pedido direto ao assistente → `no_verifiable_claims` antes de qualquer chamada de modelo | `server/moderation.js` | `server/moderation.test.js`, `server/endpoint.test.js` |
+| Moderação de conteúdo | Implementado: texto, imagens/frames e transcrição antes das etapas caras; recusa restrita a categorias que não podem ser processadas; falha em `required` recusa a checagem | `server/moderation.js` | `server/moderation.test.js` |
+| Cobertura de vídeo | Implementado: `MEDIA_VIDEO_MODERATION` precisa ser declarado em produção; sem isso o vídeo é recusado (`moderation_uncovered`) | `server/moderation.js` | `server/moderation.test.js` |
+| Abuso e custo | Implementado: limite de taxa por origem, vagas com lease, orçamento diário em unidades e contagem de tokens em backend REST compatível com Redis; produção sem backend recusa (fail-closed) | `server/limits.js`, `server/endpoint.js` | `server/limits.test.js`, `server/endpoint.test.js` |
+| Corpo da requisição | Implementado: teto no adaptador HTTP e recusa durante a leitura (Content-Length é só indicação) | `api/verify.js`, `api/corrections.js`, `worker/server.js` | `worker/server.test.js` |
+| Prompt injection | Mantido: material não confiável delimitado, contrato validado no servidor; nenhuma ferramenta nova com privilégio | `server/verify.js`, `server/scoring.js` | revisão de código (sem bateria adversarial completa) |
+| Evidências | Implementado: documento obtido por acesso seguro, texto de HTML/PDF, localização do trecho e revisão de fidelidade com rebaixamento justificado | `server/evidence.js` | `server/evidence.test.js` |
+| Correções | Implementado: canal público com protocolo, fila com estados, correção editorial versionada e invalidação de cache | `server/corrections.js`, `server/cache.js` | `server/corrections.test.js`, `server/admin-endpoint.test.js` |
+| Observabilidade | Implementado: contadores por instância, latência p50/p95, alertas por limiar, `/api/health` e painel de métricas | `server/metrics.js`, `server/health-endpoint.js` | `server/admin-endpoint.test.js` |
+
+**Ainda depende de decisão ou infraestrutura (não implementado por código):** firewall de egresso da plataforma que hospeda o worker (o código valida e oferece `WORKER_EGRESS_PROXY`, mas a barreira de rede é do provedor), limites de transporte da hospedagem, backend compartilhado de limites configurado em produção, corpus humano anotado, decisão de produto sobre cobertura de vídeo e revisão jurídica de provedores. Consulte [plano-lancamento-producao.md](plano-lancamento-producao.md).
+
+
+
+## 2. Estado atual (diagnóstico original)
 
 | Área | Proteção existente | Limitação |
 |---|---|---|
@@ -144,6 +169,8 @@ O rate limit atual é local a cada instância. Ele não impede que múltiplas in
 
 Os valores novos de download, duração, fila e orçamento devem ser definidos na implementação com base na infraestrutura e no custo admissível. Este documento não estabelece valores não existentes como se já estivessem ativos.
 
+**Execução:** os itens P0, P1 e P2 acima foram implementados no código (ver seção 1.1). O que permanece fora do código é infraestrutura e decisão: firewall de egresso da plataforma, backend compartilhado configurado em produção, limites de transporte da hospedagem, corpus humano e revisão jurídica dos provedores.
+
 ## 11. Critérios de aceitação
 
 ### Texto e escopo
@@ -177,12 +204,31 @@ Os valores novos de download, duração, fila e orçamento devem ser definidos n
 
 ## 12. Evidência da inspeção
 
-Smoke local executado com `normalizeVerifyInput`:
+Smoke local original, executado com `normalizeVerifyInput`:
 
-| Cenário | Resultado observado |
+| Cenário | Resultado observado (diagnóstico) |
 |---|---|
 | Texto com 9.000 caracteres | Normalizado para 8.000 caracteres |
 | Buffer de upload com 3.145.729 bytes | HTTP status associado 413, `upload_too_large` |
 | Bytes não correspondentes a imagem, declarados como PNG | HTTP status associado 415, `unsupported_upload_type` |
 
 Esses resultados exercitam a normalização local. Não comprovam moderação, segurança integral contra SSRF, limite de download remoto ou comportamento da infraestrutura de produção.
+
+### Evidência atual (após implementação)
+
+Rodar `npm test` cobre, com servidores locais controlados e sem depender de rede externa:
+
+| Cenário | Teste |
+|---|---|
+| Endereços internos (IPv4, IPv6, mapeados, NAT64, 6to4) e política de porta/host | `server/net.test.js` |
+| Redirect para serviço de metadados bloqueado; tamanho declarado e real acima do teto; timeout; orçamento de bytes | `server/net.test.js` |
+| Arquivo remoto acima do teto recusado; destino interno bloqueado; frames do worker filtrados | `server/media.test.js` |
+| Worker sem `Authorization`, URL interna, corpo acima do limite, upload fora do contrato | `worker/server.test.js` |
+| Rate limit, vagas com lease, orçamento diário e fail-closed sem backend | `server/limits.test.js` |
+| Endpoint: 503 sem controles, 429 por taxa/capacidade/orçamento, URL interna, abstenção de pedido ao assistente | `server/endpoint.test.js` |
+| Recusa por categoria proibida, falha do moderador em `required`, cobertura de vídeo | `server/moderation.test.js` |
+| Texto de HTML/PDF, localização de trecho e rebaixamento por fidelidade | `server/evidence.test.js` |
+| Protocolo de correção, modo fail-closed e visão pública sem contato | `server/corrections.test.js` |
+| Autenticação do admin, métricas, fila de correções e invalidação de cache | `server/admin-endpoint.test.js` |
+
+O que **não** está coberto por esses testes: bateria adversarial completa de prompt injection, comportamento da rede real da hospedagem, limites de transporte da plataforma, precisão factual (exige corpus humano) e moderação de vídeo integral.

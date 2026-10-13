@@ -12,21 +12,27 @@ npm install
 npm run dev        # http://localhost:5173
 npm run build      # build de produção
 npm run lint       # oxlint
+npm test           # regressões (node --test: rede, limites, moderação, evidências, worker)
 ```
 
-Crie um `.env` na raiz (já ignorado pelo git):
+Crie um `.env` na raiz (já ignorado pelo git). O arquivo
+[.env.example](.env.example) lista todas as variáveis com os valores padrão.
 
 ```bash
-OPENAI_API_KEY=...            # julgamento/final/visão e transcrição OpenAI
+OPENAI_API_KEY=...            # julgamento/final/visão, transcrição e moderação
 OPENCODE_API=...              # provedor alternativo (OpenCode Go)
 ADMIN_SECRET=...              # habilita /admin
-BLOB_READ_WRITE_TOKEN=...     # opcional: cache/logs/config privados na Vercel Blob
+BLOB_READ_WRITE_TOKEN=...     # opcional: cache/logs/correções/config privados na Vercel Blob
 MEDIA_WORKER_URL=...          # opcional: worker de extração de áudio/frames
 MEDIA_WORKER_SECRET=...
+UPSTASH_REDIS_REST_URL=...    # opcional: limites compartilhados (obrigatório em produção)
+UPSTASH_REDIS_REST_TOKEN=...
 ```
 
 Sem `BLOB_READ_WRITE_TOKEN`, cache, logs e configuração ficam apenas em memória
 da instância (o código registra isso na interface em vez de fingir persistência).
+Sem armazenamento compartilhado de limites, **produção recusa novas checagens**
+(`IEV_LIMITS_MODE=memory` é a única forma de declarar o modo degradado).
 
 ## Rotas
 
@@ -36,8 +42,38 @@ da instância (o código registra isso na interface em vez de fingir persistênc
 | `/admin` | **URL canônica do painel** — `vercel.json` reescreve para o SPA; em Vite dev o fallback de SPA já resolve |
 | `/#/admin` | alias equivalente aceito pelo roteador do app |
 | `POST /api/verify` | execução da checagem (`api/verify.js` na Vercel, `vite.api-plugin.js` em dev) |
-| `GET/POST /api/admin` | lista/detalhe de registros e catálogo+configuração de IA (Bearer `ADMIN_SECRET`) |
+| `GET /api/health` | limites e modos vigentes, sem segredos (smoke de implantação) |
+| `POST /api/corrections` | contestação pública: cria protocolo e entra na fila de revisão |
+| `GET /api/corrections?protocol=` | estado público de um protocolo |
+| `GET/POST /api/admin` | registros, catálogo+configuração de IA, fila de correções, métricas e invalidação de cache (Bearer `ADMIN_SECRET`) |
 | `/metodologia.html`, `/correcoes.html`, `/privacidade.html` | transparência pública |
+
+Painéis do `/admin`: registros, correções, modelos/provedores, metodologia e
+métricas (volume, latência, abstenção, alertas e estado dos controles).
+
+## Limites, custo e segurança
+
+- **Política de URL** (`server/net.js`): apenas HTTP/HTTPS público, sem
+  credenciais, portas permitidas (`IEV_HTTP_PORTS`), bloqueio de IPv4/IPv6
+  internos (incluindo mapeados, NAT64, 6to4, Teredo), revalidação em cada
+  redirect e conexão fixada no endereço validado (anti DNS rebinding).
+- **Tetos de transferência**: bytes por resposta, por arquivo, por job e vigia de
+  disco que mata a árvore de processos do `yt-dlp`/`ffmpeg` (`server/proc.js`).
+- **Duração**: mídia acima de `IEV_MAX_MEDIA_SECONDS` não é processada.
+- **Worker**: recusa iniciar sem `WORKER_SECRET`, valida URL internamente,
+  limita concorrência e apaga temporários órfãos na inicialização.
+- **Abuso/custo** (`server/limits.js`): limite de taxa por origem, vagas de
+  concorrência com lease, orçamento diário em unidades e contagem de tokens —
+  tudo em armazenamento compartilhado quando configurado; sem ele, produção
+  recusa (fail-closed).
+- **Moderação** (`server/moderation.js`): triagem de propósito, moderação de
+  texto e de imagens/frames, recusa só de conteúdo que não pode ser processado
+  (abuso sexual infantil, sexual explícito) e cobertura de vídeo declarada
+  explicitamente (`MEDIA_VIDEO_MODERATION`).
+- **Evidências** (`server/evidence.js`): obtém o documento de cada fonte
+  vinculada (HTML/PDF), localiza o trecho citado, registra o que não foi
+  localizado e revisa a fidelidade antes de fixar score/veredito. Ausência de
+  trecho nunca é tratada como prova de falsidade.
 
 Deep-link do detalhe: `/admin?detail=<id>` (restaurado no carregamento e no
 `popstate`, sem reabrir um detalhe já fechado quando a resposta chega atrasada).
@@ -80,22 +116,34 @@ checagem, não o tempo desde a época Unix.
 
 `fact-check-4` captura anotações e fontes estruturadas da busca, compartilha o
 dossiê entre julgamento/revisão, distingue períodos de pesquisa e paraleliza
-transcrição/visão. `/admin` exibe o diagnóstico de proveniência e as subetapas
-de mídia. Fontes somente escritas pelo modelo continuam sendo descartadas.
-Regressões de evidência temporal e justificativas: `node --test server/scoring.test.js`.
+transcrição/visão. Depois da revisão final, o servidor obtém os documentos das
+fontes vinculadas, localiza os trechos citados e revisa a fidelidade das
+citações: quando nenhuma citação sobrevive à revisão, o claim volta para
+`unproven` com justificativa própria. `/admin` exibe proveniência, dossiê,
+moderação e subetapas de mídia. Fontes somente escritas pelo modelo continuam
+sendo descartadas.
 
+Desfechos possíveis: `checked`, `partial_coverage`, `insufficient_input`,
+`inaccessible_media`, `no_verifiable_claims`, `content_refused` (política de
+conteúdo) e `moderation_uncovered` (vídeo sem cobertura declarada).
+
+Regressões: `npm test`. Avaliação de corpus:
+`node scripts/evaluate-factual.mjs <corpus.jsonl>` (tabelas por
+modalidade/categoria, aviso de amostra insuficiente, `--check-split` contra
+vazamento e `--require chave>=valor` para gates) e
+`node scripts/corpus-tool.mjs` (`init`, `validate`, `agreement`, `adjudicate`,
+`split`). Guia em [docs/avaliacao-corpus.md](docs/avaliacao-corpus.md).
 
 - [docs/metodologia-factual.md](docs/metodologia-factual.md): fluxo efetivo,
   estados operacionais, faixas de score e limites de evidência.
-- [docs/politica-correcoes.md](docs/politica-correcoes.md): o que o sistema
-  corrige automaticamente e ausência de canal público de correção.
-- [docs/admin-overview-plano.md](docs/admin-overview-plano.md): plano/auditoria
-  que originou esta implementação.
-- [docs/admin-status-implementacao.md](docs/admin-status-implementacao.md):
-  status por fase, evidências e pendências reais.
-- Harness de avaliação: `node scripts/evaluate-factual.mjs <corpus.jsonl>`
-  (métricas por versão/modelo/modalidade, bootstrap determinístico por `caseId`).
-  **Não há corpus humano entregue nem taxa de precisão publicada.**
+- [docs/politica-correcoes.md](docs/politica-correcoes.md): canal público,
+  estados da fila e o que o sistema corrige automaticamente.
+- [docs/plano-lancamento-producao.md](docs/plano-lancamento-producao.md): gates
+  para beta/divulgação e o que ainda falta antes de divulgar.
+- [docs/guardrails-seguranca-plano.md](docs/guardrails-seguranca-plano.md):
+  guardrails e estado de implementação.
+- Harness de avaliação: **não há corpus humano entregue nem taxa de precisão
+  publicada.**
 
 ## Design
 

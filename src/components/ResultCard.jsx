@@ -43,10 +43,33 @@ function MediaCoverageNote({ result }) {
     : "nenhum quadro visual analisado";
   return <div className="coverage-warning media-coverage-note" role="note"><b>Cobertura parcial da mídia:</b> {audio}; {visuals}. Vídeos usam até 10 quadros dos primeiros 5 minutos; isso não representa cobertura integral nem verifica autenticidade.</div>;
 }
+function EvidenceNote({ result }) {
+  const summary = result.evidence?.summary;
+  if (!summary?.enabled || !summary.citations) return null;
+  const documents = Array.isArray(result.evidence?.documents) ? result.evidence.documents : [];
+  return (
+    <div className="coverage-warning evidence-note" role="note">
+      <b>Verificação de trechos:</b> {summary.located} de {summary.citations} citação(ões) localizadas nos documentos obtidos
+      {summary.missing > 0 ? `; ${summary.missing} não localizada(s) — isso não prova que a fonte esteja errada` : ""}
+      {summary.blocked > 0 ? `; ${summary.blocked} fonte(s) recusadas pela política de rede` : ""}.
+      {documents.length > 0 && (
+        <ul>
+          {documents.map((doc) => (
+            <li key={doc.url}>
+              {doc.outlet ?? doc.url}: {doc.ok ? `documento obtido (${doc.kind ?? "texto"})` : `não obtido (${doc.reason ?? "falha"})`}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 const NO_VERDICT_LABEL = {
   insufficient_input: "Material insuficiente",
   inaccessible_media: "Mídia inacessível",
   no_verifiable_claims: "Sem afirmação verificável",
+  content_refused: "Recusado por política de conteúdo",
+  moderation_uncovered: "Vídeo sem cobertura de moderação",
 };
 
 
@@ -90,7 +113,14 @@ export default function ResultCard({ result, showToast, titleId, onShareCard }) 
           </ul>
         )}
         <p className="score-legend">Nenhuma nota ou conclusão factual foi atribuída; o motivo e os limites estão descritos acima.</p>
+        <EvidenceNote result={result} />
         {result.origin?.url && <a href={result.origin.url} target="_blank" rel="noreferrer">Abrir conteúdo original ↗</a>}
+        <div className="result-actions">
+          <a className="btn ghost" href={`/correcoes.html?checkId=${encodeURIComponent(result.id)}`}>
+            Contestar este resultado
+          </a>
+          <a className="btn ghost" href="/correcoes.html">Política de correções</a>
+        </div>
       </article>
     );
   }
@@ -168,6 +198,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard }) 
 
       <p className="result-summary">{result.summary}</p>
       <MediaCoverageNote result={result} />
+      <EvidenceNote result={result} />
 
       <ol className="claims">
         {result.claims.map((claim, i) => {
@@ -257,6 +288,9 @@ export default function ResultCard({ result, showToast, titleId, onShareCard }) 
         <button className="btn" onClick={share}>
           Copiar texto
         </button>
+        <a className="btn ghost" href={`/correcoes.html?checkId=${encodeURIComponent(result.id)}`}>
+          Contestar este resultado
+        </a>
         <a className="btn ghost" href="/correcoes.html">Política de correções</a>
       </div>
     </article>

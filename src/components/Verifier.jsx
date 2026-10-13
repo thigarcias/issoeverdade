@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PIPELINE_STEPS, THINKING_LINES, VERDICTS } from "../data/constants.js";
 import { verify } from "../lib/api.js";
+import { useServerLimits } from "../lib/hooks.js";
 import ResultCard from "./ResultCard.jsx";
 
 const TABS = [
@@ -15,8 +16,6 @@ const PLACEHOLDERS = {
   text: "Cole a notícia, o post ou a fala que você quer checar…",
   video: "https://www.instagram.com/reel/…",
 };
-
-const MAX_FILE_BYTES = 3 * 1024 * 1024;
 
 function isValidHttpUrl(value) {
   try {
@@ -43,6 +42,7 @@ function fileFingerprint(file) {
   return file ? `${file.name}:${file.size}:${file.lastModified}` : null;
 }
 export default function Verifier({ showToast, onChecked, quickInput, onShareCard }) {
+  const limits = useServerLimits();
   const [tab, setTab] = useState("link");
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
@@ -185,8 +185,8 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
       showToast(tab === "video" ? "Envie MP4, MOV, WebM ou áudio compatível." : "Envie uma imagem PNG, JPEG ou WebP.");
       return;
     }
-    if (f.size > MAX_FILE_BYTES) {
-      showToast("Arquivo acima do limite de 3 MB.");
+    if (f.size > limits.maxUploadBytes) {
+      showToast(`Arquivo acima do limite de ${formatBytes(limits.maxUploadBytes)}.`);
       return;
     }
     setFile(f);
@@ -279,8 +279,14 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                   className="input-plain"
                   placeholder={PLACEHOLDERS.text}
                   value={text}
+                  maxLength={limits.maxTextChars}
                   onChange={(e) => setText(e.target.value)}
                 />
+                {text.length > limits.maxTextChars * 0.9 && (
+                  <p className="field-help" role="note">
+                    {text.length}/{limits.maxTextChars} caracteres. Envie o trecho essencial; o servidor recusa texto acima do limite.
+                  </p>
+                )}
               </div>
             )}
 

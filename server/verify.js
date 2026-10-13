@@ -8,7 +8,26 @@ import { normalizeVerifyInput } from "./uploads.js";
 import { transcribe, transcriptToPrompt } from "./transcribe.js";
 import { saveCheckLog as saveLog } from "./checklog.js";
 import { getCached, setCached } from "./cache.js";
+import {
+  EVIDENCE_REVIEW_INSTRUCTIONS,
+  applyReview,
+  buildReviewInput,
+  collectEvidence,
+  evidenceConfig,
+  evidenceNote,
+  reviewableCitations,
+} from "./evidence.js";
+import { recordCheck } from "./metrics.js";
 import { getAiConfigState, providerKey, providerUrl } from "./ai-config.js";
+import {
+  checkVideoCoverage,
+  moderateImages,
+  moderateText,
+  moderationConfig,
+  moderationSummary,
+  purposeTriage,
+  refusalMessage,
+} from "./moderation.js";
 import {
   PROMPT_VERSION,
   SYSTEM_PROMPT_FINAL,
@@ -89,6 +108,9 @@ function extractResponse(response, webSearch) {
     text,
     citations: [...citations.values()],
     queries: [...new Set(queries)].slice(0, 20),
+    usage: response?.usage
+      ? { input: Number(response.usage.input_tokens) || 0, output: Number(response.usage.output_tokens) || 0 }
+      : null,
     diagnostics: {
       status: !webSearch ? "not_requested" : citations.size ? "available" : calls.length ? "missing_provenance" : "no_search_calls",
       annotationCount,
@@ -162,8 +184,8 @@ async function callResponses({ url, key, provider, model, instructions, input, t
     } catch {
       fail(502, "upstream_bad_json", { provider, model });
     }
-    const { text, citations, queries, diagnostics } = extractResponse(parsed, webSearch);
-    return { text, raw: text, citations, queries, diagnostics };
+    const { text, citations, queries, diagnostics, usage } = extractResponse(parsed, webSearch);
+    return { text, raw: text, citations, queries, diagnostics, usage };
   } catch (err) {
     if (err?.payload) throw err;
     if (err?.name === "AbortError") fail(504, "upstream_timeout", { provider, model });
@@ -174,7 +196,7 @@ async function callResponses({ url, key, provider, model, instructions, input, t
 }
 
 async function callJson({ pair, instructions, input, timeoutMs, sessionId, webSearch = true }) {
-  const { text, raw, citations, queries, diagnostics } = await callResponses({
+  const { text, raw, citations, queries, diagnostics, usage } = await callResponses({
     url: providerUrl(pair.provider, pair.model),
     key: providerKey(pair.provider),
     provider: pair.provider,
@@ -185,15 +207,15 @@ async function callJson({ pair, instructions, input, timeoutMs, sessionId, webSe
     sessionId,
     webSearch,
   });
-  return { result: parseModelJson(text, pair.model), raw, citations, queries, diagnostics };
+  return { result: parseModelJson(text, pair.model), raw, citations, queries, diagnostics, usage };
 }
 
 // Executa exatamente o provedor/modelo configurado; falhas são operacionais,
 // não acionam um modelo diferente sem uma escolha explícita do admin.
 async function callModel({ aiCfg, step, instructions, input, timeoutMs, sessionId, webSearch = true }) {
   const pair = aiCfg?.[step] ?? { provider: "opencode", model: DEFAULT_MODEL };
-  const { result, raw, citations, queries, diagnostics } = await callJson({ pair, instructions, input, timeoutMs, sessionId, webSearch });
-  return { result, model: pair.model, provider: pair.provider, raw, citations, queries, diagnostics };
+  const { result, raw, citations, queries, diagnostics, usage } = await callJson({ pair, instructions, input, timeoutMs, sessionId, webSearch });
+  return { result, model: pair.model, provider: pair.provider, raw, citations, queries, diagnostics, usage };
 }
 
 function normalizedUrl(value) {
@@ -304,7 +326,7 @@ function sanitizeSources(sources, claims = [], citations = []) {
 /** Executes only the configured vision model; the admin can inspect failures. */
 async function callVision(input, instructions, { aiCfg, timeoutMs = 120_000, sessionId } = {}) {
   const pair = aiCfg?.vision ?? { provider: "opencode", model: DEFAULT_MODEL };
-  const { text } = await callResponses({
+  const { text, usage } = await callResponses({
     url: providerUrl(pair.provider, pair.model),
     key: providerKey(pair.provider),
     provider: pair.provider,
@@ -316,7 +338,7 @@ async function callVision(input, instructions, { aiCfg, timeoutMs = 120_000, ses
     webSearch: false,
     sessionId,
   });
-  return { text: text.trim().slice(0, 10_000), model: pair.model, provider: pair.provider };
+  return { text: text.trim().slice(0, 10_000), model: pair.model, provider: pair.provider, usage };
 }
 
 async function describeFrames(frames, opts = {}) {
@@ -376,6 +398,8 @@ function likelyVideoUrl(value) {
 async function collectMediaArtifacts(audio, frameResult, mediaContext, opts = {}) {
   const debug = [];
   const measure = opts.phase ?? ((_name, fn) => fn());
+  const blocked = [];
+  const reports = [];
   const [transcript, visionResult] = await Promise.all([
     (async () => {
       if (!audio?.ok) {
@@ -391,6 +415,14 @@ async function collectMediaArtifacts(audio, frameResult, mediaContext, opts = {}
         debug.push(result?.ok
           ? `transcribe:${result.provider}:${result.model}:${result.segments?.length ?? 0} segmentos`
           : `transcribe:${selected.provider}:${selected.model}:${result?.reason ?? "failed"}`);
+        if (result?.ok && result.text && opts.moderateText) {
+          const gate = await opts.moderateText(result.text).catch(() => null);
+          if (gate?.report) reports.push(gate.report);
+          if (gate && !gate.allowed) {
+            blocked.push(gate);
+            debug.push(`moderation-transcript:${gate.error ?? "refused"}`);
+          }
+        }
         return result;
       } catch {
         debug.push("transcribe:failed");
@@ -407,9 +439,19 @@ async function collectMediaArtifacts(audio, frameResult, mediaContext, opts = {}
         return null;
       }
       debug.push(`frames:${frameResult.via ?? "media"}:${frameResult.frames.length}`);
+      if (opts.moderateFrames) {
+        const gate = await opts.moderateFrames(frameResult.frames).catch(() => null);
+        if (gate?.report) reports.push(gate.report);
+        if (gate && !gate.allowed) {
+          blocked.push(gate);
+          debug.push(`moderation-frames:${gate.error ?? "refused"}`);
+          return null;
+        }
+      }
       const result = await measure("media-vision", () => describeFrames(frameResult.frames, opts)).catch(() => null);
       const selected = opts.aiCfg?.vision ?? { provider: "opencode", model: DEFAULT_MODEL };
       debug.push(`vision:${selected.provider}:${selected.model}:${result ? "ok" : "failed"}`);
+      if (result?.usage) opts.onUsage?.(result.usage);
       return result;
     })(),
   ]);
@@ -422,7 +464,7 @@ async function collectMediaArtifacts(audio, frameResult, mediaContext, opts = {}
     .map((frame) => frame?.timestampSec ?? frame?.timestamp_sec)
     .filter((seconds) => seconds != null && Number.isFinite(Number(seconds)))
     .map((seconds) => Math.round(Number(seconds) * 100) / 100);
-  return { mediaContext: mediaContext.trim(), transcript, vision: visionResult?.text ?? null, visionResult, debug, frameTimes, frameCount: frames.length };
+  return { mediaContext: mediaContext.trim(), transcript, vision: visionResult?.text ?? null, visionResult, debug, frameTimes, frameCount: frames.length, moderationBlocked: blocked, moderationReports: reports };
 }
 
 async function enrichWithMedia(maybeUrl, opts = {}) {
@@ -442,7 +484,7 @@ async function enrichUploadedMedia(input, opts = {}) {
   const measure = opts.phase ?? ((_name, fn) => fn());
   const uploaded = await measure("media-upload-extract", () => processUploadedMedia(input.fileBuffer, input.fileMime));
   if (!uploaded.ok) {
-    return { mediaContext: "", transcript: null, vision: null, visionResult: null, origin: null, durationSec: null, debug: [`upload:${uploaded.reason ?? "failed"}`] };
+    return { mediaContext: "", transcript: null, vision: null, visionResult: null, origin: null, durationSec: null, debug: [`upload:${uploaded.reason ?? "failed"}`], moderationBlocked: [], moderationReports: [] };
   }
   const audio = uploaded.audio ? { ...uploaded.audio, ok: true } : null;
   const frames = uploaded.frames ?? [];
@@ -471,6 +513,7 @@ export async function runVerify(input, opts = {}) {
     return await runVerifyInner(normalizedInput, { ...opts, trace, id, startedAt });
   } catch (err) {
     const code = err?.payload?.error ?? err?.message ?? "unknown";
+    recordCheck({ kind: normalizedInput?.kind, outcome: "error", error: code, totalMs: Date.now() - startedAt });
     await Promise.race([
       saveLog({
         id,
@@ -509,9 +552,6 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   trace.configRevision = configState.revision;
   trace.configSource = configState.source;
   trace.methodologyVersion = PROMPT_VERSION;
-  if (!providerKey(aiCfg.judge.provider) && !providerKey("openai") && !providerKey("opencode")) {
-    fail(503, "missing_api_key", { message: "Nenhuma chave de IA configurada no servidor." });
-  }
   const cacheNamespace = `${PROMPT_VERSION}:post-text-v1:${configState.revision}`;
   const t0 = startedAt ?? Date.now();
   const hit = await getCached(input, cacheNamespace).catch(() => null);
@@ -545,6 +585,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       cachedFrom: hit.checkId ?? null,
       error: null,
     }).catch(() => {});
+    recordCheck({ kind: input?.kind, outcome: hit.result?.outcome ?? "checked", verdict: hit.result?.verdict ?? null, totalMs: elapsed, cached: true });
     return { ...hit, checkId: id, cached: true, cachedFrom: hit.checkId ?? null };
   }
 
@@ -569,6 +610,12 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   const imageTarget = input?.kind === "image";
   const modelsUsed = {};
   trace.modelsUsed = modelsUsed;
+  const tokenUsage = { input: 0, output: 0 };
+  const addUsage = (response) => {
+    if (!response?.usage) return;
+    tokenUsage.input += response.usage.input || 0;
+    tokenUsage.output += response.usage.output || 0;
+  };
   const recordModel = (step, response) => {
     if (!response?.model || !response?.provider) return;
     modelsUsed[step] = { provider: response.provider, model: response.model };
@@ -594,7 +641,49 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   let blockedResult = null;
   let postTextOnly = false;
 
-  if (wantsMedia && isUrl && !videoTarget) {
+  // Triagem de propósito e cobertura de moderação antes de qualquer etapa paga.
+  const modCfg = moderationConfig();
+  const moderationReports = [];
+  const purpose = purposeTriage(input);
+  if (purpose.blocked) {
+    blockedResult = {
+      outcome: "no_verifiable_claims",
+      verdict: null,
+      score: null,
+      claims: [],
+      sources: [],
+      summary: "O material é um pedido direto ao assistente, não uma afirmação pública a verificar. Envie uma afirmação, um link ou uma mídia para checagem.",
+    };
+  }
+  if (videoTarget && !blockedResult) {
+    const coverage = checkVideoCoverage(modCfg);
+    if (coverage.report) moderationReports.push(coverage.report);
+    if (!coverage.allowed) {
+      blockedResult = {
+        outcome: "moderation_uncovered",
+        verdict: null,
+        score: null,
+        claims: [],
+        sources: [],
+        summary: coverage.message,
+      };
+    }
+  }
+  const moderateTextArtifact = (value) =>
+    moderateText(value, { config: modCfg }).then((gate) => {
+      if (gate.report) moderationReports.push(gate.report);
+      return gate;
+    });
+  const moderateFrameArtifact = (frames) =>
+    moderateImages(
+      (Array.isArray(frames) ? frames : []).map((frame) => ({ data: typeof frame === "string" ? frame : frame?.data, mime: "image/jpeg" })),
+      { config: modCfg },
+    ).then((gate) => {
+      if (gate.report) moderationReports.push(gate.report);
+      return gate;
+    });
+
+  if (!blockedResult && wantsMedia && isUrl && !videoTarget) {
     await phase("media-probe", async () => {
       const media = await fetchMediaContext(maybeUrl);
       mediaDebug = media.attempts ?? [];
@@ -605,24 +694,35 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     });
   }
 
-  if (videoTarget) {
+  if (videoTarget && !blockedResult) {
     let enriched = null;
     if (input.fileBuffer) {
       enriched = await phase("media-upload", () =>
-        enrichUploadedMedia(input, { aiCfg, timeoutMs, sessionId: id, phase: (name, fn) => phase(name, fn, "media-upload") }),
+        enrichUploadedMedia(input, { aiCfg, timeoutMs, sessionId: id, onUsage: addUsage, moderateText: moderateTextArtifact, moderateFrames: moderateFrameArtifact, phase: (name, fn) => phase(name, fn, "media-upload") }),
       ).catch((error) => {
         mediaDebug.push(`upload-failed:${String(error?.message ?? error).slice(0, 120)}`);
         return null;
       });
     } else if (isUrl) {
       enriched = await phase("enrich", () =>
-        enrichWithMedia(maybeUrl, { aiCfg, timeoutMs, sessionId: id, phase: (name, fn) => phase(name, fn, "enrich") }),
+        enrichWithMedia(maybeUrl, { aiCfg, timeoutMs, sessionId: id, onUsage: addUsage, moderateText: moderateTextArtifact, moderateFrames: moderateFrameArtifact, phase: (name, fn) => phase(name, fn, "enrich") }),
       ).catch((error) => {
         mediaDebug.push(`enrich-failed:${String(error?.message ?? error).slice(0, 120)}`);
         return null;
       });
     } else {
       mediaDebug.push("upload:missing-bytes");
+    }
+    if (enriched?.moderationBlocked?.length) {
+      const gate = enriched.moderationBlocked[0];
+      blockedResult = {
+        outcome: "content_refused",
+        verdict: null,
+        score: null,
+        claims: [],
+        sources: [],
+        summary: gate.message ?? refusalMessage(gate.categories ?? []),
+      };
     }
     if (enriched) {
       mediaDebug.push(...enriched.debug);
@@ -636,11 +736,11 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       recordModel("transcribe", transcript);
       recordModel("vision", enriched.visionResult);
     }
-    if (!transcript?.ok && !vision && enriched?.postText) {
+    if (!blockedResult && !transcript?.ok && !vision && enriched?.postText) {
       // Há texto original disponível, mas nenhuma cobertura de anexos: checar só esse texto.
       postTextOnly = true;
       mediaContext = `TEXTO DO POST (conteúdo disponível para checagem):\n${enriched.postText}\n\nÁudio, imagens e vídeo anexados não foram examinados. Verifique somente afirmações explícitas neste texto; não infira o conteúdo dos anexos.`;
-    } else if (!transcript?.ok && !vision) {
+    } else if (!blockedResult && !transcript?.ok && !vision) {
       blockedResult = {
         outcome: "inaccessible_media",
         verdict: null,
@@ -650,14 +750,29 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
         summary: "Não foi possível acessar áudio ou texto visual suficiente. Metadados e nome de arquivo não substituem o conteúdo da mídia.",
       };
     }
-  } else if (imageTarget) {
+  } else if (imageTarget && !blockedResult) {
     if (input.fileBuffer) {
-      const image = await phase("vision", () =>
+      const imageGate = await moderateImages([{ data: input.fileBuffer.toString("base64"), mime: input.fileMime }], { config: modCfg });
+      if (imageGate.report) moderationReports.push(imageGate.report);
+      if (!imageGate.allowed) {
+        blockedResult = {
+          outcome: "content_refused",
+          verdict: null,
+          score: null,
+          claims: [],
+          sources: [],
+          summary: imageGate.message ?? refusalMessage(imageGate.categories ?? []),
+        };
+      }
+      const image = blockedResult ? null : await phase("vision", () =>
         describeImage(input.fileBuffer, input.fileMime, { aiCfg, timeoutMs, sessionId: id }),
       ).catch(() => null);
-      if (image?.text) {
+      if (blockedResult) {
+        // recusa de conteúdo já registrada; nenhuma análise factual é executada
+      } else if (image?.text) {
         vision = image.text;
         mediaContext = `Descrição visual/OCR (não comprova autenticidade):\n${image.text}`;
+        addUsage(image);
         recordModel("vision", image);
       } else {
         const selected = aiCfg.vision;
@@ -684,17 +799,35 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     }
   }
 
+  if (!blockedResult && input?.kind === "text" && String(input.text ?? "").trim()) {
+    const gate = await moderateTextArtifact(input.text);
+    if (!gate.allowed) {
+      blockedResult = {
+        outcome: "content_refused",
+        verdict: null,
+        score: null,
+        claims: [],
+        sources: [],
+        summary: gate.message ?? refusalMessage(gate.categories ?? []),
+      };
+    }
+  }
+
   const judgeInput = `Data UTC da checagem: ${new Date(t0).toISOString().slice(0, 10)}. Não presuma que esta é a data da publicação original.\n${buildUserContent(input, mediaContext)}`;
   let judge = null;
   let first = null;
   let firstCitations = [];
   if (!blockedResult) {
+    if (!providerKey(aiCfg.judge.provider) && !providerKey("openai") && !providerKey("opencode")) {
+      fail(503, "missing_api_key", { message: "Nenhuma chave de IA configurada no servidor." });
+    }
     judge = await phase("judge", () =>
       callModel({
         aiCfg, step: "judge", instructions: SYSTEM_PROMPT_JUDGE,
         input: judgeInput, timeoutMs, sessionId: id,
       }),
     );
+    addUsage(judge);
     recordModel("judge", judge);
     recordQueries(judge, "judge");
     first = judge.result;
@@ -738,6 +871,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     model = final.model;
     provider = final.provider;
     resultCitations = [...new Map([...firstCitations, ...(final.citations ?? [])].map((citation) => [citation.url, citation])).values()];
+    addUsage(final);
     recordModel("final", final);
     recordQueries(final, "final");
     finalRaw = final.raw;
@@ -755,18 +889,55 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   const claims = Array.isArray(finalResult?.claims) ? finalResult.claims : [];
   const clean = sanitizeSources(finalResult?.sources, claims, resultCitations);
   finalResult = { ...finalResult, claims, sources: clean.sources };
+
+  // Dossiê de evidências: obtém os documentos vinculados, localiza os trechos e
+  // revisa a fidelidade antes de fixar score/veredito.
+  const evCfg = evidenceConfig();
+  let evidenceDossier = null;
+  const evidenceCorrections = [];
+  if (!blockedResult && ["checked", "partial_coverage"].includes(finalResult?.outcome) && claims.length > 0 && evCfg.enabled) {
+    evidenceDossier = await phase("evidence", () =>
+      collectEvidence({ sources: finalResult.sources, claims: finalResult.claims, config: evCfg }),
+    ).catch(() => null);
+    if (evidenceDossier?.documents?.length) {
+      const reviewable = reviewableCitations(evidenceDossier.citations, evCfg);
+      if (evCfg.reviewEnabled && reviewable.length > 0) {
+        const reviewInput = buildReviewInput({ claims: finalResult.claims, citations: evidenceDossier.citations, config: evCfg });
+        if (reviewInput) {
+          const review = await phase("evidence-review", () =>
+            callModel({
+              aiCfg, step: "judge", instructions: EVIDENCE_REVIEW_INSTRUCTIONS,
+              input: reviewInput, timeoutMs, sessionId: id, webSearch: false,
+            }),
+          ).catch(() => null);
+          if (review) {
+            addUsage(review);
+            recordModel("evidence-review", review);
+            const applied = applyReview({ claims: finalResult.claims, citations: evidenceDossier.citations, review: review.result, config: evCfg });
+            finalResult = { ...finalResult, claims: applied.claims };
+            evidenceCorrections.push(...applied.corrections);
+            evidenceDossier.verification = applied.summary;
+          }
+        }
+      }
+    }
+  }
+
   const totalMs = Date.now() - t0;
   const { fixed, corrections } = validateResult(finalResult);
+  corrections.push(...evidenceCorrections);
   if (clean.dropped.length > 0) corrections.push(`fontes descartadas (${clean.dropped.length}): ${clean.dropped.join(" · ")}`);
   if (fixed.outcome === "insufficient_input") fixed.summary = "O material disponível não permite verificar as afirmações. Envie o conteúdo integral.";
   if (fixed.outcome === "inaccessible_media") fixed.summary = "A mídia necessária não ficou acessível; não foi atribuído veredito factual.";
-  if (fixed.outcome === "no_verifiable_claims") fixed.summary = "Não foi identificada uma afirmação factual verificável no material recebido.";
+  if (fixed.outcome === "no_verifiable_claims" && !purpose.blocked) fixed.summary = "Não foi identificada uma afirmação factual verificável no material recebido.";
   if (["checked", "partial_coverage"].includes(fixed.outcome) && corrections.some((message) => /claim\d+:|score geral|veredito|fonte/.test(message))) {
     fixed.summary = "O resultado foi ajustado pela validação das evidências e da pontuação. Consulte as afirmações, os trechos e as correções registradas.";
   }
   if (postTextOnly) {
     fixed.summary = `Cobertura limitada ao texto disponível do post; imagens, áudio e vídeo anexados não foram examinados. ${fixed.summary ?? ""}`;
   }
+  const dossierNote = evidenceDossier ? evidenceNote(evidenceDossier.summary) : "";
+  if (dossierNote) fixed.summary = `${fixed.summary ?? ""} ${dossierNote}`.trim();
   if (corrections.length > 0) phases.push({ name: "result-validation", ms: 0, ok: true, corrections });
 
   const usedConfig = Object.fromEntries(Object.entries(aiCfg).map(([step, pair]) => [step, `${pair.provider}:${pair.model}`]));
@@ -792,6 +963,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     provider,
     aiConfig: usedConfig,
     modelsUsed,
+    tokenUsage: { ...tokenUsage, total: tokenUsage.input + tokenUsage.output },
     configRevision: configState.revision,
     configSource: configState.source,
     methodologyVersion: PROMPT_VERSION,
@@ -810,6 +982,24 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     claimsCount: fixed.claims.length,
     sourcesCount: fixed.sources.length,
     mediaAttempts: mediaDebug,
+    moderation: moderationReports.map(moderationSummary).filter(Boolean),
+    moderationReports,
+    purposeTriage: purpose.blocked ? purpose.reason : null,
+    moderationCoverage: {
+      mode: modCfg.mode,
+      videoCoverage: modCfg.videoCoverage || "uncovered",
+      text: moderationReports.some((report) => report.what === "text" && report.checked),
+      images: moderationReports.some((report) => String(report.what ?? "").startsWith("images") && report.checked),
+    },
+    evidence: evidenceDossier
+      ? {
+          summary: evidenceDossier.summary,
+          verification: evidenceDossier.verification ?? null,
+          documents: evidenceDossier.documents.map(({ text: _text, ...rest }) => rest),
+          citations: evidenceDossier.citations,
+        }
+      : null,
+    evidenceVerification: evidenceDossier?.verification ?? null,
     mediaCoverage: {
       transcript: transcript?.ok ? (transcript.segments?.length ? "timestamped" : "text-only") : "unavailable",
       frames: vision ? "sampled-and-described" : mediaFrameCount > 0 ? "sampled-description-failed" : "unavailable",
@@ -836,16 +1026,35 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     saveLog(entry).catch(() => {}),
     new Promise((resolve) => setTimeout(resolve, 8000)),
   ]);
+  recordCheck({
+    kind: input?.kind,
+    outcome: fixed.outcome,
+    verdict: fixed.verdict,
+    totalMs,
+    tokens: tokenUsage,
+    cached: false,
+    error: null,
+    media: { transcript: transcript?.ok ? 1 : 0, vision: vision ? 1 : 0, frames: mediaFrameCount },
+    moderation: {
+      refused: fixed.outcome === "content_refused" ? 1 : 0,
+      uncovered: fixed.outcome === "moderation_uncovered" ? 1 : 0,
+      sensitive: moderationReports.some((report) => Array.isArray(report.categories) && report.categories.length > 0) ? 1 : 0,
+    },
+  });
   const out = {
     result: fixed,
     model,
     provider,
     modelsUsed,
+    tokenUsage: { ...tokenUsage, total: tokenUsage.input + tokenUsage.output },
     aiConfig: usedConfig,
     configRevision: configState.revision,
     methodologyVersion: PROMPT_VERSION,
     media: mediaDebug,
     mediaCoverage: entry.mediaCoverage,
+    moderation: entry.moderation,
+    moderationCoverage: entry.moderationCoverage,
+    evidence: entry.evidence,
     researchCitations: resultCitations,
     researchQueries,
     researchDiagnostics,

@@ -12,6 +12,10 @@ Uploads de imagem/vídeo enviam os bytes reais ao endpoint de checagem, com limi
 
 A etapa de julgamento e, para imagem/vídeo, a etapa final usam o provedor/modelo configurado no painel. A busca web é solicitada pela API correspondente. Os provedores podem receber o texto da entrada, instruções, metadados, texto extraído e contexto necessário àquela etapa; serviços de mídia também recebem conteúdo de áudio ou imagem quando usados. O endpoint de transcrição disponível é OpenAI. Não ocorre troca automática para outro provedor quando uma etapa falha; falha é registrada como operacional. Os segredos de API permanecem no servidor.
 
+**Moderação:** quando configurada (`MODERATION_MODE`), texto enviado, transcrição de áudio e imagens/frames amostrados são enviados ao endpoint de moderação da OpenAI (`/v1/moderations`, modelo `omni-moderation-latest` por padrão) antes das etapas de análise factual. O resultado é registrado de forma resumida (categoria e estado, sem o conteúdo). Em `required`, a indisponibilidade do serviço recusa a checagem em vez de liberar o material.
+
+**Documentos de evidência:** depois da revisão final, o servidor busca o documento de cada fonte vinculada (até `IEV_EVIDENCE_MAX_DOCS`, teto de bytes por documento e por checagem), extrai texto de HTML/PDF e localiza o trecho citado. Esses documentos são conteúdo público de terceiros; o texto extraído é usado na revisão de fidelidade e **não** é gravado no log (apenas metadados: URL, status, tipo, bytes, hash e as citações com trechos localizados). PDFs sem texto extraível são registrados como limitação, não como citação.
+
 OpenCode Go aparece como opção de provedor no código, mas sua adequação ao uso com dados de usuários deve ser avaliada antes de selecioná-lo. Requisitos comerciais, retenção, uso para treinamento, região de processamento e políticas de cada provedor/modelo precisam ser verificados diretamente com o fornecedor. Não afirmamos que dados deixem de ser retidos/usados para treinamento nem que permaneçam em região específica.
 
 ## Armazenamento no serviço
@@ -23,8 +27,14 @@ OpenCode Go aparece como opção de provedor no código, mas sua adequação ao 
 
 A interface mantém até 20 resultados recentes em `localStorage` do navegador, incluindo partes do resultado, claims e referências; esses dados permanecem até serem substituídos ou o armazenamento do navegador ser limpo. Se o armazenamento estiver indisponível, o histórico é apenas de sessão.
 
+## Correções e contato
+
+Pedidos de correção enviados pelo formulário público são gravados em armazenamento privado (Blob) quando configurado, incluindo a mensagem, o vínculo com a checagem, o link de evidência e o contato opcional. A consulta pública por protocolo devolve apenas estado e datas; contato, mensagem integral e notas internas ficam restritos ao painel administrativo. Sem Blob configurado em produção, o canal recusa o pedido em vez de gravar de forma efêmera. Exclusão de um pedido pode ser solicitada pelo próprio contato informado, mas depende de procedimento operacional ainda não automatizado.
+
 ## Limites e controles
 
 Os logs/cache não são um compromisso de retenção por prazo fixo, e a exclusão de uma checagem pode não remover imediatamente cópias, objetos antigos, dados de terceiros, logs de infraestrutura ou backups. Não foi verificada a implantação/ACL efetiva do Blob nem a política dos serviços upstream. A configuração ativa de provedor, worker, chaves, retenção e região em produção é desconhecida a partir do código-fonte.
 
-A página [Correções](politica-correcoes.md) descreve os meios disponíveis no produto; não há nesta implementação um canal público de contato que possamos prometer. Consulte também [Metodologia factual](metodologia-factual.md).
+Os controles de abuso guardam apenas contadores por origem/instante em armazenamento compartilhado (chaves com TTL curto: janela de taxa, vagas de concorrência e orçamento diário) e o IP tratado como identificador temporário. Não há perfil de usuário nem rastreamento entre checagens.
+
+A página [Correções](politica-correcoes.md) descreve o canal e o processo disponíveis no produto. Consulte também [Metodologia factual](metodologia-factual.md).

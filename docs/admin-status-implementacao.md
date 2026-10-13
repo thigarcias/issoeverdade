@@ -71,6 +71,25 @@ continuam sendo evidência da execução preservada, não prova de comportamento
 | Privacidade | `public/privacidade.html`, `docs/privacidade-dados-ia.md` | leitura; cache/logs/localStorage descritos com limites |
 | Nenhuma métrica de precisão sem medição | painel e páginas públicas | texto explícito de ausência de benchmark |
 
+## Fase 6 — Produção: segurança, custo, evidências e correções
+
+| Entrega | Onde | Verificação |
+| --- | --- | --- |
+| Política de URL e anti-rebinding | `server/net.js` (`parseUrlStrict`, `resolvePublicHost`, `safeFetch` com lookup fixado) | `server/net.test.js`: matriz IPv4/IPv6/mapeados/NAT64/6to4, redirect para metadados, tetos e timeout |
+| Tetos de transferência e vigia de disco | `server/proc.js`, `server/media.js` | `server/media.test.js`: arquivo acima do teto recusado; destino interno bloqueado; frames do worker filtrados |
+| Duração máxima de mídia | `enforceDuration` (`ffprobe`) em `server/media.js` e `worker/server.js` | revisão + smoke de upload |
+| Worker fail-closed | `worker/server.js` recusa iniciar sem `WORKER_SECRET`; valida URL; concorrência; limpeza de temporários | `worker/server.test.js` |
+| Recusa de texto excedente | `server/uploads.js` (`text_too_long`), contador em `src/components/Verifier.jsx` | `server/endpoint.test.js` |
+| Limites publicados | `server/health-endpoint.js` (`GET /api/health`) e `useServerLimits` na interface | `server/admin-endpoint.test.js`; smoke no navegador |
+| Abuso/custo compartilhado | `server/limits.js` (taxa, vagas com lease, orçamento, tokens) + `server/endpoint.js` | `server/limits.test.js`, `server/endpoint.test.js` |
+| Fail-closed em produção sem backend | `resolveMode` → `blocked` + `blockedPayload` | `server/endpoint.test.js` (503 `limits_unavailable`) |
+| Triagem de propósito | `purposeTriage` → `no_verifiable_claims` antes de chamadas de modelo | `server/moderation.test.js`, `server/endpoint.test.js` |
+| Moderação de conteúdo | `server/moderation.js` (texto, imagens/frames, transcrição) e estados `content_refused`/`moderation_uncovered` | `server/moderation.test.js` |
+| Dossiê de evidências | `server/evidence.js` (documento, HTML/PDF, localização de trecho, revisão de fidelidade) | `server/evidence.test.js` |
+| Canal de correções | `server/corrections.js`, `api/corrections.js`, `public/correcoes.html` + `correcoes.js` | `server/corrections.test.js` |
+| Correção versionada e cache | `appendCorrectionToLog`, `invalidateCache` (época) | `server/admin-endpoint.test.js` |
+| Observabilidade | `server/metrics.js`, painel de métricas e alertas | `server/admin-endpoint.test.js` |
+
 ## Pendências reais (não fabricadas)
 
 1. **Corpus humano**: nenhum caso anotado foi entregue; sem ele não há precisão, macro-F1 nem Kappa publicáveis. O harness está pronto e documentado.
@@ -80,3 +99,8 @@ continuam sendo evidência da execução preservada, não prova de comportamento
 5. **Go**: allowlist explícita substitui descoberta total; modelos Go fora da lista aparecem como incompatíveis com motivo.
 6. **Filtro por período**: o backend não expõe agregação temporal; a lista é a amostra retida (índice de até 200 registros) e a UI diz isso em vez de sugerir histórico completo.
 7. **Texto integral da entrada**: o registro guarda prévia de 300 caracteres (e nome/hash do arquivo), não o conteúdo completo; o detalhe exibe exatamente o que foi retido.
+8. **Backend compartilhado em produção**: sem `UPSTASH_REDIS_REST_URL`/`KV_REST_API_*`, produção recusa checagens (fail-closed). Configurar antes de liberar tráfego.
+9. **Cobertura de moderação de vídeo**: a inspeção cobre transcrição + até 4 frames; sem `MEDIA_VIDEO_MODERATION=partial_frames_transcript`, vídeo é recusado em produção. É decisão de produto, não pendência técnica.
+10. **Egresso do worker**: a barreira de rede é do provedor; o código valida destino e aceita `WORKER_EGRESS_PROXY`, mas não substitui firewall de saída.
+11. **Alertas**: limiares padrão existem e aparecem no painel, mas não há integração com plantão/pager nem verificação em produção.
+12. **Fila de correções**: estados, histórico e correção versionada existem; prazo de resposta e plantão de atendimento não estão definidos.

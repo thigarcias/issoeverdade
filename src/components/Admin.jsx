@@ -11,6 +11,8 @@ const OUTCOME_LABEL = {
   insufficient_input: "Material insuficiente",
   inaccessible_media: "Mídia inacessível",
   no_verifiable_claims: "Sem afirmação verificável",
+  content_refused: "Recusado por política de conteúdo",
+  moderation_uncovered: "Vídeo sem cobertura de moderação",
   error: "Erro operacional",
   legacy: "Registro legado",
 };
@@ -530,9 +532,360 @@ function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSa
   );
 }
 
+function fmtPercent(value) {
+  return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+}
+
+function fmtBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return "—";
+  const units = ["B", "KB", "MB", "GB"];
+  let scaled = value;
+  let index = 0;
+  while (scaled >= 1024 && index < units.length - 1) {
+    scaled /= 1024;
+    index += 1;
+  }
+  return `${index === 0 || scaled >= 10 ? Math.round(scaled) : scaled.toFixed(1)} ${units[index]}`;
+}
+
+function countEntries(map) {
+  return Object.entries(map ?? {})
+    .filter(([, count]) => Number(count) > 0)
+    .sort((a, b) => b[1] - a[1]);
+}
+
+function sumCounts(map) {
+  return Object.values(map ?? {}).reduce((total, count) => total + (Number(count) || 0), 0);
+}
+
+const CORRECTION_MODE_LABEL = {
+  durable: "durável (Blob)",
+  memory: "memória desta instância",
+  blocked: "bloqueado nesta implantação",
+};
+
+const CORRECTION_STATUS_TINT = {
+  received: "tint-info",
+  in_review: "tint-warn",
+  awaiting_info: "tint-warn",
+  corrected: "tint-up",
+  maintained: "tint-info",
+  closed: "",
+};
+
+function CorrectionStatusChip({ status, statuses }) {
+  const label = statuses?.find((entry) => entry.id === status)?.label ?? status ?? "estado não registrado";
+  return (
+    <span className={`chip ${CORRECTION_STATUS_TINT[status] ?? "tint-info"}`}>
+      <i /> {label}
+    </span>
+  );
+}
+
+/** Fila de correções: lista, pedido completo, mudança de estado e invalidação de cache. */
+function AdminCorrections({ data, loading, error, statuses, detail, detailLoading, selected, onReload, onOpen, onClose, onOpenCheck, onSave, onInvalidateCache, showToast }) {
+  const [draft, setDraft] = useState({ status: "", note: "" });
+  const [saving, setSaving] = useState(false);
+  const [saveResult, setSaveResult] = useState(null);
+  const [cacheOpen, setCacheOpen] = useState(false);
+  const [cacheReason, setCacheReason] = useState("");
+  const [cacheBusy, setCacheBusy] = useState(false);
+  const [cacheResult, setCacheResult] = useState(null);
+  const protocol = detail?.protocol ?? "";
+  const lastProtocol = useRef("");
+
+  useEffect(() => {
+    if (lastProtocol.current === protocol) return;
+    lastProtocol.current = protocol;
+    setSaveResult(null);
+    setDraft({ status: detail?.status ?? "received", note: "" });
+  }, [protocol, detail]);
+
+  async function save() {
+    if (!detail || saving) return;
+    setSaving(true);
+    setSaveResult(null);
+    try {
+      const result = await onSave(detail.protocol, { status: draft.status, note: draft.note.trim() });
+      const lines = [];
+      if (result.cacheInvalidated) {
+        lines.push("A versão vigente da checagem vinculada foi marcada e o cache foi invalidado — novas consultas passam a ver o registro atualizado.");
+      }
+      if (result.applied?.ok === false) {
+        lines.push(`A checagem vinculada não aceitou a marcação (${result.applied.error ?? "motivo não informado"}). A nota permanece apenas na fila de correções.`);
+      } else if (result.applied?.ok === true) {
+        lines.push("Marcação editorial gravada no registro da checagem vinculada.");
+      }
+      setSaveResult({ ok: true, lines: lines.length > 0 ? lines : ["Estado atualizado na fila de correções."] });
+      setDraft({ status: result.correction?.status ?? draft.status, note: "" });
+    } catch (err) {
+      setSaveResult({ ok: false, lines: [err.message || "Não foi possível salvar o estado do pedido."] });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function invalidate() {
+    if (cacheBusy) return;
+    setCacheBusy(true);
+    setCacheResult(null);
+    try {
+      setCacheResult(await onInvalidateCache(cacheReason.trim()));
+    } catch (err) {
+      setCacheResult(err.data ?? { ok: false, error: err.message });
+    } finally {
+      setCacheBusy(false);
+    }
+  }
+
+  const blocked = data?.mode === "blocked";
+  const memoryOnly = Boolean(data) && data.enabled === false && !blocked;
+  const items = data?.items ?? [];
+
+  return (
+    <section className="admin-corrections" aria-labelledby="admin-corrections-title">
+      <div className="admin-section-heading">
+        <p className="admin-eyebrow">Canal público</p>
+        <h1 id="admin-corrections-title">Correções</h1>
+        <p>Pedidos enviados pelo formulário público. Marcar um pedido como <b>Corrigido</b> só altera o registro vigente quando existe uma checagem vinculada.</p>
+      </div>
+      {blocked && <p className="admin-error-state" role="alert">A fila de correções está bloqueada nesta implantação (modo <code>blocked</code>): sem armazenamento durável o canal público recusa novos pedidos e o painel não consegue registrar estados.</p>}
+      {memoryOnly && <p className="admin-notice" role="status">A fila existe apenas em memória nesta instância (modo <code>{data.mode}</code>): pedidos e mudanças de estado não sobrevivem ao reinício do processo nem são compartilhados entre instâncias.</p>}
+      {error && <div className="admin-error-state" role="alert"><p>{error}</p><button className="btn" type="button" onClick={onReload}>Tentar novamente</button></div>}
+      <div className="admin-corr-actions">
+        <button className="btn ghost" type="button" onClick={onReload} disabled={loading}>{loading ? "Atualizando…" : "Atualizar fila"}</button>
+        {data && <span className="admin-mut">{items.length} de até {data.max ?? "—"} pedidos retidos · modo {CORRECTION_MODE_LABEL[data.mode] ?? data.mode}</span>}
+        <span className="admin-corr-spacer" />
+        <button className="btn ghost" type="button" aria-expanded={cacheOpen} onClick={() => { setCacheOpen((open) => !open); setCacheResult(null); }}>Invalidar cache</button>
+      </div>
+      {cacheOpen && <section className="admin-cache-panel" aria-label="Invalidar cache de checagens">
+        <p className="admin-mut">Publica uma nova época de cache: resultados gravados antes dela deixam de ser servidos. Use depois de corrigir um registro já publicado.</p>
+        <label className="admin-cache-reason">Motivo<textarea rows={2} value={cacheReason} onChange={(event) => setCacheReason(event.target.value)} placeholder="Ex.: correção iev-xxxx publicada" /></label>
+        <div className="admin-ai-actions">
+          <button className="btn primary" type="button" onClick={invalidate} disabled={cacheBusy}>{cacheBusy ? "Invalidando…" : "Confirmar invalidação"}</button>
+          <button className="btn ghost" type="button" onClick={() => { setCacheOpen(false); setCacheReason(""); setCacheResult(null); }} disabled={cacheBusy}>Cancelar</button>
+        </div>
+        {cacheResult && <p className={cacheResult.ok ? "admin-notice" : "admin-error-state"} role="status">{cacheResult.ok
+          ? <>Cache invalidado. Época vigente: <code>{cacheResult.epoch}</code>{cacheResult.persisted ? " (publicada de forma durável)" : " (apenas nesta instância — outras réplicas podem seguir servindo a época anterior até recarregarem)"}.</>
+          : <>A invalidação falhou{cacheResult.epoch ? ` (época retornada: ${cacheResult.epoch})` : ""}: o cache em memória desta instância foi limpo, mas nenhuma época nova foi publicada — outras instâncias continuam servindo os resultados anteriores.</>}</p>}
+      </section>}
+      {loading && !data
+        ? <ul className="admin-skel" aria-label="Carregando pedidos de correção"><li /><li /><li /></ul>
+        : <div className="admin-corr-grid">
+          <div className="admin-corr-queue">
+            {items.length === 0
+              ? <div className="empty"><h3>Nenhum pedido retido</h3><p>{data?.enabled ? "A fila não tem pedidos de correção no momento." : "A fila não é durável nesta implantação; nenhum pedido é retido."}</p></div>
+              : <ul className="admin-queue">
+                {items.map((item) => <li key={item.protocol} className={selected === item.protocol ? "is-open" : ""}>
+                  <button type="button" className="admin-queue-row" onClick={() => onOpen(item.protocol)}>
+                    <span className="admin-queue-head">
+                      <code>{item.protocol}</code>
+                      <CorrectionStatusChip status={item.status} statuses={statuses} />
+                      <time title={fmtFullTime(item.at)}>{fmtTime(item.at)}</time>
+                    </span>
+                    <span className="admin-queue-msg">{item.messagePreview || "(sem prévia da mensagem)"}</span>
+                    <span className="admin-queue-meta">{item.checkId ? `Checagem ${item.checkId}` : "Sem checagem vinculada"} · {KIND_LABEL[item.kind] ?? item.kind ?? "tipo não registrado"} · atualizado em {fmtTime(item.updatedAt)}</span>
+                  </button>
+                  {item.checkId && <button className="quiet-link" type="button" onClick={() => onOpenCheck(item.checkId)}>Abrir detalhe da checagem</button>}
+                </li>)}
+              </ul>}
+          </div>
+          <div className="admin-corr-detail">
+            {!detail && !detailLoading && <p className="admin-mut">Selecione um pedido para ver a mensagem completa, o vínculo com a checagem, o histórico e mudar o estado.</p>}
+            {detailLoading && !detail && <ul className="admin-skel" aria-label="Carregando pedido"><li /><li /></ul>}
+            {detail && <>
+              <div className="admin-corr-detail-head">
+                <h3>Pedido <code>{detail.protocol}</code></h3>
+                <div className="admin-actions">
+                  <CopyButton text={detail.protocol} showToast={showToast} label="Copiar protocolo" />
+                  <button className="btn ghost" type="button" onClick={onClose}>Fechar</button>
+                </div>
+              </div>
+              <dl className="admin-dl">
+                <dt>Estado</dt>
+                <dd><CorrectionStatusChip status={detail.status} statuses={statuses} />{" "}<small className="admin-mut">atualizado em {fmtFullTime(detail.updatedAt)}</small></dd>
+                <dt>Recebido</dt>
+                <dd>{fmtFullTime(detail.at)}</dd>
+                <dt>Checagem vinculada</dt>
+                <dd>{detail.checkId
+                  ? <button className="quiet-link" type="button" onClick={() => onOpenCheck(detail.checkId)}>Abrir detalhe de {detail.checkId}</button>
+                  : "Nenhuma checagem vinculada — corrigir este pedido não altera registro publicado."}</dd>
+                <dt>Tipo de entrada</dt>
+                <dd>{KIND_LABEL[detail.kind] ?? detail.kind ?? "não registrado"}</dd>
+                <dt>Persistência</dt>
+                <dd>{detail.persisted ? "Durável (Blob)" : "Apenas em memória nesta instância"}</dd>
+                <dt>Mensagem</dt>
+                <dd className="admin-quote">{detail.message || "—"}</dd>
+                <dt>Afirmação contestada</dt>
+                <dd>{detail.claim || "não informada"}</dd>
+                <dt>Evidência enviada</dt>
+                <dd>{detail.evidenceUrl ? <a href={detail.evidenceUrl} target="_blank" rel="noreferrer">{detail.evidenceUrl}</a> : "não informada"}</dd>
+                <dt>Contato</dt>
+                <dd>{detail.contact || "não informado"}{" "}<small className="admin-mut">(uso interno; não aparece no site)</small></dd>
+              </dl>
+              <h4 className="admin-sub">Histórico</h4>
+              {(detail.history ?? []).length === 0
+                ? <p className="admin-mut">Sem eventos registrados.</p>
+                : <ol className="admin-hist">{detail.history.map((entry, index) => <li key={`${entry.at}-${index}`}>
+                  <time>{fmtFullTime(entry.at)}</time>
+                  <span><CorrectionStatusChip status={entry.status} statuses={statuses} /> <small className="admin-mut">por {entry.actor || "não registrado"}</small></span>
+                  {entry.note && <q>{entry.note}</q>}
+                </li>)}</ol>}
+              <div className="admin-corr-form">
+                <label>Novo estado<select value={draft.status} disabled={saving} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value }))}>
+                  {statuses.length === 0 && <option value={draft.status}>{draft.status}</option>}
+                  {statuses.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+                </select></label>
+                <label>Nota interna<textarea rows={3} value={draft.note} disabled={saving} onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))} placeholder="Descreva o que foi apurado, sem expor dados pessoais além do necessário." /></label>
+                <div className="admin-ai-actions">
+                  <button className="btn primary" type="button" onClick={save} disabled={saving || (draft.status === detail.status && !draft.note.trim())}>{saving ? "Salvando…" : "Salvar estado"}</button>
+                </div>
+              </div>
+              {saveResult && <div className={saveResult.ok ? "admin-notice" : "admin-error-state"} role="status">
+                {saveResult.lines.map((line) => <p key={line}>{line}</p>)}
+              </div>}
+            </>}
+          </div>
+        </div>}
+    </section>
+  );
+}
+
+const LIMITS_MODE_INFO = {
+  shared: { label: "Compartilhado", text: "taxa, concorrência e orçamento em armazenamento compartilhado — o teto vale para o conjunto de instâncias." },
+  memory: { label: "Por instância", text: "contadores só na memória desta instância; com várias réplicas o volume real pode passar do teto declarado." },
+  blocked: { label: "Bloqueado", text: "produção sem backend compartilhado: novas checagens são recusadas até a configuração ser corrigida." },
+  off: { label: "Desligado", text: "controles de abuso e custo desativados por configuração explícita; aceitável apenas em teste." },
+};
+
+const MODERATION_MODE_INFO = {
+  required: "obrigatória: se a triagem ficar indisponível a checagem é recusada (fail-closed).",
+  optional: "opcional: a triagem roda quando há credencial; a falha é registrada e a checagem segue.",
+  off: "desligada por configuração: nenhuma triagem de conteúdo é executada.",
+};
+
+const VIDEO_COVERAGE_LABEL = {
+  partial_frames_transcript: "transcrição + amostra de quadros (não é o vídeo integral)",
+  uncovered: "não declarada — em modo obrigatório o vídeo é recusado",
+};
+
+function MetricCounts({ title, entries, label, empty }) {
+  return (
+    <section className="admin-metric-block">
+      <h3 className="admin-sub">{title}</h3>
+      {entries.length === 0
+        ? <p className="admin-mut">{empty}</p>
+        : <table className="admin-metric-table">
+          <thead><tr><th>Item</th><th className="admin-num">Contagem</th></tr></thead>
+          <tbody>{entries.map(([key, count]) => <tr key={key}><td>{label(key)}</td><td className="admin-num">{count}</td></tr>)}</tbody>
+        </table>}
+    </section>
+  );
+}
+
+/** Métricas operacionais por instância e estado do sistema (sem segredos). */
+function AdminMetrics({ data, loading, error, onReload }) {
+  const metrics = data?.metrics ?? null;
+  const system = data?.system ?? null;
+  const limits = system?.limits ?? null;
+  const alerts = metrics?.alerts ?? [];
+  const errors = countEntries(metrics?.errors);
+  const errorTotal = sumCounts(metrics?.errors);
+  const blockedLimits = limits?.mode === "blocked";
+  return (
+    <section className="admin-metrics" aria-labelledby="admin-metrics-title">
+      <div className="admin-section-heading">
+        <p className="admin-eyebrow">Operação · contadores por instância</p>
+        <h1 id="admin-metrics-title">Métricas</h1>
+        <p>Números observados no processo que respondeu a esta consulta. Não são auditoria: nada aqui é persistido nem somado entre instâncias.</p>
+      </div>
+      {error && <div className="admin-error-state" role="alert"><p>{error}</p><button className="btn" type="button" onClick={onReload}>Tentar novamente</button></div>}
+      {loading && !metrics && <ul className="admin-skel" aria-label="Carregando métricas"><li /><li /><li /></ul>}
+      {metrics && <>
+        <dl className="admin-stats">
+          <div><dt>Checagens na janela</dt><dd>{metrics.checks}</dd></div>
+          <div><dt>Servidas do cache</dt><dd>{metrics.cached} · {fmtPercent(metrics.checks ? metrics.cached / metrics.checks : 0)}</dd></div>
+          <div><dt>Abstenções</dt><dd>{metrics.abstentions} · {fmtPercent(metrics.abstentionRate)}</dd></div>
+          <div className={errorTotal ? "bad" : ""}><dt>Erros</dt><dd>{errorTotal} · {fmtPercent(metrics.errorRate)}</dd></div>
+        </dl>
+        <dl className="admin-stats">
+          <div><dt>Latência média</dt><dd>{fmtMs(metrics.latency?.avg)}</dd></div>
+          <div><dt>Latência p50</dt><dd>{fmtMs(metrics.latency?.p50)}</dd></div>
+          <div><dt>Latência p95</dt><dd>{fmtMs(metrics.latency?.p95)}</dd></div>
+        </dl>
+        <p className="admin-mut">Contadores por instância, sem persistência: a janela começou em {fmtFullTime(metrics.window?.startedAt)} e reiniciar o processo zera tudo. {metrics.note}</p>
+        {metrics.window?.enoughSample
+          ? <p className="admin-mut">Amostra desta janela: {metrics.window.sample} checagens — acima do mínimo de {metrics.thresholds?.minSample} para avaliar os limiares de alerta.</p>
+          : <p className="admin-notice" role="note"><b>Amostra pequena:</b> {metrics.window?.sample ?? 0} checagens desde o início da janela, abaixo do mínimo de {metrics.thresholds?.minSample}. Os números indicam o que foi observado, não uma taxa; os alertas por limiar ficam suspensos.</p>}
+        <div className="admin-metric-grid">
+          <MetricCounts title="Por tipo de entrada" entries={countEntries(metrics.byKind)} label={(key) => KIND_LABEL[key] ?? key} empty="Nenhuma checagem contabilizada por tipo nesta janela." />
+          <MetricCounts title="Por desfecho" entries={countEntries(metrics.byOutcome)} label={(key) => OUTCOME_LABEL[key] ?? key} empty="Nenhum desfecho contabilizado nesta janela." />
+          <MetricCounts title="Por veredito" entries={countEntries(metrics.verdicts)} label={(key) => VERDICTS[key]?.label ?? key} empty="Nenhum veredito contabilizado nesta janela." />
+          <MetricCounts title="Erros por código" entries={errors} label={(key) => OUTCOME_LABEL[key] ?? key} empty="Nenhum erro contabilizado nesta janela." />
+        </div>
+        <section className="admin-metric-block">
+          <h3 className="admin-sub">Contadores observados</h3>
+          <dl className="admin-dl">
+            <dt>Tokens</dt>
+            <dd>entrada {metrics.tokens?.input ?? 0} · saída {metrics.tokens?.output ?? 0} · total {metrics.tokens?.total ?? 0}</dd>
+            <dt>Mídia processada</dt>
+            <dd>transcrições {metrics.media?.transcript ?? 0} · visão {metrics.media?.vision ?? 0} · quadros {metrics.media?.frames ?? 0}</dd>
+            <dt>Moderação</dt>
+            <dd>recusadas {metrics.moderation?.refused ?? 0} · sem cobertura {metrics.moderation?.uncovered ?? 0} · indisponível {metrics.moderation?.unavailable ?? 0} · marcadas sensíveis {metrics.moderation?.sensitive ?? 0}</dd>
+            <dt>Correções</dt>
+            <dd>pedidos criados {metrics.corrections?.created ?? 0} · marcados como corrigidos {metrics.corrections?.corrected ?? 0}</dd>
+            <dt>Última checagem</dt>
+            <dd>{metrics.lastCheckAt ? fmtFullTime(metrics.lastCheckAt) : "nenhuma registrada nesta instância"}</dd>
+          </dl>
+        </section>
+        <section className="admin-metric-block">
+          <h3 className="admin-sub">Alertas</h3>
+          {alerts.length === 0
+            ? <p className="admin-mut">Sem alertas no limiar atual.</p>
+            : <ul className="admin-alerts">{alerts.map((alert) => <li key={alert.id} className={alert.level === "critical" ? "critical" : "warning"}>
+              <b>{alert.level === "critical" ? "Crítico" : "Atenção"}</b>
+              <span>{alert.message}</span>
+            </li>)}</ul>}
+          <p className="admin-mut">Limiares vigentes: latência média acima de {fmtMs(metrics.thresholds?.avgLatencyMs)} · taxa de erro acima de {fmtPercent(metrics.thresholds?.errorRate)} · abstenção acima de {fmtPercent(metrics.thresholds?.abstentionRate)} · orçamento a partir de {fmtPercent(metrics.thresholds?.budgetUsedPct)} · amostra mínima de {metrics.thresholds?.minSample} checagens.</p>
+        </section>
+      </>}
+      {system && <section className={`admin-metric-block admin-system${blockedLimits ? " critical" : ""}`}>
+        <h3 className="admin-sub">Sistema</h3>
+        {blockedLimits && <p className="admin-error-state" role="alert">Limites em modo <code>blocked</code>: checagens novas estão sendo recusadas até haver backend compartilhado ou configuração explícita de limites.</p>}
+        <dl className="admin-dl">
+          <dt>Controle de abuso e custo</dt>
+          <dd><b>{LIMITS_MODE_INFO[limits.mode]?.label ?? limits.mode}</b> — {LIMITS_MODE_INFO[limits.mode]?.text ?? "modo não reconhecido pelo painel"} <small className="admin-mut">(backend: {limits.store ?? "nenhum"})</small></dd>
+          <dt>Taxa por origem</dt>
+          <dd>{limits.maxPerWindow} checagens por {limits.windowSec}s por origem.</dd>
+          <dt>Concorrência</dt>
+          <dd>{limits.maxConcurrent} checagens simultâneas; cada vaga é reservada por até {limits.slotLeaseSec}s.</dd>
+          <dt>Orçamento diário</dt>
+          <dd>{limits.dailyUnits} unidades ({Object.entries(limits.costUnits ?? {}).map(([kind, cost]) => `${KIND_LABEL[kind] ?? kind} ${cost}`).join(" · ") || "custo por tipo não declarado"}) · tokens: {limits.dailyTokens ? `${limits.dailyTokens} por dia` : "sem teto declarado"}.</dd>
+          <dt>Moderação de conteúdo</dt>
+          <dd><b>{system.moderation.mode}</b> — {MODERATION_MODE_INFO[system.moderation.mode] ?? "modo não reconhecido pelo painel"} Modelo: <code>{system.moderation.model}</code>. Categorias de recusa: {(system.moderation.refuseCategories ?? []).join(", ") || "nenhuma declarada"}.</dd>
+          <dt>Cobertura de vídeo</dt>
+          <dd>{VIDEO_COVERAGE_LABEL[system.moderation.videoCoverage] ?? system.moderation.videoCoverage} · até {system.moderation.frameSamples} quadros amostrados por vídeo na triagem.</dd>
+          <dt>Fila de correções</dt>
+          <dd>modo {CORRECTION_MODE_LABEL[system.corrections.mode] ?? system.corrections.mode} · persistência {system.corrections.durable ? "durável" : "apenas nesta instância"}.</dd>
+          <dt>Limites de mídia</dt>
+          <dd>duração máxima {system.media.maxMediaSeconds}s · transferência {fmtBytes(system.media.maxTransferBytes)} · temporários {fmtBytes(system.media.maxTempBytes)} · arquivo enviado {fmtBytes(system.media.maxFileBytes)}.</dd>
+          <dt>Registro de checagens</dt>
+          <dd>{system.logs.enabled ? "Registros persistidos em Blob e listados no painel." : "Somente no console desta instância (sem BLOB_READ_WRITE_TOKEN)."}</dd>
+          <dt>Política de URLs</dt>
+          <dd>portas permitidas: <code>{system.urlPolicy.ports}</code> · hosts privados {system.urlPolicy.allowPrivateHosts ? "permitidos por configuração explícita" : "bloqueados"}.</dd>
+        </dl>
+        <p className="admin-mut">Somente configuração operacional é exibida; credenciais e segredos não são devolvidos pela API.</p>
+      </section>}
+    </section>
+  );
+}
+
 const ADMIN_SECTIONS = [
   { id: "overview", label: "Visão geral" },
   { id: "checks", label: "Checagens" },
+  { id: "corrections", label: "Correções" },
+  { id: "metrics", label: "Métricas" },
   { id: "models", label: "Modelos & provedores" },
   { id: "methodology", label: "Metodologia" },
 ];
@@ -615,27 +968,68 @@ export default function Admin({ showToast }) {
   const [aiConfigErrors, setAiConfigErrors] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [methodology, setMethodology] = useState(null);
+  const [corrections, setCorrections] = useState(null);
+  const [correctionsError, setCorrectionsError] = useState("");
+  const [correctionsLoading, setCorrectionsLoading] = useState(false);
+  const [correctionStatuses, setCorrectionStatuses] = useState([]);
+  const [correctionDetail, setCorrectionDetail] = useState(null);
+  const [correctionLoading, setCorrectionLoading] = useState(false);
+  const [metricsData, setMetricsData] = useState(null);
+  const [metricsError, setMetricsError] = useState("");
+  const [metricsLoading, setMetricsLoading] = useState(false);
   const [section, setSection] = useState(currentAdminSection);
   const detailRequest = useRef(0);
   const aiRequest = useRef(0);
+  const correctionRequest = useRef(0);
   const loadedOnce = useRef(false);
+
+  /** Encerra a sessão local quando o servidor recusa a chave. */
+  const expireSession = useCallback(() => {
+    aiRequest.current += 1;
+    detailRequest.current += 1;
+    correctionRequest.current += 1;
+    sessionStorage.removeItem(SECRET_KEY);
+    setSecret("");
+    setItems(null);
+    setDetail(null);
+    setCorrections(null);
+    setCorrectionDetail(null);
+    setMetricsData(null);
+    setAiCatalog(null);
+    setAiConfig(null);
+    setAiDraft(null);
+    setAiConfigErrors(null);
+  }, []);
 
   const authedFetch = useCallback(async (path) => {
     const res = await fetch(path, { headers: { Authorization: `Bearer ${secret}` } });
     if (res.status === 401) {
-      aiRequest.current += 1;
-      sessionStorage.removeItem(SECRET_KEY);
-      setSecret("");
-      setItems(null);
-      setAiCatalog(null);
-      setAiConfig(null);
-      setAiDraft(null);
-      setAiConfigErrors(null);
+      expireSession();
       throw new Error("Sessão inválida. Entre de novo.");
     }
     if (!res.ok) throw new Error(`Falha ao carregar (HTTP ${res.status}).`);
     return res.json();
-  }, [secret]);
+  }, [secret, expireSession]);
+
+  const authedPost = useCallback(async (path, body) => {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 401) {
+      expireSession();
+      throw new Error("Sessão inválida. Entre de novo.");
+    }
+    const data = await res.json().catch(() => null);
+    if (!res.ok || data?.error) {
+      const error = new Error(data?.message || data?.error || `Falha na operação (HTTP ${res.status}).`);
+      error.data = data;
+      error.status = res.status;
+      throw error;
+    }
+    return data ?? {};
+  }, [secret, expireSession]);
 
   const load = useCallback(async ({ silent } = {}) => {
     if (!secret) return;
@@ -719,6 +1113,85 @@ export default function Admin({ showToast }) {
     }
   }, [authedFetch, showToast]);
 
+  const loadCorrections = useCallback(async () => {
+    if (!secret) return;
+    setCorrectionsError("");
+    setCorrectionsLoading(true);
+    try {
+      const data = await authedFetch("/api/admin?corrections=1");
+      setCorrections(data);
+      if (Array.isArray(data.statuses)) setCorrectionStatuses(data.statuses);
+    } catch (err) {
+      setCorrectionsError(err.message || "Não foi possível carregar a fila de correções.");
+    } finally {
+      setCorrectionsLoading(false);
+    }
+  }, [secret, authedFetch]);
+
+  const loadMetrics = useCallback(async () => {
+    if (!secret) return;
+    setMetricsError("");
+    setMetricsLoading(true);
+    try {
+      setMetricsData(await authedFetch("/api/admin?metrics=1"));
+    } catch (err) {
+      setMetricsError(err.message || "Não foi possível carregar as métricas.");
+    } finally {
+      setMetricsLoading(false);
+    }
+  }, [secret, authedFetch]);
+
+  const closeCorrection = useCallback(() => {
+    correctionRequest.current += 1;
+    setCorrectionDetail(null);
+    setCorrectionLoading(false);
+    if (adminParam("correction")) updateAdminUrl({ correction: null });
+  }, []);
+
+  const openCorrection = useCallback(async (protocol) => {
+    const request = ++correctionRequest.current;
+    if (adminParam("correction") !== protocol) updateAdminUrl({ correction: protocol }, false);
+    setCorrectionLoading(true);
+    try {
+      const data = await authedFetch(`/api/admin?correction=${encodeURIComponent(protocol)}`);
+      if (request !== correctionRequest.current) return;
+      setCorrectionDetail(data.correction ?? null);
+      if (Array.isArray(data.statuses) && data.statuses.length > 0) setCorrectionStatuses(data.statuses);
+      if (!data.correction) showToast("Pedido de correção não encontrado.");
+    } catch (err) {
+      if (request === correctionRequest.current) showToast(err.message);
+    } finally {
+      if (request === correctionRequest.current) setCorrectionLoading(false);
+    }
+  }, [authedFetch, showToast]);
+
+  /** Salva o estado do pedido; devolve o corpo para o painel mostrar o que foi aplicado. */
+  const saveCorrection = useCallback(async (protocol, { status, note }) => {
+    try {
+      const data = await authedPost("/api/admin?corrections=1", { protocol, status, note: note || undefined });
+      if (data.correction) {
+        setCorrectionDetail(data.correction);
+        setCorrections((current) => current?.items ? {
+          ...current,
+          items: current.items.map((item) => item.protocol === protocol ? {
+            ...item,
+            status: data.correction.status,
+            updatedAt: data.correction.updatedAt,
+            kind: data.correction.kind,
+            messagePreview: String(data.correction.message ?? "").slice(0, 240),
+          } : item),
+        } : current);
+      }
+      return data;
+    } catch (err) {
+      const label = { missing_protocol: "Protocolo ausente no pedido.", bad_status: "Estado inválido para a fila.", not_found: "Pedido não encontrado na fila." }[err.message];
+      if (label) throw new Error(label);
+      throw err;
+    }
+  }, [authedPost]);
+
+  const invalidateAdminCache = useCallback(async (reason) => authedPost("/api/admin?cache=1", { action: "invalidate", reason: reason || "manual" }), [authedPost]);
+
   async function saveAi() {
     if (!aiDraft) return;
     setAiSaving(true);
@@ -730,14 +1203,7 @@ export default function Admin({ showToast }) {
         body: JSON.stringify({ config: aiDraft }),
       });
       if (res.status === 401) {
-        aiRequest.current += 1;
-        sessionStorage.removeItem(SECRET_KEY);
-        setSecret("");
-        setItems(null);
-        setAiCatalog(null);
-        setAiConfig(null);
-        setAiDraft(null);
-        setAiConfigErrors(null);
+        expireSession();
         showToast("Sessão inválida. Entre de novo.");
         return;
       }
@@ -766,7 +1232,15 @@ export default function Admin({ showToast }) {
     loadAi();
     const detailId = adminParam("detail");
     if (secret && detailId) openDetail(detailId);
-  }, [secret, load, loadAi, openDetail]);
+    const correctionProtocol = adminParam("correction");
+    if (secret && correctionProtocol) openCorrection(correctionProtocol);
+  }, [secret, load, loadAi, openDetail, openCorrection]);
+
+  useEffect(() => {
+    if (!secret) return;
+    if (section === "corrections") loadCorrections();
+    if (section === "metrics") loadMetrics();
+  }, [section, secret, loadCorrections, loadMetrics]);
 
   useEffect(() => {
     const sync = () => {
@@ -780,10 +1254,13 @@ export default function Admin({ showToast }) {
       const detailId = adminParam("detail");
       if (detailId && secret) openDetail(detailId);
       else closeDetail();
+      const correctionProtocol = adminParam("correction");
+      if (correctionProtocol && secret) openCorrection(correctionProtocol);
+      else closeCorrection();
     };
     window.addEventListener("popstate", sync);
     return () => window.removeEventListener("popstate", sync);
-  }, [secret, openDetail, closeDetail]);
+  }, [secret, openDetail, closeDetail, openCorrection, closeCorrection]);
 
   function navigateSection(id) {
     setSection(id);
@@ -798,17 +1275,7 @@ export default function Admin({ showToast }) {
     setInput("");
   }
   function logout() {
-    aiRequest.current += 1;
-    detailRequest.current += 1;
-    sessionStorage.removeItem(SECRET_KEY);
-    setSecret("");
-    setItems(null);
-    setDetail(null);
-    setAiCatalog(null);
-    setAiConfig(null);
-    setAiDraft(null);
-    setAiConfigErrors(null);
-
+    expireSession();
   }
   const stats = useMemo(() => {
     const list = items ?? [];
@@ -870,7 +1337,7 @@ export default function Admin({ showToast }) {
     <header className="admin-shell-header">
       <a className="admin-brand" href="/">isso é verdade<span>?</span><small>ADMINISTRAÇÃO</small></a>
       <div className="admin-actions">
-        <button className="btn ghost" type="button" onClick={() => { load({}); loadAi({ preserveDraft: true }); }} disabled={refreshing || loading}>{refreshing || loading ? "Atualizando…" : "Atualizar dados"}</button>
+        <button className="btn ghost" type="button" onClick={() => { load({}); loadAi({ preserveDraft: true }); if (section === "corrections") loadCorrections(); if (section === "metrics") loadMetrics(); }} disabled={refreshing || loading}>{refreshing || loading ? "Atualizando…" : "Atualizar dados"}</button>
         <a className="btn" href="/">Voltar ao site</a>
         <button className="btn ghost" type="button" onClick={logout}>Sair</button>
       </div>
@@ -914,6 +1381,23 @@ export default function Admin({ showToast }) {
               <ul className="admin-cards">{visible.map((item) => <li key={item.id}><button type="button" className="admin-card-row" onClick={() => openDetail(item.id)}><span className="admin-result-cell"><VerdictChip verdict={item.verdict} error={item.error} outcome={item.outcome}/>{item.score != null && <b>{item.score}</b>}</span><strong>{item.inputPreview || "(sem texto)"}</strong><span>{KIND_LABEL[item.kind] ?? item.kind ?? "—"} · {fmtTime(item.at)}</span><span>{item.outcome ? OUTCOME_LABEL[item.outcome] ?? item.outcome : "Registro legado"} · {fmtMs(item.totalMs)} · {item.model ?? item.provider ?? "Modelo não registrado"}</span><small>{item.id}</small></button></li>)}</ul></div>}
           {pages > 1 && <nav className="admin-pages" aria-label="Paginação"><button className="btn ghost" type="button" disabled={!safePage} onClick={() => { const next = safePage - 1; setPage(next); updateAdminUrl({ page: next || null }); }}>← Anterior</button><span>Página {safePage + 1} de {pages}</span><button className="btn ghost" type="button" disabled={safePage >= pages - 1} onClick={() => { const next = safePage + 1; setPage(next); updateAdminUrl({ page: next }); }}>Próxima →</button></nav>}
         </section>}
+        {section === "corrections" && <AdminCorrections
+          data={corrections}
+          loading={correctionsLoading}
+          error={correctionsError}
+          statuses={correctionStatuses}
+          detail={correctionDetail}
+          detailLoading={correctionLoading}
+          selected={adminParam("correction")}
+          onReload={() => loadCorrections()}
+          onOpen={openCorrection}
+          onClose={closeCorrection}
+          onOpenCheck={openDetail}
+          onSave={saveCorrection}
+          onInvalidateCache={invalidateAdminCache}
+          showToast={showToast}
+        />}
+        {section === "metrics" && <AdminMetrics data={metricsData} loading={metricsLoading} error={metricsError} onReload={() => loadMetrics()} />}
         {section === "models" && <section aria-labelledby="admin-models-title"><div className="admin-section-heading"><p className="admin-eyebrow">Configuração e compatibilidade</p><h1 id="admin-models-title">Modelos & provedores</h1><p>Defina separadamente os modelos usados em julgamento, conclusão, visão e transcrição.</p></div>
           <AiConfigCard catalog={aiCatalog} draft={aiDraft} saved={aiConfig} saving={aiSaving} loading={aiLoading} persisted={aiPersisted} error={aiError} configErrors={aiConfigErrors} onChange={setAiDraft} onSave={saveAi} onReload={() => loadAi()} onRefreshCatalog={() => loadAi({ refresh: true, preserveDraft: true })} />
         </section>}

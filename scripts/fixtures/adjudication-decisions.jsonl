@@ -1,0 +1,4 @@
+# Decisoes de adjudicacao das divergencias entre A e B do corpus-sample.jsonl.
+# Formato: {caseId, field, key?, decision, adjudicatorId, decidedAt?, note?}
+{"caseId": "caso-002", "field": "verdict", "decision": "false", "adjudicatorId": "adj-marina", "decidedAt": "2026-01-09", "note": "fonte primaria nega o trecho de forma direta"}
+{"caseId": "caso-007", "field": "claim.status", "key": "c1", "decision": "true", "adjudicatorId": "adj-marina", "decidedAt": "2026-01-09", "note": "indicador confere com a planilha oficial"}

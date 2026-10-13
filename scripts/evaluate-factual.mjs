@@ -5,8 +5,12 @@ import { createHash } from "node:crypto";
 const VERDICTS = new Set(["true", "mostly_true", "partially_true", "distorted", "unproven", "misleading", "false", "no_verdict"]);
 const CLAIM_STATUSES = new Set(["true", "false", "context", "unproven"]);
 const MODALITIES = new Set(["text", "link", "image", "audio", "video"]);
+const SPLITS = new Set(["dev", "eval"]);
 const LABELS = [...VERDICTS];
 const BOOTSTRAP_ITERATIONS = 1000;
+const MIN_SAMPLE_PER_STRATUM = 10;
+const PUBLICATION_WARNING = "Nenhuma métrica deste relatório deve ser publicada isoladamente: todo número precisa vir acompanhado do recorte (modalidade, categoria, split), do n, do intervalo de incerteza e do aviso de amostra insuficiente (n < 10). Um resultado global pode esconder falha em vídeo, em uma categoria ou em um tipo de alegação.";
+const COMMENT_PREFIX = "#";
 
 function fail(message) {
   console.error(message);
@@ -30,6 +34,32 @@ function validate(record, line) {
     if (!VERDICTS.has(annotation.verdict) || !Array.isArray(annotation.claims)) throw new Error(`${prefix}: anotação humana sem verdict/claims válidos.`);
   }
   const { adjudicated, prediction } = record;
+  for (const field of ["eventId", "category"]) {
+    if (record[field] != null && (typeof record[field] !== "string" || !record[field].trim())) {
+      throw new Error(`${prefix}: ${field}, quando presente, precisa ser texto não vazio.`);
+    }
+  }
+  if (record.split != null && !SPLITS.has(record.split)) throw new Error(`${prefix}: split, quando presente, precisa ser "dev" ou "eval".`);
+  for (const field of ["annotatorA", "annotatorB"]) {
+    const named = record[field];
+    if (named == null) continue;
+    if (typeof named !== "object" || Array.isArray(named) || typeof named.annotatorId !== "string" || !named.annotatorId.trim()) {
+      throw new Error(`${prefix}: ${field}, quando presente, precisa de annotatorId; use apenas {annotatorId} para referenciar annotations.`);
+    }
+    const isComplete = named.verdict != null || named.claims != null;
+    if (isComplete && (!VERDICTS.has(named.verdict) || !Array.isArray(named.claims))) {
+      throw new Error(`${prefix}: ${field} completo precisa de verdict válido e claims (ou apenas {annotatorId} para referenciar annotations).`);
+    }
+  }
+  if ((record.annotatorA == null) !== (record.annotatorB == null)) throw new Error(`${prefix}: annotatorA e annotatorB precisam ser informados juntos.`);
+  if (record.annotatorA && Array.isArray(record.annotations) && record.annotations.length === 2) {
+    for (const field of ["annotatorA", "annotatorB"]) {
+      if (record[field].verdict == null) continue;
+      const listed = record.annotations.find((item) => item?.annotatorId === record[field].annotatorId);
+      if (!listed) throw new Error(`${prefix}: ${field} referencia annotatorId ausente em annotations.`);
+      if (annotationSignature(record[field]) !== annotationSignature(listed)) throw new Error(`${prefix}: ${field} divergente da anotação correspondente em annotations.`);
+    }
+  }
   if (!adjudicated || !prediction || !VERDICTS.has(adjudicated.verdict)) throw new Error(`${prefix}: adjudicated.verdict e prediction obrigatórios.`);
   if (prediction.verdict !== null && !VERDICTS.has(prediction.verdict)) throw new Error(`${prefix}: prediction.verdict inválido.`);
   if (!Array.isArray(adjudicated.claims) || !Array.isArray(prediction.claims)) throw new Error(`${prefix}: adjudicated.claims e prediction.claims devem ser listas.`);
@@ -83,6 +113,16 @@ function validate(record, line) {
     if (requiredKeys.has(key)) throw new Error(`${prefix}: requiredCitations contém referências duplicadas.`);
     requiredKeys.add(key);
   }
+}
+
+function annotationSignature(annotation) {
+  return JSON.stringify({
+    annotatorId: annotation.annotatorId,
+    verdict: annotation.verdict,
+    claims: (annotation.claims ?? [])
+      .map((claim) => ({ id: claim?.id ?? null, verifiable: claim?.verifiable ?? null, status: claim?.status ?? null }))
+      .sort((a, b) => String(a.id).localeCompare(String(b.id))),
+  });
 }
 
 function verdictOf(record, key) {
@@ -401,8 +441,31 @@ function metrics(records, seedKey) {
 function interAnnotatorAgreement(records) {
   const uniqueCases = new Map();
   for (const record of records) uniqueCases.set(record.caseId, record);
-  const pairs = [...uniqueCases.values()].map((record) => [record.annotations[0].verdict, record.annotations[1].verdict]);
-  if (!pairs.length) return { cases: 0, agreement: null, cohenKappa: null };
+  const cases = [...uniqueCases.values()];
+  const pairs = cases.map((record) => [record.annotations[0].verdict, record.annotations[1].verdict]);
+  let claimStatusShared = 0;
+  let claimStatusMatches = 0;
+  for (const record of cases) {
+    const [left, right] = record.annotations;
+    const rightStatuses = new Map(
+      (right.claims ?? [])
+        .filter((claim) => typeof claim?.id === "string" && CLAIM_STATUSES.has(claim.status))
+        .map((claim) => [claim.id, claim.status]),
+    );
+    for (const claim of left.claims ?? []) {
+      if (typeof claim?.id !== "string" || !CLAIM_STATUSES.has(claim.status) || !rightStatuses.has(claim.id)) continue;
+      claimStatusShared++;
+      if (rightStatuses.get(claim.id) === claim.status) claimStatusMatches++;
+    }
+  }
+  const claimStatusAgreement = claimStatusShared ? claimStatusMatches / claimStatusShared : null;
+  const claimStatus = {
+    claimStatusShared,
+    claimStatusAgreement,
+    claimStatusGate90: claimStatusAgreement == null ? null : claimStatusAgreement >= 0.9,
+    claimStatusInsufficientSample: claimStatusShared < MIN_SAMPLE_PER_STRATUM,
+  };
+  if (!pairs.length) return { cases: 0, agreement: null, cohenKappa: null, ...claimStatus };
   const observed = pairs.filter(([a, b]) => a === b).length / pairs.length;
   const labels = new Set(pairs.flat());
   const expected = [...labels].reduce((sum, label) => {
@@ -410,25 +473,321 @@ function interAnnotatorAgreement(records) {
     const b = pairs.filter(([, right]) => right === label).length / pairs.length;
     return sum + a * b;
   }, 0);
-  return { cases: pairs.length, agreement: observed, cohenKappa: expected === 1 ? null : (observed - expected) / (1 - expected) };
+  return {
+    cases: pairs.length,
+    agreement: observed,
+    cohenKappa: expected === 1 ? null : (observed - expected) / (1 - expected),
+    ...claimStatus,
+    note: "acordo e kappa de veredito por caso único; o acordo de status factual considera apenas claims presentes nas duas anotações; kappa é nulo quando a concordância esperada é 1",
+  };
+}
+
+function stratumRow(label, rows) {
+  const uniqueCases = new Set(rows.map((record) => record.caseId));
+  const abstained = rows.filter((record) => verdictOf(record, "prediction") === "no_verdict").length;
+  const goldAbstained = rows.filter((record) => verdictOf(record, "adjudicated") === "no_verdict").length;
+  const correct = rows.filter((record) => verdictOf(record, "adjudicated") === verdictOf(record, "prediction")).length;
+  const claims = claimCounts(rows);
+  const citations = citationCounts(rows);
+  return {
+    label,
+    runCount: rows.length,
+    uniqueCaseCount: uniqueCases.size,
+    verdictCoverage: rows.length ? (rows.length - abstained) / rows.length : null,
+    abstentionRate: rows.length ? abstained / rows.length : null,
+    goldAbstentionRate: rows.length ? goldAbstained / rows.length : null,
+    verdictAccuracy: rows.length ? correct / rows.length : null,
+    verdictMacroF1: macroF1(rows, (record) => verdictOf(record, "adjudicated"), (record) => verdictOf(record, "prediction")),
+    claimPrecision: claims.precision,
+    claimRecall: claims.recall,
+    requiredCitationRecall: citations.requiredCitationRecall,
+    transcriptWer: aggregateWordError(rows, "transcriptText"),
+    ocrWer: aggregateWordError(rows, "ocrText"),
+    insufficientSample: rows.length < MIN_SAMPLE_PER_STRATUM,
+    note: "cobertura de veredito, abstenção, precisão e revocação no mesmo recorte; recorte com amostra insuficiente não pode ser anunciado como validado",
+  };
+}
+
+function strata(records, keyOf) {
+  const groups = new Map();
+  for (const record of records) {
+    const label = keyOf(record);
+    const group = groups.get(label) ?? [];
+    group.push(record);
+    groups.set(label, group);
+  }
+  return [...groups.entries()]
+    .map(([label, rows]) => stratumRow(label, rows))
+    .sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+}
+
+function number(value, digits = 3) {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "n/d";
+}
+
+function renderTable(headers, rows) {
+  const cells = rows.map((row) => row.map((cell) => String(cell)));
+  const widths = headers.map((header, index) => Math.max(header.length, ...cells.map((cell) => cell[index]?.length ?? 0)));
+  const line = (values) => values.map((value, index) => value.padEnd(widths[index])).join("  ").replace(/\s+$/, "");
+  return [line(headers), line(widths.map((width) => "-".repeat(width))), ...cells.map(line)].join("\n");
+}
+
+function stratumTable(title, rows, labelHeader) {
+  const headers = [labelHeader, "n", "casos", "cob_veredito", "abstencao", "abst_gabarito", "acuracia", "macro_f1", "amostra_insuficiente"];
+  const body = rows.map((row) => [
+    row.label,
+    String(row.runCount),
+    String(row.uniqueCaseCount),
+    number(row.verdictCoverage),
+    number(row.abstentionRate),
+    number(row.goldAbstentionRate),
+    number(row.verdictAccuracy),
+    number(row.verdictMacroF1),
+    row.insufficientSample ? `SIM (n < ${MIN_SAMPLE_PER_STRATUM})` : "nao",
+  ]);
+  return [
+    `-- ${title} --`,
+    renderTable(headers, body),
+    `n = execuções no recorte; casos = caseId únicos; cob_veredito = fração de execuções com veredito emitido; abstencao = fração sem veredito do modelo; abst_gabarito = fração do gabarito sem veredito; frações em decimal (0–1).`,
+    "",
+  ].join("\n");
+}
+
+function splitSummary(records) {
+  const runsPerSplit = { dev: 0, eval: 0 };
+  const eventsPerSplit = { dev: new Set(), eval: new Set() };
+  const eventSplits = new Map();
+  let missingSplit = 0;
+  let missingEventId = 0;
+  for (const record of records) {
+    const hasSplit = SPLITS.has(record.split);
+    const hasEventId = typeof record.eventId === "string" && Boolean(record.eventId.trim());
+    if (!hasSplit) missingSplit++;
+    if (!hasEventId) missingEventId++;
+    if (hasSplit) runsPerSplit[record.split]++;
+    if (hasSplit && hasEventId) {
+      eventsPerSplit[record.split].add(record.eventId);
+      const splits = eventSplits.get(record.eventId) ?? new Set();
+      splits.add(record.split);
+      eventSplits.set(record.eventId, splits);
+    }
+  }
+  const leakedEventIds = [...eventSplits.entries()].filter(([, splits]) => splits.size > 1).map(([eventId]) => eventId).sort();
+  return {
+    runsPerSplit,
+    eventsPerSplit: { dev: eventsPerSplit.dev.size, eval: eventsPerSplit.eval.size },
+    eventCount: eventSplits.size,
+    missingSplit,
+    missingEventId,
+    leakedEventIds,
+    leakCheck: leakedEventIds.length ? "vazamento_entre_dev_e_eval" : "sem_evento_repetido_entre_dev_e_eval",
+  };
+}
+
+function checkSplit(records, path) {
+  const summary = splitSummary(records);
+  const uniqueCases = new Set(records.map((record) => record.caseId)).size;
+  const issues = [];
+  if (summary.missingSplit) issues.push(`${summary.missingSplit} execução(ões) sem campo "split" válido ("dev"|"eval").`);
+  if (summary.missingEventId) issues.push(`${summary.missingEventId} execução(ões) sem "eventId" (sem ele não dá para verificar separação por evento).`);
+  if (summary.leakedEventIds.length) issues.push(`vazamento de evento: ${summary.leakedEventIds.length} eventId(s) aparecem em dev e eval: ${summary.leakedEventIds.join(", ")}.`);
+  console.log("-- Verificação de split (--check-split) --");
+  console.log(`Corpus: ${path}`);
+  console.log(`Execuções: ${records.length} | casos únicos: ${uniqueCases} | eventos com eventId: ${summary.eventCount}`);
+  console.log(`Execuções por split: dev=${summary.runsPerSplit.dev}, eval=${summary.runsPerSplit.eval}, sem split=${summary.missingSplit}`);
+  console.log(`Eventos por split: dev=${summary.eventsPerSplit.dev}, eval=${summary.eventsPerSplit.eval}`);
+  if (issues.length) {
+    for (const issue of issues) console.log(`FALHOU: ${issue}`);
+    console.log("Corrija o corpus (scripts/corpus-tool.mjs split) antes de avaliar o conjunto reservado.");
+    process.exitCode = 1;
+    return;
+  }
+  console.log("OK: todo caso tem split e eventId; nenhum eventId aparece em dev e eval.");
+  console.log("Lembrete: o conjunto eval deve ser congelado antes do ajuste de prompts; esta checagem cobre eventId, não vazamento de conteúdo.");
+}
+
+const REQUIRE_KEYS = [
+  { key: "runs", description: "execuções no corpus", get: (context) => context.metrics.runCount },
+  { key: "uniqueCases", description: "casos únicos no corpus", get: (context) => context.metrics.uniqueCaseCount },
+  { key: "verdict.accuracy", description: "acurácia do veredito", get: (context) => context.metrics.verdict.accuracy },
+  { key: "verdict.macroF1", description: "macro-F1 do veredito (meta proposta no plano: >= 0.85)", get: (context) => context.metrics.verdict.macroF1 },
+  { key: "verdict.falsePositiveAccusationRate", description: "acusações falsas em casos não acusatórios (meta proposta: 0; menor é melhor)", lowerIsBetter: true, get: (context) => context.metrics.verdict.falsePositiveAccusationRate },
+  { key: "abstention.precision", description: "precisão da abstenção", get: (context) => context.metrics.abstention.precision },
+  { key: "abstention.recall", description: "revocação da abstenção sobre o gabarito sem veredito", get: (context) => context.metrics.abstention.recall },
+  { key: "claims.precision", description: "precisão de claims preditos", get: (context) => context.metrics.claims.precision },
+  { key: "claims.recall", description: "revocação de claims verificáveis adjudicados", get: (context) => context.metrics.claims.recall },
+  { key: "claims.statusMacroF1", description: "macro-F1 do status factual por claim", get: (context) => context.metrics.claims.statusMacroF1 },
+  { key: "citations.relevancePrecision", description: "precisão de pertinência de citações", get: (context) => context.metrics.citations.relevancePrecision },
+  { key: "citations.relationAccuracy", description: "acurácia da relação claim↔citação", get: (context) => context.metrics.citations.relationAccuracy },
+  { key: "citations.quoteSupportPrecision", description: "precisão de trecho fiel (meta proposta: >= 0.95)", get: (context) => context.metrics.citations.quoteSupportPrecision },
+  { key: "citations.requiredRecall", description: "revocação de citações exigidas pelo gabarito", get: (context) => context.metrics.citations.requiredCitationRecall },
+  { key: "media.transcriptWer", description: "WER de transcrição (menor é melhor)", lowerIsBetter: true, get: (context) => context.metrics.media.transcriptWer },
+  { key: "media.ocrWer", description: "WER de OCR (menor é melhor)", lowerIsBetter: true, get: (context) => context.metrics.media.ocrWer },
+  { key: "stability.agreement", description: "estabilidade entre rodadas repetidas (mesmo caseId e modelo)", get: (context) => context.metrics.stability.agreement },
+  { key: "annotators.verdictAgreement", description: "concordância de veredito entre os dois anotadores", get: (context) => context.annotators.agreement },
+  { key: "annotators.verdictKappa", description: "kappa de Cohen do veredito entre anotadores", get: (context) => context.annotators.cohenKappa },
+  { key: "annotators.claimStatusAgreement", description: "acordo de status factual por claim entre anotadores (meta proposta: >= 0.90)", get: (context) => context.annotators.claimStatusAgreement },
+];
+
+function requireKeyList() {
+  return REQUIRE_KEYS.map((spec) => `  ${spec.key} — ${spec.description}`).join("\n");
+}
+
+function parseRequirement(text) {
+  const match = /^([A-Za-z][A-Za-z0-9_.]*)\s*(>=|<=|==|!=|>|<|=)\s*(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)$/.exec(text.trim());
+  if (!match) {
+    const bare = /^[A-Za-z][A-Za-z0-9_.]*$/.test(text.trim());
+    throw new Error([
+      bare
+        ? `--require: falta o operador e o limiar em "${text.trim()}". Em shell, cite a expressão: --require "${text.trim()}>=0.85".`
+        : `--require: formato inválido em "${text}". Use chave>=valor (aceita também <=, >, <, =, !=) com limiar numérico.`,
+      "Chaves válidas (formato chave>=valor; para métricas marcadas como \"menor é melhor\" use <=):",
+      requireKeyList(),
+    ].join("\n"));
+  }
+  const spec = REQUIRE_KEYS.find((item) => item.key === match[1]);
+  if (!spec) {
+    throw new Error([
+      `--require: chave inexistente "${match[1]}".`,
+      "Chaves válidas (formato chave>=valor; para métricas marcadas como \"menor é melhor\" use <=):",
+      requireKeyList(),
+    ].join("\n"));
+  }
+  const operator = match[2] === "==" ? "=" : match[2];
+  return { key: spec.key, operator, threshold: Number(match[3]), description: spec.description, lowerIsBetter: Boolean(spec.lowerIsBetter) };
+}
+
+function compareValues(observed, operator, threshold) {
+  switch (operator) {
+    case ">=": return observed >= threshold;
+    case "<=": return observed <= threshold;
+    case ">": return observed > threshold;
+    case "<": return observed < threshold;
+    case "=": return observed === threshold;
+    case "!=": return observed !== threshold;
+    default: return false;
+  }
+}
+
+function evaluateRequirements(requirements, context) {
+  return requirements.map((requirement) => {
+    const spec = REQUIRE_KEYS.find((item) => item.key === requirement.key);
+    const observed = spec.get(context);
+    const available = typeof observed === "number" && Number.isFinite(observed);
+    return {
+      key: requirement.key,
+      operator: requirement.operator,
+      threshold: requirement.threshold,
+      observed: available ? observed : null,
+      available,
+      passed: available && compareValues(observed, requirement.operator, requirement.threshold),
+      lowerIsBetter: requirement.lowerIsBetter,
+      description: requirement.description,
+      reason: available ? null : "métrica indisponível no corpus (n insuficiente ou nenhum caso aplicável); não pode ser considerada atendida",
+    };
+  });
+}
+
+function gateTable(requirements) {
+  const headers = ["chave", "operador", "limiar", "observado", "resultado", "observacao"];
+  const body = requirements.map((item) => [
+    item.key,
+    item.operator,
+    number(item.threshold),
+    item.observed == null ? "n/d" : number(item.observed),
+    item.passed ? "PASSOU" : "FALHOU",
+    item.available ? (item.lowerIsBetter ? "menor é melhor" : "") : "indisponível (n insuficiente)",
+  ]);
+  return [`-- Gates (--require) --`, renderTable(headers, body), ""].join("\n");
+}
+
+function usage() {
+  return [
+    "Uso: node scripts/evaluate-factual.mjs <corpus.jsonl> [opções]",
+    "",
+    "Cada linha precisa de duas anotações humanas independentes, adjudicação, predição e mapeamento de claims/citações.",
+    "Campos opcionais aceitos por linha: split (\"dev\"|\"eval\"), eventId, category e annotatorA/annotatorB",
+    "(objetos completos ou apenas {annotatorId} referenciando annotations). Linhas em branco e linhas iniciadas por \"#\" são ignoradas.",
+    "",
+    "Opções:",
+    "  --check-split             valida o schema e falha (exit != 0) se algum caso não tiver split/eventId",
+    "                            ou se o mesmo eventId aparecer em dev e eval; não calcula métricas nem gates",
+    "  --require chave>=valor    gate repetível; falha (exit != 0) quando a métrica global não atinge o limiar",
+    "                            ou quando a métrica está indisponível; aceita <= para métricas \"menor é melhor\"",
+    "  --json                    imprime somente o relatório JSON (sem o resumo legível)",
+    "  --help                    esta ajuda",
+    "",
+    "Chaves válidas em --require (avaliadas no corpus inteiro, com o n do relatório):",
+    requireKeyList(),
+    "",
+    "Nenhuma métrica deve ser publicada isoladamente: sempre reportar recorte, n, intervalo de incerteza e o aviso de",
+    `amostra insuficiente (n < ${MIN_SAMPLE_PER_STRATUM}).`,
+  ].join("\n");
+}
+
+function printUsage() {
+  console.log(usage());
+}
+
+function parseArgs(argv) {
+  const options = { path: null, checkSplit: false, json: false, help: false, requirementTexts: [] };
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (arg === "--help" || arg === "-h") { options.help = true; continue; }
+    if (arg === "--check-split") { options.checkSplit = true; continue; }
+    if (arg === "--json") { options.json = true; continue; }
+    if (arg === "--require") {
+      const value = argv[++index];
+      if (value == null) throw new Error("--require: informe a expressão chave>=valor.");
+      options.requirementTexts.push(value);
+      continue;
+    }
+    if (arg.startsWith("--require=")) { options.requirementTexts.push(arg.slice("--require=".length)); continue; }
+    if (arg.startsWith("-")) throw new Error(`Opção desconhecida: ${arg}.\n${usage()}`);
+    if (options.path) throw new Error(`Corpus informado mais de uma vez: ${arg}.`);
+    options.path = arg;
+  }
+  return options;
+}
+
+function printHumanReport({ path, records, results, byModality, byCategory, split, gates }) {
+  const uniqueCases = new Set(records.map((record) => record.caseId)).size;
+  console.log("== Avaliação factual — resumo legível ==");
+  console.log(`Corpus: ${path}`);
+  console.log(`Execuções: ${records.length} | casos únicos: ${uniqueCases} | grupos (metodologia × modelo × modalidade): ${results.length}`);
+  console.log(`Split: dev=${split.runsPerSplit.dev}, eval=${split.runsPerSplit.eval}, sem split=${split.missingSplit} | eventos: ${split.eventCount} (${split.leakCheck})`);
+  console.log("");
+  console.log(`AVISO: ${PUBLICATION_WARNING}`);
+  console.log("");
+  console.log(stratumTable("Por modalidade (n, cobertura e abstenção)", byModality, "modalidade"));
+  console.log(stratumTable("Por categoria (n, cobertura e abstenção)", byCategory, "categoria"));
+  const insufficient = [...byModality, ...byCategory].filter((row) => row.insufficientSample);
+  if (insufficient.length) {
+    console.log(`AVISO: amostra insuficiente (n < ${MIN_SAMPLE_PER_STRATUM}) em ${insufficient.length} recorte(s): ${insufficient.map((row) => `${row.label} (n=${row.runCount})`).join(", ")}.`);
+    console.log("Recorte com amostra insuficiente não pode ser anunciado como validado; amplie a amostra ou aprove explicitamente um escopo menor.");
+    console.log("");
+  }
+  if (gates.length) console.log(gateTable(gates));
+  console.log("-- Relatório JSON --");
 }
 
 async function main() {
-  const path = process.argv[2];
-  if (!path || path === "--help") {
-    console.log("Uso: node scripts/evaluate-factual.mjs <corpus.jsonl>");
-    console.log("Cada linha precisa de duas anotações humanas independentes, adjudicação, predição e mapeamento de claims/citações.");
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help || !options.path) {
+    printUsage();
     return;
   }
-  const contents = await readFile(path, "utf8");
+  const requirements = options.requirementTexts.map(parseRequirement);
+  const contents = await readFile(options.path, "utf8");
   const records = [];
   const runIds = new Set();
   const caseGold = new Map();
   for (const [index, line] of contents.split(/\r?\n/).entries()) {
-    if (!line.trim()) continue;
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith(COMMENT_PREFIX)) continue;
     let record;
     try {
-      record = JSON.parse(line);
+      record = JSON.parse(trimmed);
       validate(record, index + 1);
     } catch (error) {
       throw new Error(error instanceof SyntaxError ? `JSONL line ${index + 1}: JSON inválido.` : error.message);
@@ -451,6 +810,11 @@ async function main() {
   }
   if (!records.length) throw new Error("O corpus não contém linhas avaliáveis.");
 
+  if (options.checkSplit) {
+    checkSplit(records, options.path);
+    return;
+  }
+
   const groups = new Map();
   for (const record of records) {
     const key = `${record.methodologyVersion}\u0000${record.modelConfiguration}\u0000${record.modality}`;
@@ -469,19 +833,40 @@ async function main() {
     };
   });
   const totalUniqueCases = new Set(records.map((record) => record.caseId)).size;
+  const globalMetrics = metrics(records, "global");
+  const globalAnnotators = interAnnotatorAgreement(records);
+  const byModality = strata(records, (record) => record.modality);
+  const byCategory = strata(records, (record) => (typeof record.category === "string" && record.category.trim() ? record.category : "(sem categoria)"));
+  const split = splitSummary(records);
+  const gates = evaluateRequirements(requirements, { metrics: globalMetrics, annotators: globalAnnotators });
+  if (split.leakedEventIds.length) {
+    console.warn(`AVISO: vazamento de evento entre splits: ${split.leakedEventIds.join(", ")}. Rode --check-split e corrija o corpus antes de interpretar o conjunto reservado.`);
+  }
+  if (!options.json) printHumanReport({ path: options.path, records, results, byModality, byCategory, split, gates });
   console.log(JSON.stringify({
     protocol: "iev-factual-evaluation-1",
     annotationRequirements: "2 anotadores independentes e adjudicação declarados no corpus; o harness não verifica sua autenticidade ou qualidade",
+    publicationWarning: PUBLICATION_WARNING,
     runCount: records.length,
     uniqueCaseCount: totalUniqueCases,
     uniqueGroupCount: new Set(records.map((record) => record.groupId)).size,
     minimumUniqueCasesRecommended: 200,
     minimumUniqueCaseCountMet: totalUniqueCases >= 200,
+    minimumRunsPerStratum: MIN_SAMPLE_PER_STRATUM,
+    stratifiedReporting: "por modalidade e por categoria, com n, cobertura de veredito, abstenção e aviso de amostra insuficiente quando n < 10; recorte pequeno não pode ser anunciado como validado",
     benchmarkReadiness: "not_assessed_by_harness",
     confidenceIntervals: "bootstrap percentile de 95%, 1000 amostras, reprodutível e agrupado por caseId; null quando há menos de dois casos distintos",
+    splitCoverage: split,
+    globalMetrics,
+    annotatorAgreement: globalAnnotators,
+    byModality,
+    byCategory,
+    requirements: gates,
+    requirementsMet: gates.length ? gates.every((gate) => gate.passed) : null,
     results,
     limitation: "A validade depende da composição do corpus, independência real dos anotadores, qualidade da adjudicação e protocolo. O harness valida apenas estrutura; 200 casos são um limiar inicial de corpus, não prova de representatividade ou precisão.",
   }, null, 2));
+  if (gates.some((gate) => !gate.passed)) process.exitCode = 1;
 }
 
 main().catch((error) => fail(error?.message ?? String(error)));

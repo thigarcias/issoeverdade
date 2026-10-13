@@ -1,13 +1,25 @@
 import { createHash } from "node:crypto";
 
-const MAX_FILE_BYTES = 3 * 1024 * 1024;
-const MAX_BASE64_CHARS = Math.ceil(MAX_FILE_BYTES / 3) * 4;
+const DEFAULT_MAX_FILE_BYTES = 3 * 1024 * 1024;
+const MAX_TEXT_CHARS = 8000;
 const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MEDIA_MIMES = new Set([
   ...IMAGE_MIMES,
   "video/mp4", "video/quicktime", "video/webm",
   "audio/mpeg", "audio/mp4", "audio/wav", "audio/webm", "audio/ogg",
 ]);
+
+/** Limites de entrada. Upload e texto são recusados acima do teto, nunca truncados. */
+export function uploadLimits(env = process.env) {
+  const configured = Number(env.IEV_MAX_UPLOAD_BYTES);
+  const maxFileBytes = Number.isFinite(configured) && configured > 0 ? Math.round(configured) : DEFAULT_MAX_FILE_BYTES;
+  const text = Number(env.IEV_MAX_TEXT_CHARS);
+  return {
+    maxFileBytes,
+    maxBase64Chars: Math.ceil(maxFileBytes / 3) * 4,
+    maxTextChars: Number.isFinite(text) && text > 0 ? Math.round(text) : MAX_TEXT_CHARS,
+  };
+}
 
 function detectedMime(bytes) {
   if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return "image/png";
@@ -37,14 +49,21 @@ function mimeCompatible(declared, detected) {
     (normalized === "audio/webm" && detected === "video/webm");
 }
 
-export function normalizeVerifyInput(value) {
+export function normalizeVerifyInput(value, env = process.env) {
+  const limits = uploadLimits(env);
   const kind = value?.kind;
   if (!["link", "text", "video", "image"].includes(kind)) {
     const error = new Error("bad_kind");
     error.status = 400;
     throw error;
   }
-  const text = String(value?.text ?? "").slice(0, 8000);
+  const rawText = String(value?.text ?? "");
+  if (rawText.length > limits.maxTextChars) {
+    const error = new Error("text_too_long");
+    error.status = 413;
+    throw error;
+  }
+  const text = rawText;
   const fileName = value?.fileName ? String(value.fileName).slice(0, 200) : null;
   const out = { kind, text, fileName, fileBuffer: null, fileMime: null, fileHash: null };
   if ((value?.fileData == null || value.fileData === "") && !Buffer.isBuffer(value?.fileBuffer)) return out;
@@ -59,7 +78,7 @@ export function normalizeVerifyInput(value) {
     bytes = value.fileBuffer;
   } else {
     const encoded = String(value.fileData);
-    if (encoded.length > MAX_BASE64_CHARS || encoded.length === 0 || encoded.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+    if (encoded.length > limits.maxBase64Chars || encoded.length === 0 || encoded.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
       const error = new Error("invalid_upload_encoding");
       error.status = 400;
       throw error;
@@ -71,7 +90,7 @@ export function normalizeVerifyInput(value) {
       throw error;
     }
   }
-  if (bytes.length === 0 || bytes.length > MAX_FILE_BYTES) {
+  if (bytes.length === 0 || bytes.length > limits.maxFileBytes) {
     const error = new Error("upload_too_large");
     error.status = 413;
     throw error;
@@ -89,4 +108,4 @@ export function normalizeVerifyInput(value) {
   return out;
 }
 
-export const MAX_UPLOAD_BYTES = MAX_FILE_BYTES;
+export const MAX_UPLOAD_BYTES = DEFAULT_MAX_FILE_BYTES;

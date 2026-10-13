@@ -8,72 +8,147 @@
 // Chamado pelo runVerify; também usável via CLI: node scripts/fetch-media.mjs <url>
 // Local com yt-dlp: camadas 1-2 diretas, sem latência. Vercel: delega ao worker (0),
 // cai para 3-4 se o worker falhar.
+// Todo acesso remoto passa por server/net.js (destinos públicos, teto de bytes por
+// transferência) e todo subprocesso por server/proc.js (tempo + vigia de disco).
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { byteBudget, hostPolicy, parseUrlStrict, safeFetch, urlHost } from "./net.js";
+import { runLimited } from "./proc.js";
+import { clip, stripHtml } from "./text.js";
 
 const execFileAsync = promisify(execFile);
-const YTDLP_TIMEOUT_MS = 60_000;
 const MAX_DESC = 2000;
 const WORKER_URL = (process.env.MEDIA_WORKER_URL || "").replace(/\/$/, "");
 const WORKER_SECRET = process.env.MEDIA_WORKER_SECRET || "";
 
-const MAX_WORKER_AUDIO_BYTES = 20 * 1024 * 1024;
+/** Limites vigentes por job. Valores são operacionais e ficam registrados nas tentativas. */
+export function mediaLimits(env = process.env) {
+  const int = (value, fallback) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Math.round(Number(value)) : fallback);
+  return {
+    maxMediaSeconds: int(env.IEV_MAX_MEDIA_SECONDS, 900),
+    maxTransferBytes: int(env.IEV_MAX_DOWNLOAD_BYTES, 64 * 1024 * 1024),
+    maxTempBytes: int(env.IEV_MAX_TEMP_BYTES, 128 * 1024 * 1024),
+    maxFileBytes: int(env.IEV_MAX_MEDIA_FILE_BYTES, 32 * 1024 * 1024),
+    maxDocBytes: int(env.IEV_MAX_DOC_BYTES, 8 * 1024 * 1024),
+    ytdlpTimeoutMs: int(env.IEV_YTDLP_TIMEOUT_MS, 150_000),
+    workerTimeoutMs: int(env.IEV_WORKER_TIMEOUT_MS, 180_000),
+  };
+}
 
-/** Camada 0: delega probe ao worker remoto (Fly.io). */
-async function probeViaWorker(url) {
+const MAX_WORKER_RESPONSE_BYTES = 32 * 1024 * 1024;
+const MAX_WORKER_AUDIO_BYTES = 20 * 1024 * 1024;
+const MAX_WORKER_FRAMES_BYTES = 2_500_000;
+const MAX_WORKER_FRAMES = 10;
+
+/**
+ * Política de rede usada para falar com o worker: porta do worker permitida e
+ * endereço privado aceito apenas com opt-in explícito (worker local em dev).
+ */
+function workerPolicy() {
+  const base = hostPolicy();
+  if (!WORKER_URL) return base;
+  try {
+    const parsed = new URL(WORKER_URL);
+    const port = parsed.port ? Number(parsed.port) : parsed.protocol === "https:" ? 443 : 80;
+    const allowPrivate = base.allowPrivate || process.env.IEV_ALLOW_PRIVATE_WORKER === "1";
+    return { allowPrivate, ports: [...new Set([...base.ports, port])] };
+  } catch {
+    return base;
+  }
+}
+
+/** POST JSON ao worker com teto de resposta e timeout único. */
+async function workerPost(path, payload, { timeoutMs = mediaLimits().workerTimeoutMs } = {}) {
   if (!WORKER_URL) return { ok: false, reason: "no-worker-url" };
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 75_000);
-    const res = await fetch(`${WORKER_URL}/fetch`, {
+    const response = await safeFetch(`${WORKER_URL}${path}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(WORKER_SECRET ? { Authorization: `Bearer ${WORKER_SECRET}` } : {}),
       },
-      body: JSON.stringify({ url }),
-      signal: ctrl.signal,
+      body: JSON.stringify(payload),
+      maxBytes: MAX_WORKER_RESPONSE_BYTES,
+      timeoutMs,
+      policy: workerPolicy(),
     });
-    clearTimeout(t);
-    if (!res.ok) return { ok: false, reason: `worker-http-${res.status}` };
-    const data = await res.json();
-    if (!data?.ok) return { ok: false, reason: data?.reason ?? "worker-probe-failed" };
-    return { ok: true, source: "worker:yt-dlp", ...data.media, _context: data.context };
-  } catch {
-    return { ok: false, reason: "worker-unreachable" };
+    if (!response.ok) return { ok: false, reason: `worker-http-${response.status}` };
+    try {
+      return JSON.parse(response.body.toString("utf8"));
+    } catch {
+      return { ok: false, reason: "worker-bad-json" };
+    }
+  } catch (error) {
+    const code = error?.code ?? "network_failed";
+    return { ok: false, reason: code === "timeout" ? "worker-timeout" : `worker-${code}` };
   }
+}
+
+/** Normaliza frames do worker: limite de quantidade, tamanho por frame e base64 válido. */
+export function normalizeWorkerFrames(value) {
+  const frames = [];
+  let bytes = 0;
+  for (const item of Array.isArray(value) ? value : []) {
+    if (frames.length >= MAX_WORKER_FRAMES) break;
+    const data = typeof item === "string" ? item : item?.image_b64 ?? item?.data;
+    if (typeof data !== "string" || data.length === 0 || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) continue;
+    const size = Math.floor((data.length * 3) / 4);
+    if (size > 600_000 || bytes + size > MAX_WORKER_FRAMES_BYTES) break;
+    bytes += size;
+    const seconds = Number(item?.timestamp_sec ?? item?.timestampSec);
+    frames.push({ data, timestampSec: Number.isFinite(seconds) ? seconds : null });
+  }
+  return frames;
+}
+
+/** Camada 0: delega probe ao worker remoto (Fly.io). */
+async function probeViaWorker(url) {
+  const data = await workerPost("/fetch", { url }, { timeoutMs: 90_000 });
+  if (!data?.ok) return { ok: false, reason: data?.reason ?? "worker-probe-failed" };
+  return { ok: true, source: "worker:yt-dlp", ...data.media, _context: data.context };
 }
 
 /** Camada 0 (áudio): baixa MP3 via worker remoto, salva local para transcrever. */
 async function downloadViaWorker(url, outDir) {
-  if (!WORKER_URL) return { ok: false, reason: "no-worker-url" };
+  const limits = mediaLimits();
+  const data = await workerPost("/audio", { url });
+  if (!data?.ok || typeof data.audio_b64 !== "string") return { ok: false, reason: data?.reason ?? "worker-audio-failed" };
+  const encoded = data.audio_b64;
+  if (encoded.length === 0 || encoded.length > Math.ceil(MAX_WORKER_AUDIO_BYTES / 3) * 4) return { ok: false, reason: "worker-audio-too-large" };
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.length === 0 || bytes.length > MAX_WORKER_AUDIO_BYTES || bytes.toString("base64") !== encoded) {
+    return { ok: false, reason: "worker-audio-invalid" };
+  }
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  // Vercel/Lambda: filesystem read-only exceto /tmp.
+  const dir = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? tmpdir() : outDir;
+  await mkdir(dir, { recursive: true });
+  const file = `${dir}/worker-${Date.now().toString(36)}.mp3`;
+  await writeFile(file, bytes);
+  const checked = await enforceDuration(file, limits.maxMediaSeconds);
+  if (checked.ok === false) {
+    const { rm } = await import("node:fs/promises");
+    await rm(file, { force: true }).catch(() => {});
+    return { ok: false, reason: checked.reason };
+  }
+  return { ok: true, file, via: "worker", durationSec: checked.durationSec };
+}
+
+/** Duração real do arquivo (ffprobe) e recusa acima do teto configurado. */
+export async function enforceDuration(file, maxSeconds) {
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 150_000);
-    const res = await fetch(`${WORKER_URL}/audio`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(WORKER_SECRET ? { Authorization: `Bearer ${WORKER_SECRET}` } : {}),
-      },
-      body: JSON.stringify({ url }),
-      signal: ctrl.signal,
-    });
-    clearTimeout(t);
-    if (!res.ok) return { ok: false, reason: `worker-http-${res.status}` };
-    const data = await res.json();
-    if (!data?.ok || !data.audio_b64) return { ok: false, reason: data?.reason ?? "worker-audio-failed" };
-    const { mkdir, writeFile } = await import("node:fs/promises");
-    const { tmpdir } = await import("node:os");
-    // Vercel/Lambda: filesystem read-only exceto /tmp.
-    const dir = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? tmpdir() : outDir;
-    await mkdir(dir, { recursive: true });
-    const file = `${dir}/worker-${Date.now().toString(36)}.mp3`;
-    await writeFile(file, Buffer.from(data.audio_b64, "base64"));
-    return { ok: true, file, via: "worker" };
+    const { stdout } = await execFileAsync(
+      "ffprobe",
+      ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", file],
+      { timeout: 20_000 },
+    );
+    const seconds = Math.ceil(Number(stdout.trim()) || 0);
+    if (seconds > maxSeconds) return { ok: false, reason: `duration-limit:${seconds}s` };
+    return { ok: true, durationSec: seconds || null };
   } catch {
-    return { ok: false, reason: "worker-unreachable" };
+    return { ok: true, durationSec: null, detail: "ffprobe-unavailable" };
   }
 }
 
@@ -82,22 +157,14 @@ export async function processUploadedMedia(fileBuffer, mime) {
   if (!WORKER_URL || !Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) {
     return { ok: false, reason: !WORKER_URL ? "no-worker-url" : "empty-upload" };
   }
+  const limits = mediaLimits();
+  const data = await workerPost("/upload", { file_b64: fileBuffer.toString("base64"), mime });
+  if (!data?.ok) {
+    const reason = /payload|too-large|unsupported|invalid/.test(String(data?.reason ?? "")) ? "upload-too-large" : data?.reason ?? "worker-upload-failed";
+    return { ok: false, reason };
+  }
   let audioDir = null;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 180_000);
   try {
-    const response = await fetch(`${WORKER_URL}/upload`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(WORKER_SECRET ? { Authorization: `Bearer ${WORKER_SECRET}` } : {}),
-      },
-      body: JSON.stringify({ file_b64: fileBuffer.toString("base64"), mime }),
-      signal: controller.signal,
-    });
-    if (!response.ok) return { ok: false, reason: `worker-http-${response.status}` };
-    const data = await response.json();
-    if (!data?.ok) return { ok: false, reason: data?.reason ?? "worker-upload-failed" };
     let audio = null;
     if (typeof data.audio?.audio_b64 === "string") {
       const encoded = data.audio.audio_b64;
@@ -114,12 +181,21 @@ export async function processUploadedMedia(fileBuffer, mime) {
         }
       }
     }
+    const durationSec = Number.isFinite(data.duration_sec) ? data.duration_sec : null;
+    if (durationSec && durationSec > limits.maxMediaSeconds) {
+      if (audioDir) {
+        const { rm } = await import("node:fs/promises");
+        await rm(audioDir, { recursive: true, force: true }).catch(() => {});
+      }
+      return { ok: false, reason: `duration-limit:${durationSec}s` };
+    }
+    const frames = normalizeWorkerFrames(data.frames);
     return {
       ok: true,
       audio,
-      frames: Array.isArray(data.frames) ? data.frames : [],
-      count: Array.isArray(data.frames) ? data.frames.length : 0,
-      durationSec: Number.isFinite(data.duration_sec) ? data.duration_sec : null,
+      frames,
+      count: frames.length,
+      durationSec,
       via: "worker-upload",
     };
   } catch (error) {
@@ -127,9 +203,7 @@ export async function processUploadedMedia(fileBuffer, mime) {
       const { rm } = await import("node:fs/promises");
       await rm(audioDir, { recursive: true, force: true }).catch(() => {});
     }
-    return { ok: false, reason: error?.name === "AbortError" ? "worker-upload-timeout" : "worker-unreachable" };
-  } finally {
-    clearTimeout(timeout);
+    return { ok: false, reason: String(error?.code ?? error?.message ?? "worker-upload-failed").slice(0, 120) };
   }
 }
 
@@ -138,7 +212,7 @@ let ytdlpAvailable = null;
 export async function hasYtDlp() {
   if (ytdlpAvailable !== null) return ytdlpAvailable;
   try {
-    await execFileAsync("yt-dlp", ["--version"], { timeout: 10_000 });
+    await execFileAsync("yt-dlp", ["--version"], { timeout: 4_000 });
     ytdlpAvailable = true;
   } catch {
     ytdlpAvailable = false;
@@ -156,13 +230,16 @@ function pickText(...candidates) {
 /** Camada 1: metadados completos via yt-dlp (sem baixar o arquivo). */
 export async function probeWithYtDlp(url) {
   if (!(await hasYtDlp())) return { ok: false, reason: "no-ytdlp" };
+  const run = await runLimited(
+    "yt-dlp",
+    ["--no-playlist", "--dump-json", "--no-warnings", "--socket-timeout", "20", "--retries", "1", url],
+    { timeoutMs: 60_000, maxOutputBytes: 8 * 1024 * 1024 },
+  );
+  if (!run.ok) {
+    return { ok: false, reason: run.reason === "timeout" ? "ytdlp-timeout" : "ytdlp-failed", detail: clip(run.stderr, 300) };
+  }
   try {
-    const { stdout } = await execFileAsync(
-      "yt-dlp",
-      ["--no-playlist", "--dump-json", "--no-warnings", "--socket-timeout", "20", url],
-      { timeout: YTDLP_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 },
-    );
-    const info = JSON.parse(stdout);
+    const info = JSON.parse(run.stdout);
     const desc = pickText(info.description, info.title);
     return {
       ok: true,
@@ -180,7 +257,7 @@ export async function probeWithYtDlp(url) {
       id: String(info.id ?? ""),
     };
   } catch (err) {
-    return { ok: false, reason: "ytdlp-failed", detail: String(err?.message ?? err).slice(0, 300) };
+    return { ok: false, reason: "ytdlp-bad-json", detail: clip(err?.message ?? err, 300) };
   }
 }
 
@@ -199,24 +276,37 @@ export async function downloadAudio(url, outDir = "./media-tmp") {
 }
 
 async function downloadViaYtDlp(url, outDir) {
-  const { mkdir } = await import("node:fs/promises");
+  const limits = mediaLimits();
+  const { mkdir, rm } = await import("node:fs/promises");
   await mkdir(outDir, { recursive: true });
-  try {
-    const { stdout } = await execFileAsync(
-      "yt-dlp",
-      [
-        "--no-playlist", "-x", "--audio-format", "mp3", "--audio-quality", "5",
-        "--no-warnings", "--print", "after_move:filepath",
-        "--extractor-args", "youtube:player_client=android,web",
-        "-o", `${outDir}/%(id)s.%(ext)s`, url,
-      ],
-      { timeout: 180_000, maxBuffer: 4 * 1024 * 1024 },
-    );
-    const file = stdout.trim().split("\n").pop()?.trim() ?? "";
-    return file ? { ok: true, file, via: "yt-dlp" } : { ok: false, reason: "no-file" };
-  } catch (err) {
-    return { ok: false, reason: "download-failed", detail: String(err?.message ?? err).slice(0, 200) };
+  const maxBytes = Math.min(limits.maxTransferBytes, limits.maxFileBytes);
+  const run = await runLimited(
+    "yt-dlp",
+    [
+      "--no-playlist", "-x", "--audio-format", "mp3", "--audio-quality", "5",
+      "--no-warnings", "--no-progress", "--retries", "2", "--socket-timeout", "20",
+      "--max-filesize", String(maxBytes), "--max-downloads", "1",
+      "--print", "after_move:filepath",
+      "--extractor-args", "youtube:player_client=android,web",
+      "-o", `${outDir}/%(id)s.%(ext)s`, url,
+    ],
+    { timeoutMs: limits.ytdlpTimeoutMs, watchDir: outDir, maxDirBytes: limits.maxTempBytes, maxOutputBytes: 4 * 1024 * 1024 },
+  );
+  const file = run.stdout.trim().split("\n").pop()?.trim() ?? "";
+  if (!run.ok || !file) {
+    if (file) await rm(file, { force: true }).catch(() => {});
+    const reason = run.killed
+      ? run.reason === "disk_limit" ? "disk-limit" : run.reason === "timeout" ? "download-timeout" : `kill:${run.reason}`
+      : /larger than max-filesize/i.test(run.stderr) ? "file-too-large"
+        : "download-failed";
+    return { ok: false, reason, detail: clip(run.stderr, 200) };
   }
+  const duration = await enforceDuration(file, limits.maxMediaSeconds);
+  if (duration.ok === false) {
+    await rm(file, { force: true }).catch(() => {});
+    return { ok: false, reason: duration.reason };
+  }
+  return { ok: true, file, via: "yt-dlp", durationSec: duration.durationSec };
 }
 
 /** Camada 2b: frames do vídeo — worker remoto → yt-dlp+ffmpeg local. */
@@ -240,63 +330,49 @@ const MAX_FRAMES = 10;
 const MAX_FRAMES_BYTES = 2_500_000;
 
 async function framesViaWorker(url) {
-  if (!WORKER_URL) return { ok: false, reason: "no-worker-url" };
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 180_000);
-    const res = await fetch(`${WORKER_URL}/frames`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(WORKER_SECRET ? { Authorization: `Bearer ${WORKER_SECRET}` } : {}),
-      },
-      body: JSON.stringify({ url }),
-      signal: ctrl.signal,
-    });
-    clearTimeout(t);
-    if (!res.ok) return { ok: false, reason: `worker-http-${res.status}` };
-    const data = await res.json();
-    if (!data?.ok || !Array.isArray(data.frames) || data.frames.length === 0) {
-      return { ok: false, reason: data?.reason ?? "worker-frames-failed" };
-    }
-    return { ok: true, frames: data.frames, count: data.frames.length, seconds: data.seconds ?? null, via: "worker" };
-  } catch {
-    return { ok: false, reason: "worker-unreachable" };
-  }
+  const data = await workerPost("/frames", { url });
+  if (!data?.ok) return { ok: false, reason: data?.reason ?? "worker-frames-failed" };
+  const frames = normalizeWorkerFrames(data.frames);
+  if (!frames.length) return { ok: false, reason: "no-frames" };
+  return { ok: true, frames, count: frames.length, seconds: data.seconds ?? null, via: "worker" };
 }
 
 async function framesViaYtDlp(url) {
+  const limits = mediaLimits();
   const { mkdir, readdir, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const base = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? tmpdir() : "./media-tmp";
   const dir = `${base}/frames-${Date.now().toString(36)}`;
   await mkdir(dir, { recursive: true });
   try {
-    await execFileAsync(
+    const download = await runLimited(
       "yt-dlp",
       [
         "--no-playlist", "-f", "worst[height<=480]/best[height<=480]/worst",
-        "--no-warnings", "--socket-timeout", "20",
+        "--no-warnings", "--no-progress", "--socket-timeout", "20", "--retries", "2",
+        "--max-filesize", String(Math.min(limits.maxFileBytes, limits.maxTransferBytes)),
+        "--max-downloads", "1",
         "--extractor-args", "youtube:player_client=android,web",
         "-o", `${dir}/v.%(ext)s`, url,
       ],
-      { timeout: 150_000, maxBuffer: 4 * 1024 * 1024 },
+      { timeoutMs: limits.ytdlpTimeoutMs, watchDir: dir, maxDirBytes: limits.maxTempBytes, maxOutputBytes: 4 * 1024 * 1024 },
     );
+    if (!download.ok) {
+      return {
+        ok: false,
+        reason: download.killed ? (download.reason === "disk_limit" ? "disk-limit" : "download-timeout") : /larger than max-filesize/i.test(download.stderr) ? "file-too-large" : "download-failed",
+        detail: clip(download.stderr, 200),
+      };
+    }
     const file = (await readdir(dir)).find((f) => f.startsWith("v."));
     if (!file) return { ok: false, reason: "no-file" };
     const src = `${dir}/${file}`;
-    let seconds = 0;
-    try {
-      const { stdout } = await execFileAsync(
-        "ffprobe",
-        ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", src],
-        { timeout: 30_000 },
-      );
-      seconds = Math.ceil(Number(stdout.trim()) || 0);
-    } catch { /* segue sem duração */ }
-    const span = Math.max(1, Math.min(300, seconds || 60));
+    const duration = await enforceDuration(src, limits.maxMediaSeconds);
+    if (duration.ok === false) return { ok: false, reason: duration.reason };
+    const seconds = duration.durationSec ?? 0;
+    const span = Math.max(1, Math.min(limits.maxMediaSeconds, seconds || 60));
     const fps = Math.min(1, MAX_FRAMES / span);
-    await execFileAsync(
+    const frames = await runLimited(
       "ffmpeg",
       [
         "-y", "-hide_banner", "-loglevel", "error", "-i", src,
@@ -304,66 +380,85 @@ async function framesViaYtDlp(url) {
         "-frames:v", String(MAX_FRAMES), "-q:v", "7",
         `${dir}/f-%02d.jpg`,
       ],
-      { timeout: 120_000 },
+      { timeoutMs: 120_000, maxOutputBytes: 1024 * 1024 },
     );
+    if (!frames.ok) return { ok: false, reason: frames.killed ? "frames-timeout" : "frames-failed", detail: clip(frames.stderr, 200) };
     const jpgs = (await readdir(dir)).filter((f) => /^f-\d+\.jpg$/.test(f)).sort();
-    const frames = [];
+    const collected = [];
     let bytes = 0;
     const { readFile } = await import("node:fs/promises");
     for (const [index, j] of jpgs.slice(0, MAX_FRAMES).entries()) {
       const buf = await readFile(`${dir}/${j}`);
       if (bytes + buf.length > MAX_FRAMES_BYTES) break;
       bytes += buf.length;
-      frames.push({ data: buf.toString("base64"), timestampSec: Math.round((index / fps) * 100) / 100 });
+      collected.push({ data: buf.toString("base64"), timestampSec: Math.round((index / fps) * 100) / 100 });
     }
-    if (!frames.length) return { ok: false, reason: "no-frames" };
-    return { ok: true, frames, count: frames.length, seconds: seconds || null, via: "yt-dlp" };
+    if (!collected.length) return { ok: false, reason: "no-frames" };
+    return { ok: true, frames: collected, count: collected.length, seconds: seconds || null, via: "yt-dlp" };
   } catch (err) {
-    return { ok: false, reason: "frames-failed", detail: String(err?.message ?? err).slice(0, 200) };
+    return { ok: false, reason: "frames-failed", detail: clip(err?.message ?? err, 200) };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
+/** Motivo estável para tentativas registradas no resultado. */
+function netReason(error) {
+  const code = error?.code ?? "network_failed";
+  if (["private_address", "private_hostname", "port_not_allowed", "bad_protocol", "bad_url", "url_credentials"].includes(code)) return `blocked:${code}`;
+  if (code === "too_large") return "file-too-large";
+  if (code === "budget_exhausted") return "byte-budget-exhausted";
+  if (code === "timeout") return "download-timeout";
+  if (code === "too_many_redirects") return "too-many-redirects";
+  return `net:${code}`;
+}
+
 async function downloadViaDirectUrl(url, outDir) {
   // Sem yt-dlp (ex.: Vercel): procura og:video/twitter:player:stream no HTML e baixa direto.
+  const limits = mediaLimits();
+  const budget = byteBudget(limits.maxTransferBytes);
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 20_000);
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36", Accept: "text/html" },
+    const page = await safeFetch(url, {
+      maxBytes: 512 * 1024,
+      truncate: true,
+      timeoutMs: 20_000,
+      headers: { Accept: "text/html" },
+      budget,
     });
-    clearTimeout(t);
-    if (!res.ok) return { ok: false, reason: "no-ytdlp-no-direct" };
-    const html = (await res.text()).slice(0, 200_000);
+    if (!page.ok) return { ok: false, reason: `direct-http-${page.status}` };
+    const html = page.body.toString("utf8");
     const m = html.match(/<meta[^>]+property=["']og:video(?::secure_url)?["'][^>]+content=["']([^"']+)/i)
       ?? html.match(/<meta[^>]+name=["']twitter:player:stream["'][^>]+content=["']([^"']+)/i);
     const direct = m?.[1];
     if (!direct || !/^https?:\/\//.test(direct)) return { ok: false, reason: "no-direct-video-url" };
-    const { mkdir, writeFile } = await import("node:fs/promises");
+    const download = await safeFetch(direct, {
+      maxBytes: Math.min(limits.maxFileBytes, budget.remaining()),
+      timeoutMs: 90_000,
+      budget,
+    });
+    if (!download.ok) return { ok: false, reason: `direct-http-${download.status}` };
+    const buf = download.body;
+    const { mkdir, rm, writeFile } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const dir = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME ? tmpdir() : outDir;
     await mkdir(dir, { recursive: true });
-    const dlCtrl = new AbortController();
-    const dlT = setTimeout(() => dlCtrl.abort(), 90_000);
-    const dl = await fetch(direct, { signal: dlCtrl.signal });
-    clearTimeout(dlT);
-    if (!dl.ok) return { ok: false, reason: `direct-http-${dl.status}` };
-    const buf = Buffer.from(await dl.arrayBuffer());
-    if (buf.length > 25 * 1024 * 1024) return { ok: false, reason: "direct-too-large" };
     const ext = (direct.split("?")[0].split(".").pop() || "mp4").slice(0, 4).replace(/[^a-z0-9]/gi, "") || "mp4";
     const file = `${dir}/direct-${Date.now().toString(36)}.${ext}`;
     await writeFile(file, buf);
-    return { ok: true, file, via: "direct" };
-  } catch {
-    return { ok: false, reason: "direct-failed" };
+    const duration = await enforceDuration(file, limits.maxMediaSeconds);
+    if (duration.ok === false) {
+      await rm(file, { force: true }).catch(() => {});
+      return { ok: false, reason: duration.reason };
+    }
+    return { ok: true, file, via: "direct", durationSec: duration.durationSec };
+  } catch (error) {
+    return { ok: false, reason: netReason(error), detail: clip(error?.message ?? error, 160) };
   }
 }
 
 /** Camada 3: oEmbed oficial (leve, sem binário). */
 export async function probeOEmbed(url) {
-  const host = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+  const host = (() => { try { return urlHost(new URL(url)); } catch { return ""; } })();
   const endpoint =
     /(^|\.)(x\.com|twitter\.com)$/.test(host)
       ? `https://publish.twitter.com/oembed?url=${encodeURIComponent(url)}`
@@ -376,12 +471,9 @@ export async function probeOEmbed(url) {
             : null;
   if (!endpoint) return { ok: false, reason: "no-oembed-provider" };
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 15_000);
-    const res = await fetch(endpoint, { signal: ctrl.signal });
-    clearTimeout(t);
-    if (!res.ok) return { ok: false, reason: `oembed-http-${res.status}` };
-    const data = await res.json();
+    const response = await safeFetch(endpoint, { maxBytes: 256 * 1024, truncate: true, timeoutMs: 15_000, accept: "application/json" });
+    if (!response.ok) return { ok: false, reason: `oembed-http-${response.status}` };
+    const data = JSON.parse(response.body.toString("utf8"));
     const isInsta = /(^|\.)(instagram\.com)$/.test(host);
     const title = String(data.title ?? "").slice(0, 300);
     const platform = isInsta ? "Instagram"
@@ -411,26 +503,20 @@ export async function probeOEmbed(url) {
   }
 }
 
-function stripHtml(html) {
-  if (typeof html !== "string") return "";
-  return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-}
-
 /** Camada 4: fetch do HTML + meta tags og:/twitter: (universal, sem login). */
 export async function probeOpenGraph(url) {
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 15_000);
-    const res = await fetch(url, {
-      signal: ctrl.signal,
+    const response = await safeFetch(url, {
+      maxBytes: 512 * 1024,
+      truncate: true,
+      timeoutMs: 15_000,
+      accept: "text/html",
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-        Accept: "text/html",
       },
     });
-    clearTimeout(t);
-    if (!res.ok) return { ok: false, reason: `html-http-${res.status}` };
-    const html = (await res.text()).slice(0, 200_000);
+    if (!response.ok) return { ok: false, reason: `html-http-${response.status}` };
+    const html = response.body.toString("utf8");
     const meta = (prop) => {
       const m =
         html.match(new RegExp(`<meta[^>]+property=["']${prop}["'][^>]+content=["']([^"']+)`, "i")) ??
@@ -440,7 +526,7 @@ export async function probeOpenGraph(url) {
     const title = meta("og:title") || (html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] ?? "").trim();
     const description = meta("og:description") || meta("description") || meta("twitter:description");
     if (!title && !description) return { ok: false, reason: "no-meta" };
-    const host = (() => { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; } })();
+    const host = (() => { try { return urlHost(new URL(url)).replace(/^www\./, ""); } catch { return ""; } })();
     const platform = meta("og:site_name") || host || "site";
     return {
       ok: true,
@@ -451,8 +537,8 @@ export async function probeOpenGraph(url) {
       thumbnail: meta("og:image") || meta("twitter:image"),
       author: "",
     };
-  } catch {
-    return { ok: false, reason: "html-failed" };
+  } catch (error) {
+    return { ok: false, reason: netReason(error) };
   }
 }
 
@@ -463,7 +549,18 @@ export async function probeOpenGraph(url) {
  */
 export async function fetchMediaContext(url) {
   const attempts = [];
-  const host = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+  try {
+    parseUrlStrict(url);
+  } catch (error) {
+    attempts.push(`url:${netReason(error)}`);
+    return { ok: false, context: "", media: null, reason: netReason(error), attempts };
+  }
+  let host = "";
+  try {
+    host = urlHost(new URL(url));
+  } catch {
+    host = "";
+  }
   const isInsta = /(^|\.)(instagram\.com)$/.test(host);
   const isX = /(^|\.)(x\.com|twitter\.com)$/.test(host);
   if (isX) {

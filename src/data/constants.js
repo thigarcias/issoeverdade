@@ -28,6 +28,40 @@ export const CLAIM_STATUS = {
   context: { label: "Precisa de contexto", tint: "tint-info", color: "#33608f" },
 };
 
+/** Rótulos dos desfechos do servidor, incluindo recusas de política. */
+export const OUTCOME_LABEL = {
+  checked: "Checagem executada",
+  partial_coverage: "Cobertura parcial",
+  insufficient_input: "Material insuficiente",
+  inaccessible_media: "Mídia inacessível",
+  no_verifiable_claims: "Sem afirmação verificável",
+  content_refused: "Recusado por política de conteúdo",
+  moderation_uncovered: "Vídeo sem cobertura de moderação",
+  error: "Erro operacional",
+  legacy: "Registro legado",
+};
+
+/** Códigos de erro do endpoint de checagem traduzidos para o usuário. */
+export const ERROR_MESSAGES = {
+  missing_api_key: "Serviço de checagem indisponível no momento.",
+  upstream_timeout: "A checagem demorou demais. Tente de novo.",
+  upstream_fetch_failed: "Não consegui falar com o serviço de IA. Tente de novo.",
+  model_bad_json: "A IA respondeu num formato estranho. Tente de novo.",
+  FreeTierError: "Serviço de IA indisponível. Tente de novo mais tarde.",
+  rate_limited: "Muitas checagens em pouco tempo. Aguarde alguns minutos.",
+  capacity_full: "Todas as checagens simultâneas estão ocupadas. Tente em instantes.",
+  daily_budget: "O limite diário de checagens foi atingido. Tente novamente amanhã.",
+  limits_unavailable: "Controles de uso não configurados nesta implantação; novas checagens estão suspensas.",
+  private_url: "Esse endereço não é aceito: apenas páginas públicas em HTTP/HTTPS.",
+  invalid_url: "URL inválida.",
+  text_too_long: "O texto enviado passa do limite aceito. Envie um trecho menor.",
+  upload_too_large: "O arquivo excede o limite de envio.",
+  payload_too_large: "O envio excede o limite permitido.",
+  moderation_unavailable: "Moderação de conteúdo indisponível; a checagem não foi executada.",
+  moderation_uncovered: "O processamento de vídeo está desativado nesta implantação (cobertura de moderação não aprovada).",
+  content_refused: "O material foi recusado pela política de conteúdo.",
+};
+
 export const PIPELINE_STEPS = [
   {
     id: "intake",

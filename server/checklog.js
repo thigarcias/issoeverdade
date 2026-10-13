@@ -76,6 +76,15 @@ export async function saveCheckLog(entry) {
     cacheNamespace: entry.cacheNamespace ?? null,
     cachedFrom: entry.cachedFrom ?? null,
     corrections: entry.corrections ?? [],
+    editorialCorrections: entry.editorialCorrections ?? [],
+    correctedAt: entry.correctedAt ?? null,
+    moderation: entry.moderation ?? [],
+    moderationReports: entry.moderationReports ?? [],
+    moderationCoverage: entry.moderationCoverage ?? null,
+    purposeTriage: entry.purposeTriage ?? null,
+    tokenUsage: entry.tokenUsage ?? null,
+    evidence: entry.evidence ?? null,
+    evidenceVerification: entry.evidenceVerification ?? null,
     error: entry.error ?? null,
   };
   if (!logEnabled()) {
@@ -160,5 +169,34 @@ export async function getCheckLog(id) {
     return await response.json();
   } catch {
     return null;
+  }
+}
+
+/**
+ * Marca uma correção editorial no registro de checagem: preserva a execução
+ * original, registra o protocolo e o motivo e atualiza a versão vigente.
+ */
+export async function appendCorrectionToLog(id, { protocol, note, actor, status } = {}) {
+  if (!logEnabled()) return { ok: false, error: "log_disabled" };
+  const record = await getCheckLog(id);
+  if (!record) return { ok: false, error: "not_found" };
+  const at = new Date().toISOString();
+  const updated = {
+    ...record,
+    correctedAt: at,
+    editorialCorrections: [
+      ...(record.editorialCorrections ?? []),
+      { at, protocol: String(protocol ?? "").slice(0, 80), note: String(note ?? "").slice(0, 1000), actor: String(actor ?? "admin").slice(0, 80), status: status ?? "corrected" },
+    ],
+  };
+  try {
+    const token = blobToken();
+    const { put } = await blob();
+    await put(`iev-logs/${id}.json`, JSON.stringify(updated), {
+      access: "private", contentType: "application/json", token, allowOverwrite: true,
+    });
+    return { ok: true, record: updated };
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? "write_failed").slice(0, 120) };
   }
 }

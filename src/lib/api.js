@@ -4,15 +4,7 @@
 // Retorna `{ result, steps }`. Detalhes do modelo ficam no servidor.
 // ---------------------------------------------------------------------------
 
-import { PIPELINE_STEPS, migrateVerdict } from "../data/constants.js";
-
-export const ERROR_MESSAGES = {
-  missing_api_key: "Serviço de checagem indisponível no momento.",
-  upstream_timeout: "A checagem demorou demais. Tente de novo.",
-  upstream_fetch_failed: "Não consegui falar com o serviço de IA. Tente de novo.",
-  model_bad_json: "A IA respondeu num formato estranho. Tente de novo.",
-  FreeTierError: "Serviço de IA indisponível. Tente de novo mais tarde.",
-};
+import { ERROR_MESSAGES, OUTCOME_LABEL, PIPELINE_STEPS, migrateVerdict } from "../data/constants.js";
 
 function kindLabel(input) {
   if (input.kind === "link") {
@@ -82,6 +74,7 @@ function normalize(raw, input, origin) {
     id: raw?.checkId ?? `r-${Date.now().toString(36)}`,
     verdict: raw?.verdict ? migrateVerdict(raw.verdict, raw.score) : null,
     outcome: raw?.outcome ?? "legacy",
+    outcomeLabel: OUTCOME_LABEL[raw?.outcome] ?? null,
     score: clamp(raw?.score, null),
     title: origin?.title ?? titleFrom(input),
     kind: kindLabel(input),
@@ -102,6 +95,10 @@ function normalize(raw, input, origin) {
     mediaCoverage: raw?.mediaCoverage ?? null,
     media: Array.isArray(raw?.media) ? raw.media : [],
     transcript: raw?.transcript ?? null,
+    evidence: raw?.evidence ?? null,
+    moderation: Array.isArray(raw?.moderation) ? raw.moderation : [],
+    moderationCoverage: raw?.moderationCoverage ?? null,
+    tokenUsage: raw?.tokenUsage ?? null,
   };
 }
 
@@ -160,10 +157,14 @@ export async function verify(input, opts = {}) {
   await wait(300, opts.signal);
   if (!res.ok) {
     let code = "upstream_error";
+    let serverMessage = "";
     try {
-      code = (await res.json())?.error ?? code;
+      const payload = await res.json();
+      code = payload?.error ?? code;
+      serverMessage = typeof payload?.message === "string" ? payload.message : "";
     } catch { /* corpo ilegível */ }
-    const error = new Error(ERROR_MESSAGES[code] ?? (code === "payload_too_large" ? "O arquivo excede o limite de envio." : "Não consegui checar agora. Tente de novo."));
+    const fallback = code === "payload_too_large" ? "O arquivo excede o limite de envio." : "Não consegui checar agora. Tente de novo.";
+    const error = new Error(serverMessage || ERROR_MESSAGES[code] || fallback);
     error.code = code;
     throw error;
   }
@@ -171,7 +172,9 @@ export async function verify(input, opts = {}) {
   opts.onStep?.(4);
   await wait(300, opts.signal);
   opts.onStep?.(PIPELINE_STEPS.length);
-  const result = normalize(data.result, input, data.origin ?? null);
+  // O identificador da checagem vem no envelope (data.checkId), não no resultado
+  // validado: sem ele, o link de contestação não aponta para um registro real.
+  const result = normalize({ ...data.result, checkId: data.checkId ?? data.result?.checkId ?? null }, input, data.origin ?? null);
   result.cached = Boolean(data.cached);
   result.cachedFrom = data.cachedFrom ?? null;
   return {

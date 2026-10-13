@@ -7,12 +7,14 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "oxlint",
+    "test": "node --test \"server/**/*.test.js\" \"worker/**/*.test.js\"",
     "preview": "vite preview"
   },
   "dependencies": {
     "@vercel/blob": "^2.8.1",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "unpdf": "^1.8.1"
   },
   "devDependencies": {
     "@types/react": "^19.2.18",

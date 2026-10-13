@@ -48,7 +48,7 @@ export const VERDICT_BANDS = VERDICT_TABLE.map(([min, verdict], index, table) =>
   verdict,
 }));
 
-const OUTCOMES = new Set(["checked", "insufficient_input", "inaccessible_media", "no_verifiable_claims"]);
+const OUTCOMES = new Set(["checked", "insufficient_input", "inaccessible_media", "no_verifiable_claims", "content_refused", "moderation_uncovered"]);
 const STATUS_ANCHORS = {
   true: [85, 90, 95],
   context: [55, 70],

@@ -4,17 +4,23 @@
 
 ## Fluxo efetivo e versão
 
-As novas checagens usam `fact-check-4`. O fluxo configura/cacheia a entrada, extrai mídia quando necessário, executa julgamento com busca web, valida evidências/pontuação e registra o resultado. Para imagens/vídeos, a etapa final recebe o material e um dossiê da primeira avaliação, com claims, fontes elegíveis, URLs estruturadas e consultas. Quando todos os claims da prévia têm classificação sustentada, a revisão não recebe ferramenta de busca; quando há claims sem comprovação, pode pesquisar lacunas e conflitos. Texto e links comuns usam o julgamento. Não são dois pesquisadores independentes.
+As novas checagens usam `fact-check-4`. O fluxo configura/cacheia a entrada, aplica triagem de propósito e moderação, extrai mídia quando necessário, executa julgamento com busca web, revisa com dossiê, **obtém os documentos das fontes vinculadas para localizar os trechos citados** e valida evidências/pontuação antes de fixar score/veredito. Para imagens/vídeos, a etapa final recebe o material e um dossiê da primeira avaliação, com claims, fontes elegíveis, URLs estruturadas e consultas. Quando todos os claims da prévia têm classificação sustentada, a revisão não recebe ferramenta de busca; quando há claims sem comprovação, pode pesquisar lacunas e conflitos. Texto e links comuns usam o julgamento. Não são dois pesquisadores independentes.
+
+Ordem das etapas de segurança: (1) política de URL no endpoint; (2) triagem de propósito (pedido direto ao assistente não é afirmação verificável); (3) moderação de texto/imagem antes das chamadas caras; (4) cobertura de vídeo declarada; (5) moderação da transcrição e dos frames amostrados antes da visão; (6) análise factual; (7) dossiê de evidências; (8) validação e registro.
 
 A entrada do modelo é tratada como material não confiável: instruções embutidas em texto, páginas, OCR e transcrição não devem alterar a tarefa. Isso é uma instrução e uma salvaguarda de prompt, não uma prova de resistência a prompt injection.
 
-A versão e a revisão da configuração integram o namespace do cache. Registros antigos não são reexecutados; quando não têm versão de metodologia, o painel os identifica como legados. Um registro preservado descreve aquela execução e não garante que uma execução atual repita a conclusão.
+A versão e a revisão da configuração integram o namespace do cache, junto da época de invalidação (`iev-cache-v2/epoch.json`): uma correção editorial invalidada pelo painel deixa de servir resultados antigos como versão vigente. Registros antigos não são reexecutados; quando não têm versão de metodologia, o painel os identifica como legados. Um registro preservado descreve aquela execução e não garante que uma execução atual repita a conclusão.
 
 ## Fontes e limites de evidência
 
 Uma fonte só permanece quando sua URL HTTP(S) específica aparece em uma anotação `url_citation`, em `web_search_call.action.sources` ou em uma ação `open_page` concluída retornada pelo provedor, não é uma homepage genérica e está vinculada a uma afirmação. A requisição de busca solicita `include: ["web_search_call.action.sources"]`. A revisão final pode reutilizar a proveniência da primeira avaliação; URLs que aparecem apenas no JSON escrito pelo modelo não são aceitas. URLs inválidas, genéricas, sem proveniência ou sem vínculo são descartadas.
 
-A evidência usa relação `supports`, `refutes` ou `context`, identificador de fonte e trecho. O servidor valida o vínculo estrutural, a relação e um trecho não vazio de pelo menos oito caracteres. **Não abre e confere independentemente a página para provar que o trecho existe ou sustenta a afirmação.** URL citada, título, relação e trecho podem continuar incorretos ou inadequados; a anotação de citação do provedor não é validação humana do conteúdo.
+A evidência usa relação `supports`, `refutes` ou `context`, identificador de fonte e trecho. O servidor valida o vínculo estrutural, a relação e um trecho não vazio de pelo menos oito caracteres. Depois da revisão final, ele **obtém o documento da fonte** (até `IEV_EVIDENCE_MAX_DOCS` por checagem, com teto de bytes por documento e por job), extrai texto de HTML ou PDF e **localiza o trecho citado** por comparação literal, normalizada (sem acentos/caixa) ou aproximada (mesmos tokens com pontuação diferente). O resultado de cada citação é registrado como `exact`, `normalized`, `approximate`, `prefix`, `tokens`, `missing`, `empty_quote`, `document_unavailable` ou `not_fetched`.
+
+Quando há trecho localizado, uma revisão adicional por modelo decide se o trecho sustenta, refuta, contextualiza, é inconclusivo ou **contradiz** a relação afirmada. Se um claim confirmado/refutado não tem nenhuma citação confirmada e não há contradição, ele volta para `unproven` com justificativa própria; se há contradição, a justificativa afirma que o documento diz algo diferente do citado.
+
+**Isso não prova que a fonte esteja errada nem que a citação seja fiel ao contexto integral.** Ausência de trecho é limitação registrada, nunca falsidade: paywall, página que exige JavaScript, PDF sem texto extraível, tradução e paráfrase aparecem como `document_unavailable`/`missing`. A revisão por modelo é defesa adicional, não validação humana, e não substitui o corpus humano anotado.
 
 O registro preserva consultas, URLs estruturadas e diagnóstico por etapa: busca não solicitada, nenhuma chamada registrada, chamadas sem URLs rastreáveis ou proveniência disponível. Também preserva contagens de anotações/resultados e IDs/status/tipos/URLs tentadas das chamadas, não o envelope bruto completo ou todo conteúdo de páginas. Tentativa de abertura que falhou não qualifica uma URL como evidência. Uma URL retornada pela ferramenta demonstra proveniência, não pertinência semântica nem prova do trecho. A qualidade da busca e a seleção de fontes primárias ainda podem falhar.
 
@@ -31,9 +37,17 @@ Estado operacional e veredito factual são campos distintos:
 - `partial_coverage`: o servidor limitou a lista a 50 afirmações e registrou quantas ficaram de fora.
 - `insufficient_input`: material insuficiente para verificar.
 - `inaccessible_media`: a mídia necessária não foi acessível ou processada.
-- `no_verifiable_claims`: não foi identificada afirmação factual verificável.
+- `no_verifiable_claims`: não foi identificada afirmação factual verificável (inclui pedido direto ao assistente).
+- `content_refused`: recusa de política de conteúdo (abuso sexual infantil, conteúdo sexual explícito). O material não é analisado nem redistribuído.
+- `moderation_uncovered`: vídeo não processado porque a cobertura de moderação de vídeo não foi declarada nesta implantação.
 - `error`: falha operacional registrada; não é um veredito.
 - `legacy`: registro antigo sem contrato de resultado suficiente.
+
+### Política de conteúdo
+
+Checar afirmações públicas sobre temas difíceis é permitido: menção a violência, ameaça, crime ou discurso sensível **não** é motivo de recusa por si só. A recusa automática é restrita às categorias que não podem ser processadas ou redistribuídas (`sexual/minors` e conteúdo sexual explícito, ajustáveis por `MODERATION_REFUSE_CATEGORIES`/`MODERATION_THRESHOLDS`); outras categorias sinalizadas ficam registradas como sensibilidade, sem bloquear a checagem. Em `MODERATION_MODE=required` (padrão em produção), indisponibilidade do serviço de moderação recusa a checagem em vez de liberar o material.
+
+Para vídeo, a cobertura declarada é **transcrição + até 4 frames amostrados** — não é inspeção integral do arquivo. Sem `MEDIA_VIDEO_MODERATION=partial_frames_transcript`, o processamento de vídeo é recusado em produção até haver decisão explícita de produto.
 
 Quando não há afirmação verificável, entrada suficiente ou mídia acessível, o sistema não deve inventar nota nem veredito. A interface apresenta o motivo sem converter falha de acesso em falsidade. Conteúdo que seja opinião, previsão ou condição fica fora da nota factual.
 
@@ -53,7 +67,7 @@ A pontuação não é probabilidade calibrada, nem medida de precisão. A média
 
 ## Imagens, vídeos e uploads
 
-Uploads de imagem/vídeo enviam os bytes reais do arquivo. O servidor limita o arquivo a 3 MiB, confere assinatura e tipo antes de processar. Imagens usam o modelo de visão configurado. Vídeo/áudio requer um caminho de extração disponível; o worker pode extrair áudio e até 10 frames dos primeiros 300 segundos. A transcrição usa um modelo OpenAI elegível; frames/OCR usam o modelo de visão configurado. O worker não é uma dependência garantida em todo ambiente e não foi confirmado como implantado em produção nesta entrega.
+Uploads de imagem/vídeo enviam os bytes reais do arquivo. O servidor limita o arquivo ao teto configurado (padrão 3 MiB), confere assinatura e tipo antes de processar e recusa texto acima de `IEV_MAX_TEXT_CHARS` em vez de truncar. Imagens usam o modelo de visão configurado. Vídeo/áudio requer um caminho de extração disponível; o worker pode extrair áudio e até 10 frames ao longo do vídeo, respeitando `IEV_MAX_MEDIA_SECONDS` (padrão 900 s) — acima disso a mídia não é processada. Downloads remotos têm teto de bytes por resposta, por arquivo e por job, com vigia de disco que interrompe a árvore de processos do `yt-dlp`/`ffmpeg`. A transcrição usa um modelo OpenAI elegível; frames/OCR usam o modelo de visão configurado. O worker não é uma dependência garantida em todo ambiente e não foi confirmado como implantado em produção nesta entrega.
 
 A mídia pode falhar parcialmente: transcrição sem timestamps, áudio ausente, OCR/visão indisponível, link inacessível ou frames limitados. A resposta e o painel registram cobertura e tentativas quando disponíveis. Dez frames e uma transcrição não significam cobertura integral. Não há autenticação de autoria, data, montagem ou contexto de uma imagem/vídeo. Links de plataformas — inclusive X — dependem do extractor/worker e podem resultar apenas em metadados ou post; o sistema não garante download de todo vídeo.
 
@@ -72,7 +86,11 @@ node scripts/evaluate-factual.mjs ./corpus-human.jsonl
 
 Cada linha contém `caseId`, `runId` único, `groupId`, `methodologyVersion`, `modelConfiguration`, `modality`, duas `annotations` com `annotatorId`, `independent: true`, `verdict` e `claims` (listas), `adjudicated` e `prediction`. A adjudicação fornece `verdict`, `claims` (`id`, `verifiable`, `status`), `citations` (o `citationId` previsto e booleanos `relevant`, `relationCorrect`, `quoteSupported`) e `requiredCitations` (`claimId`, `url`). A previsão contém `verdict` (ou `null` para abstenção), claims com `claimId`/`status`, citações com `citationId`, `claimId`, `url`, `relation` e `quote`; `transcriptText` e `ocrText` são opcionais para medir WER.
 
-O relatório inclui matriz de confusão, acurácia e macro-F1, falso positivo acusatório, precisão/recall de abstenção, precisão/recall e macro-F1 de claims, precisão de relevância/suporte de citação, acerto da relação, recall de citações necessárias, WER de transcrição/OCR, estabilidade entre execuções repetidas, concordância/Kappa dos vereditos dos anotadores e intervalos bootstrap de 95% agrupados por `caseId` (1.000 amostras determinísticas). Com menos de dois casos distintos, o intervalo não é calculado. `groupId` identifica casos relacionados e sua quantidade é reportada; o harness não detecta vazamento entre conjuntos nem cria divisão de treino/teste.
+O relatório inclui matriz de confusão, acurácia e macro-F1, falso positivo acusatório, precisão/recall de abstenção, precisão/recall e macro-F1 de claims, precisão de relevância/suporte de citação, acerto da relação, recall de citações necessárias, WER de transcrição/OCR, estabilidade entre execuções repetidas, concordância/Kappa dos vereditos dos anotadores e intervalos bootstrap de 95% agrupados por `caseId` (1.000 amostras determinísticas). Com menos de dois casos distintos, o intervalo não é calculado. `groupId` identifica casos relacionados e sua quantidade é reportada.
+
+**Tabelas e gates:** o relatório traz tabelas por modalidade e por categoria com `n` por recorte, marcando `SIM (n < 10)` e avisando quando a amostra é insuficiente. `--check-split` falha se algum caso não tiver `split`/`eventId` ou se o mesmo `eventId` aparecer em `dev` e `eval` (vazamento de evento). `--require chave>=valor` (repetível) aplica gates e falha quando a métrica não atinge o valor ou não existe — as chaves válidas são listadas no erro. `publicationWarning` acompanha o JSON para evitar publicar métrica isolada.
+
+**Ferramentas de corpus:** `scripts/corpus-tool.mjs` tem `init` (template), `validate` (schema, enums, `caseId` único, datas e coerência predição↔claims), `agreement` (concordância por campo, Kappa de Cohen e lista de divergências), `adjudicate` (gera `adjudicated` de A/B exigindo decisão para cada divergência) e `split` (divisão determinística por `eventId`, reprodutível). Guia completo em [avaliacao-corpus.md](avaliacao-corpus.md).
 
 `independent: true` e a adjudicação são declarações no corpus: o script valida estrutura e consistência entre execuções, mas não autentica pessoas, independência real, qualidade das anotações, representatividade ou autenticidade das fontes. Atingir 200 casos só cumpre um limiar de volume, não torna o corpus um benchmark representativo. Os casos devem ser anotados por duas pessoas independentemente e adjudicados por uma pessoa competente; modelo de IA não serve como gabarito.
 

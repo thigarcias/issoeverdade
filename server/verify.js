@@ -179,37 +179,63 @@ async function callModel({ apiKey, instructions, input, timeoutMs }) {
 
 /**
  * Sanitiza fontes do modelo: remove outlets duplicados (case-insensitive) e
- * marca URLs inalcançáveis como "#" (HEAD rápido, 8s; falha = mantém texto).
+ * DESCARTA fontes sem URL válida (HEAD rápido, 8s; falha = remove).
+ * Fonte sem link clicável não entra na lista — nome sem URL não é fonte.
+ * @returns {{ sources: object[], dropped: string[] }}
  */
 async function sanitizeSources(sources) {
-  if (!Array.isArray(sources)) return [];
+  if (!Array.isArray(sources)) return { sources: [], dropped: [] };
   const seen = new Set();
   const unique = [];
+  const dropped = [];
   for (const s of sources.slice(0, 8)) {
     const key = String(s?.outlet ?? "").trim().toLowerCase();
     if (!key || seen.has(key)) continue;
     seen.add(key);
+    const url = typeof s?.url === "string" && /^https?:\/\//.test(s.url) ? s.url : "";
+    if (!url) {
+      dropped.push(`${s.outlet} (sem URL)`);
+      continue;
+    }
     unique.push({
       outlet: String(s.outlet).slice(0, 120),
       detail: String(s?.detail ?? "").slice(0, 120),
-      url: typeof s?.url === "string" && /^https?:\/\//.test(s.url) ? s.url : "#",
+      url,
     });
   }
-  await Promise.all(
+  const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+  const alive = await Promise.all(
     unique.map(async (s) => {
-      if (s.url === "#") return;
-      try {
+      // HEAD com UA de browser; servidores sem HEAD (405/501) ganham retry de GET leve.
+      async function probe(method) {
         const ctrl = new AbortController();
         const t = setTimeout(() => ctrl.abort(), 8000);
-        const res = await fetch(s.url, { method: "HEAD", signal: ctrl.signal, redirect: "follow" });
-        clearTimeout(t);
-        if (!res.ok) s.url = "#";
+        try {
+          return await fetch(s.url, {
+            method,
+            signal: ctrl.signal,
+            redirect: "follow",
+            headers: { "User-Agent": UA, ...(method === "GET" ? { Range: "bytes=0-1023" } : {}) },
+          });
+        } finally {
+          clearTimeout(t);
+        }
+      }
+      try {
+        let res = await probe("HEAD");
+        if (res.status === 405 || res.status === 501) res = await probe("GET");
+        if (!res.ok) {
+          dropped.push(`${s.outlet} (HTTP ${res.status})`);
+          return null;
+        }
+        return s;
       } catch {
-        s.url = "#";
+        dropped.push(`${s.outlet} (inacessível)`);
+        return null;
       }
     }),
   );
-  return unique;
+  return { sources: alive.filter(Boolean), dropped };
 }
 
 function toOrigin(media, url) {
@@ -408,8 +434,9 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
           timeoutMs,
         }),
       );
-      second.sources = await sanitizeSources(second.sources);
-      return await finish({ result: second, model: secondModel, debug: { finalInput, secondRaw } });
+      const clean = await sanitizeSources(second.sources);
+      second.sources = clean.sources;
+      return await finish({ result: second, model: secondModel, debug: { finalInput, secondRaw }, dropped: clean.dropped });
     }
   }
 
@@ -426,14 +453,18 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
       model: firstModel,
     });
   }
-  first.sources = await sanitizeSources(first.sources);
-  return await finish({ result: first, model: firstModel });
+  const clean = await sanitizeSources(first.sources);
+  first.sources = clean.sources;
+  return await finish({ result: first, model: firstModel, dropped: clean.dropped });
 
-  async function finish({ result, model, debug }) {
+  async function finish({ result, model, debug, dropped = [] }) {
     const totalMs = Date.now() - t0;
     const checkId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     // Validação determinística: recalcula score/veredito pela rubrica.
     const { fixed, corrections } = validateResult(result);
+    if (dropped.length > 0) {
+      corrections.push(`fontes descartadas (${dropped.length}): ${dropped.join(" · ")}`);
+    }
     if (corrections.length > 0) {
       phases.push({ name: "score-fix", ms: 0, ok: true, corrections });
     }

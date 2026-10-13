@@ -41,12 +41,16 @@ function normalize(raw, input, origin) {
     const v = Number(n);
     return Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : dflt;
   };
+  // Backend já remove fontes sem URL válida; aqui filtramos por segurança.
   const sources = Array.isArray(raw?.sources)
-    ? raw.sources.slice(0, 8).map((s) => ({
-        outlet: String(s?.outlet ?? "Fonte").slice(0, 120),
-        detail: String(s?.detail ?? "").slice(0, 120),
-        url: typeof s?.url === "string" && /^https?:\/\//.test(s.url) ? s.url : "#",
-      }))
+    ? raw.sources
+        .filter((s) => typeof s?.url === "string" && /^https?:\/\//.test(s.url))
+        .slice(0, 8)
+        .map((s) => ({
+          outlet: String(s?.outlet ?? "Fonte").slice(0, 120),
+          detail: String(s?.detail ?? "").slice(0, 120),
+          url: s.url,
+        }))
     : [];
   const claims = Array.isArray(raw?.claims)
     ? raw.claims.slice(0, 10).map((c, i) => ({

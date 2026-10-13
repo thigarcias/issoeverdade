@@ -82,7 +82,6 @@ async function callOpenAI({ instructions, input, timeoutMs }) {
         input,
         tools: [{ type: "web_search", search_context_size: "medium" }],
         max_output_tokens: 8000,
-        seed: 20261012,
       }),
       signal: ctrl.signal,
     });

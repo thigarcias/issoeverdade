@@ -123,6 +123,8 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     aborter.current?.abort();
     aborter.current = new AbortController();
     const mine = ++runId.current;
+    startRef.current = Date.now();
+    setElapsedMs(0);
     setResult(null);
     setError(null);
     setExpanded(false);

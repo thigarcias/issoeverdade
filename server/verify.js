@@ -399,7 +399,7 @@ async function enrichWithMedia(maybeUrl, opts = {}) {
   ]);
   const mediaContext = media.ok ? `Metadados da origem:\n${media.context}` : "";
   const artifacts = await collectMediaArtifacts(audio, frameResult, mediaContext, opts);
-  return { ...artifacts, origin: toOrigin(media.ok ? media.media : null, maybeUrl), durationSec: frameResult?.seconds ?? null };
+  return { ...artifacts, origin: toOrigin(media.ok ? media.media : null, maybeUrl), durationSec: frameResult?.seconds ?? null, postText: media.ok ? media.media?.postText ?? "" : "" };
 }
 
 async function enrichUploadedMedia(input, opts = {}) {
@@ -474,7 +474,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   if (!providerKey(aiCfg.judge.provider) && !providerKey("openai") && !providerKey("opencode")) {
     fail(503, "missing_api_key", { message: "Nenhuma chave de IA configurada no servidor." });
   }
-  const cacheNamespace = `${PROMPT_VERSION}:${configState.revision}`;
+  const cacheNamespace = `${PROMPT_VERSION}:post-text-v1:${configState.revision}`;
   const t0 = startedAt ?? Date.now();
   const hit = await getCached(input, cacheNamespace).catch(() => null);
   if (hit) {
@@ -548,6 +548,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   let mediaDebug = [];
   let origin = null;
   let blockedResult = null;
+  let postTextOnly = false;
 
   if (wantsMedia && isUrl && !videoTarget) {
     await phase("media-probe", async () => {
@@ -590,7 +591,11 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       recordModel("transcribe", transcript);
       recordModel("vision", enriched.visionResult);
     }
-    if (!transcript?.ok && !vision) {
+    if (!transcript?.ok && !vision && enriched?.postText) {
+      // Há texto original disponível, mas nenhuma cobertura de anexos: checar só esse texto.
+      postTextOnly = true;
+      mediaContext = `TEXTO DO POST (conteúdo disponível para checagem):\n${enriched.postText}\n\nÁudio, imagens e vídeo anexados não foram examinados. Verifique somente afirmações explícitas neste texto; não infira o conteúdo dos anexos.`;
+    } else if (!transcript?.ok && !vision) {
       blockedResult = {
         outcome: "inaccessible_media",
         verdict: null,
@@ -696,6 +701,9 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   if (fixed.outcome === "no_verifiable_claims") fixed.summary = "Não foi identificada uma afirmação factual verificável no material recebido.";
   if (["checked", "partial_coverage"].includes(fixed.outcome) && corrections.some((message) => /claim\d+:|score geral|veredito|fonte/.test(message))) {
     fixed.summary = "O resultado foi ajustado pela validação das evidências e da pontuação. Consulte as afirmações, os trechos e as correções registradas.";
+  }
+  if (postTextOnly) {
+    fixed.summary = `Cobertura limitada ao texto disponível do post; imagens, áudio e vídeo anexados não foram examinados. ${fixed.summary ?? ""}`;
   }
   if (corrections.length > 0) phases.push({ name: "result-validation", ms: 0, ok: true, corrections });
 

@@ -67,6 +67,15 @@ assinatura de arquivo). Resultados recentes ficam em `localStorage` (até 20) no
 navegador. No servidor, logs e cache só são duráveis com Blob privado
 configurado; limites e lacunas estão em [docs/privacidade-dados-ia.md](docs/privacidade-dados-ia.md).
 
+Posts do X têm seu texto extraído pelo oEmbed oficial antes das tentativas de
+metadados via downloader. Se áudio e visão não estiverem disponíveis, mas houver
+texto do post, a checagem se limita às afirmações explícitas nesse texto e mostra
+o aviso de que os anexos não foram examinados. Sem conteúdo acessível, mantém
+`inaccessible_media`, sem nota/veredito. O namespace do cache inclui a revisão
+de extração `post-text-v1` para não reaproveitar a antiga abstenção desse caminho.
+O cronômetro da interface é inicializado a cada envio e mede a duração daquela
+checagem, não o tempo desde a época Unix.
+
 ## Metodologia e avaliação
 
 - [docs/metodologia-factual.md](docs/metodologia-factual.md): fluxo efetivo,

@@ -389,14 +389,21 @@ export async function probeOEmbed(url) {
       : /(^|\.)(youtube\.com|youtu\.be)$/.test(host) ? "YouTube"
       : /(^|\.)(tiktok\.com)$/.test(host) ? "TikTok"
       : String(data.provider_name ?? "").slice(0, 80);
+    const isX = platform === "X";
+    // O primeiro parágrafo do blockquote é o texto do post, não autoria/data do embed.
+    const postParagraph = isX
+      ? String(data.html ?? "").match(/<blockquote\b[^>]*>[\s\S]*?<p\b[^>]*>([\s\S]*?)<\/p>/i)?.[1]
+      : null;
+    const postText = postParagraph ? stripHtml(postParagraph).slice(0, 8000) : "";
     return {
       ok: true,
       source: "oembed",
       platform,
       title,
       author: String(data.author_name ?? "").slice(0, 200),
+      postText,
       // No Instagram o "title" já é a legenda do post.
-      description: isInsta ? title : pickText(stripHtml(data.html)),
+      description: isInsta ? title : isX ? postText : pickText(stripHtml(data.html)),
       thumbnail: typeof data.thumbnail_url === "string" ? data.thumbnail_url : "",
     };
   } catch {
@@ -458,6 +465,19 @@ export async function fetchMediaContext(url) {
   const attempts = [];
   const host = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
   const isInsta = /(^|\.)(instagram\.com)$/.test(host);
+  const isX = /(^|\.)(x\.com|twitter\.com)$/.test(host);
+  if (isX) {
+    const oe = await probeOEmbed(url);
+    attempts.push(`oembed:${oe.ok ? "ok" : oe.reason}`);
+    if (oe.ok && oe.postText) {
+      return {
+        ok: true,
+        context: [`Plataforma: X`, oe.author && `Autor: ${oe.author}`, `Texto do post: ${oe.postText}`].filter(Boolean).join("\n"),
+        media: oe,
+        attempts,
+      };
+    }
+  }
   // Instagram: oEmbed primeiro (rápido, ~1s, sem o 429 do scraping).
   if (isInsta) {
     const oe = await probeOEmbed(url);

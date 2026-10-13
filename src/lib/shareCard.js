@@ -173,8 +173,11 @@ export async function renderShareCard(result) {
     ctx.font = `400 26px ${SANS}`;
     ctx.fillStyle = CREAM;
     for (const s of sources) {
-      ctx.fillText(`•  ${String(s.outlet).slice(0, 52)}`, 110, y);
-      y += 36;
+      const lines = wrap(ctx, `•  ${s.outlet}`, W - 260).slice(0, 2);
+      for (const line of lines) {
+        ctx.fillText(line, 110, y);
+        y += 34;
+      }
     }
   }
 

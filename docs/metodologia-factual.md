@@ -45,7 +45,9 @@ Estado operacional e veredito factual são campos distintos:
 
 ### Política de conteúdo
 
-Checar afirmações públicas sobre temas difíceis é permitido: menção a violência, ameaça, crime ou discurso sensível **não** é motivo de recusa por si só. A recusa automática é restrita às categorias que não podem ser processadas ou redistribuídas (`sexual/minors` e conteúdo sexual explícito, ajustáveis por `MODERATION_REFUSE_CATEGORIES`/`MODERATION_THRESHOLDS`); outras categorias sinalizadas ficam registradas como sensibilidade, sem bloquear a checagem. Em `MODERATION_MODE=required` (padrão em produção), indisponibilidade do serviço de moderação recusa a checagem em vez de liberar o material.
+Checar afirmações públicas sobre temas difíceis é permitido: menção a violência, ameaça, crime ou discurso sensível **não** é motivo de recusa por si só. A recusa automática é restrita às categorias que não podem ser processadas ou redistribuídas (`sexual/minors` e conteúdo sexual explícito, ajustáveis por `MODERATION_REFUSE_CATEGORIES`/`MODERATION_THRESHOLDS`); outras categorias sinalizadas ficam registradas como sensibilidade, sem bloquear a checagem. O texto trazido da página/post também passa pela moderação antes de virar entrada do modelo.
+
+Em `MODERATION_MODE=required` (padrão em produção), indisponibilidade do serviço de moderação **interrompe a checagem como erro operacional** (`503 moderation_unavailable`) — nunca como recusa de conteúdo nem como veredito factual. Em `optional`, a falha é registrada e a checagem segue.
 
 Para vídeo, a cobertura declarada é **transcrição + até 4 frames amostrados** — não é inspeção integral do arquivo. Sem `MEDIA_VIDEO_MODERATION=partial_frames_transcript`, o processamento de vídeo é recusado em produção até haver decisão explícita de produto.
 

@@ -1080,6 +1080,16 @@ main {
   color: var(--fg-4);
 }
 
+.admin-sublist {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font: 400 var(--t-label) / 1.5 var(--sans);
+  color: var(--fg-3);
+}
+
 .admin-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: var(--t-label);

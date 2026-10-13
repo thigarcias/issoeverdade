@@ -395,6 +395,45 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
                     <dt>Chamadas da ferramenta</dt>
                     <dd><details><summary>Status e páginas tentadas</summary><pre className="admin-pre">{JSON.stringify(detail.researchDiagnostics.map(({ step, calls }) => ({ step, calls })), null, 2)}</pre></details></dd>
                   </>}
+                  <dt>Moderação e propósito</dt>
+                  <dd>
+                    {detail.moderationCoverage
+                      ? `${detail.moderationCoverage.mode} · vídeo: ${detail.moderationCoverage.videoCoverage} · texto: ${detail.moderationCoverage.text ? "verificado" : "não"} · imagens: ${detail.moderationCoverage.images ? "verificado" : "não"}`
+                      : "Não registrada nesta execução"}
+                    {detail.purposeTriage ? ` · triagem de propósito: ${detail.purposeTriage}` : ""}
+                    {(detail.moderation ?? []).length > 0 && <span className="admin-mono"> · {detail.moderation.join(" · ")}</span>}
+                  </dd>
+                  {detail.tokenUsage && <><dt>Tokens observados</dt><dd className="admin-mono">{detail.tokenUsage.input ?? 0} entrada · {detail.tokenUsage.output ?? 0} saída · {detail.tokenUsage.total ?? 0} total</dd></>}
+                  {detail.evidence && <>
+                    <dt>Dossiê de evidências</dt>
+                    <dd>
+                      {detail.evidence.summary
+                        ? `${detail.evidence.summary.fetched}/${detail.evidence.summary.documents} documento(s) obtido(s) · ${detail.evidence.summary.located}/${detail.evidence.summary.citations} trecho(s) localizado(s) · ${detail.evidence.summary.missing} não localizado(s)${detail.evidence.summary.blocked ? ` · ${detail.evidence.summary.blocked} recusado(s) pela política de rede` : ""}`
+                        : "Sem fontes vinculadas para buscar"}
+                      {detail.evidence.verification ? ` · revisão: ${detail.evidence.verification.reviewed} citação(ões) avaliada(s), ${detail.evidence.verification.downgraded} rebaixada(s)` : ""}
+                    </dd>
+                    {(detail.evidence.documents ?? []).length > 0 && <>
+                      <dt>Documentos tentados</dt>
+                      <dd>
+                        <ul className="admin-sublist">
+                          {detail.evidence.documents.map((doc) => (
+                            <li key={doc.url}>
+                              {doc.outlet ?? doc.url}: {doc.ok ? `${doc.kind ?? "texto"} · ${Math.round((doc.bytes ?? 0) / 1024)} KB${doc.truncated ? " (truncado)" : ""}` : `não obtido — ${doc.reason ?? "falha"}`}
+                            </li>
+                          ))}
+                        </ul>
+                      </dd>
+                    </>}
+                    {(detail.evidence.citations ?? []).length > 0 && <>
+                      <dt>Citações conferidas</dt>
+                      <dd>
+                        <details>
+                          <summary>Localização de cada trecho</summary>
+                          <pre className="admin-pre">{JSON.stringify(detail.evidence.citations.map((citation) => ({ claim: citation.claimIndex + 1, source: citation.sourceId, relation: citation.relation, locator: citation.locator?.kind, found: citation.locator?.found ?? false, similarity: citation.locator?.similarity ?? null })), null, 2)}</pre>
+                        </details>
+                      </dd>
+                    </>}
+                  </>}
                 </dl>
                 <h4 className="admin-sub">Fases registradas</h4>
                 <p className="admin-mut">Subetapas de mídia podem ocorrer em paralelo e estão incluídas na fase principal; suas durações não devem ser somadas ao total.</p>

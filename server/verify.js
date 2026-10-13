@@ -682,6 +682,24 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       if (gate.report) moderationReports.push(gate.report);
       return gate;
     });
+  /**
+   * Converte o resultado da moderação em estado: falha do serviço em modo
+   * obrigatório é erro operacional (503), nunca recusa de conteúdo nem veredito.
+   */
+  const moderationState = (gate) => {
+    if (!gate || gate.allowed) return null;
+    if (gate.error === "moderation_unavailable") {
+      fail(503, "moderation_unavailable", { message: gate.message ?? "Moderação de conteúdo indisponível; a checagem não foi executada." });
+    }
+    return {
+      outcome: "content_refused",
+      verdict: null,
+      score: null,
+      claims: [],
+      sources: [],
+      summary: gate.message ?? refusalMessage(gate.categories ?? []),
+    };
+  };
 
   if (!blockedResult && wantsMedia && isUrl && !videoTarget) {
     await phase("media-probe", async () => {
@@ -690,6 +708,13 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       if (media.ok) {
         mediaContext = `Metadados/texto do post (não necessariamente conteúdo integral):\n${media.context}`;
         origin = toOrigin(media.media, maybeUrl);
+        // O texto trazido da página passa pela moderação antes de virar entrada do modelo.
+        const gate = await moderateTextArtifact(media.context).catch(() => null);
+        const state = moderationState(gate);
+        if (state) {
+          blockedResult = state;
+          mediaContext = "";
+        }
       }
     });
   }
@@ -714,15 +739,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       mediaDebug.push("upload:missing-bytes");
     }
     if (enriched?.moderationBlocked?.length) {
-      const gate = enriched.moderationBlocked[0];
-      blockedResult = {
-        outcome: "content_refused",
-        verdict: null,
-        score: null,
-        claims: [],
-        sources: [],
-        summary: gate.message ?? refusalMessage(gate.categories ?? []),
-      };
+      blockedResult = moderationState(enriched.moderationBlocked[0]);
     }
     if (enriched) {
       mediaDebug.push(...enriched.debug);
@@ -754,16 +771,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     if (input.fileBuffer) {
       const imageGate = await moderateImages([{ data: input.fileBuffer.toString("base64"), mime: input.fileMime }], { config: modCfg });
       if (imageGate.report) moderationReports.push(imageGate.report);
-      if (!imageGate.allowed) {
-        blockedResult = {
-          outcome: "content_refused",
-          verdict: null,
-          score: null,
-          claims: [],
-          sources: [],
-          summary: imageGate.message ?? refusalMessage(imageGate.categories ?? []),
-        };
-      }
+      blockedResult = moderationState(imageGate);
       const image = blockedResult ? null : await phase("vision", () =>
         describeImage(input.fileBuffer, input.fileMime, { aiCfg, timeoutMs, sessionId: id }),
       ).catch(() => null);
@@ -801,15 +809,16 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
 
   if (!blockedResult && input?.kind === "text" && String(input.text ?? "").trim()) {
     const gate = await moderateTextArtifact(input.text);
-    if (!gate.allowed) {
-      blockedResult = {
-        outcome: "content_refused",
-        verdict: null,
-        score: null,
-        claims: [],
-        sources: [],
-        summary: gate.message ?? refusalMessage(gate.categories ?? []),
-      };
+    blockedResult = moderationState(gate);
+  }
+  if (!blockedResult && postTextOnly && mediaContext) {
+    // Texto de post usado como conteúdo de checagem também passa pela moderação.
+    const gate = await moderateTextArtifact(mediaContext).catch(() => null);
+    const state = moderationState(gate);
+    if (state) {
+      blockedResult = state;
+      mediaContext = "";
+      postTextOnly = false;
     }
   }
 

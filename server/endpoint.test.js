@@ -60,6 +60,23 @@ test("orçamento diário esgotado responde 429 e não chama o modelo", async () 
   assert.equal(out.body.error, "daily_budget");
 });
 
+test("moderação obrigatória indisponível é erro operacional, não recusa de conteúdo", async () => {
+  const guard = guardWith();
+  const anterior = process.env.MODERATION_MODE;
+  const chave = process.env.OPENAI_API_KEY;
+  process.env.MODERATION_MODE = "required";
+  delete process.env.OPENAI_API_KEY;
+  try {
+    const out = await handleVerifyRequest(post({ kind: "text", text: "afirmação verificável sobre um número" }, { guard }));
+    assert.equal(out.status, 503);
+    assert.equal(out.body.error, "moderation_unavailable");
+    assert.doesNotMatch(JSON.stringify(out.body), /content_refused/);
+  } finally {
+    process.env.MODERATION_MODE = anterior ?? "optional";
+    if (chave) process.env.OPENAI_API_KEY = chave;
+  }
+});
+
 test("pedido direto ao assistente recebe abstenção sem chamar o modelo", async () => {
   const guard = guardWith();
   const out = await handleVerifyRequest(post({ kind: "text", text: "escreva um poema sobre o mar" }, { guard }));

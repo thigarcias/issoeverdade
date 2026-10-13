@@ -198,6 +198,20 @@ async function sanitizeSources(sources) {
       dropped.push(`${s.outlet} (sem URL)`);
       continue;
     }
+    // Homepage/raiz/seção não é fonte: matéria real tem path com slug (≥2 níveis
+    // ou 1 longo), query com id (?v=, ?p=) ou shortlink de vídeo (youtu.be).
+    let deep = false;
+    try {
+      const u = new URL(url);
+      const segs = u.pathname.split("/").filter(Boolean);
+      const q = u.searchParams;
+      const hasId = ["v", "id", "p", "vid", "video", "watch", "post", "article"].some((k) => q.has(k));
+      deep = segs.length >= 2 || (segs.length === 1 && segs[0].length > 24) || hasId || u.hostname === "youtu.be";
+    } catch { deep = true; /* URL malformada: probe abaixo decide */ }
+    if (!deep) {
+      dropped.push(`${s.outlet} (URL genérica, sem matéria)`);
+      continue;
+    }
     unique.push({
       outlet: String(s.outlet).slice(0, 120),
       detail: String(s?.detail ?? "").slice(0, 120),

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { PIPELINE_STEPS, REAL_EXAMPLES, THINKING_LINES, VERDICTS } from "../data/constants.js";
+import { PIPELINE_STEPS, THINKING_LINES, VERDICTS } from "../data/constants.js";
 import { verify } from "../lib/api.js";
 import ResultCard from "./ResultCard.jsx";
 
@@ -193,18 +193,6 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     setError(null);
     setCheckedInput(null);
     setStep(-1);
-  }
-
-  function loadExample(ex) {
-    aborter.current?.abort();
-    runId.current += 1;
-    setTab(ex.tab);
-    setText(ex.text);
-    setFile(null);
-    setResult(null);
-    setError(null);
-    setStep(-1);
-    showToast("Exemplo carregado. Clique em “Checar agora”.");
   }
 
   return (
@@ -407,14 +395,6 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
           <p className="verify-hint" style={{ marginTop: 10 }}>
             Grátis, sem conta. Mostramos o que é verdade e de onde veio a informação.
           </p>
-
-          <div className="examples" aria-label="Exemplos para testar">
-            {REAL_EXAMPLES.map((ex) => (
-              <button key={ex.label} type="button" onClick={() => loadExample(ex)}>
-                {ex.label}
-              </button>
-            ))}
-          </div>
         </form>
 
         <div className="card result-pane" aria-label="Resultado da checagem" ref={resultPane}>

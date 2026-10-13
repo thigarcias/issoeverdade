@@ -57,10 +57,3 @@ export const THINKING_LINES = [
   "Pesando as evidências…",
   "Montando o veredito…",
 ];
-
-// Exemplos que disparam checagem REAL (links públicos).
-export const REAL_EXAMPLES = [
-  { tab: "video", label: "Vídeo do Instagram", text: "https://www.instagram.com/p/DeNklZdsTac/" },
-  { tab: "video", label: "Vídeo no X", text: "https://x.com/bacuraua/status/2109571611988750500" },
-  { tab: "link", label: "Notícia do G1", text: "https://g1.globo.com/politica/" },
-];

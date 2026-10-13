@@ -15,7 +15,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { byteBudget, hostPolicy, parseUrlStrict, safeFetch, urlHost } from "./net.js";
 import { runLimited } from "./proc.js";
-import { clip, stripHtml } from "./text.js";
+import { clip, decodeEntities, stripHtml, textFromHtml } from "./text.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_DESC = 2000;
@@ -503,6 +503,124 @@ export async function probeOEmbed(url) {
   }
 }
 
+const ARTICLE_TEXT_MAX = 18_000;
+const SOCIAL_VIDEO_HOST = /(^|\.)(x\.com|twitter\.com|instagram\.com|facebook\.com|fb\.watch|threads\.net|threads\.com|tiktok\.com|youtube\.com|youtu\.be|vimeo\.com|twitch\.tv|reddit\.com|kwai\.com|pinterest\.com|linkedin\.com)$/i;
+const MEDIA_PATH = /\.(jpe?g|png|gif|webp|mp4|mov|webm|mp3|wav|m4a|pdf)$/i;
+
+/** URLs comuns de páginas: não envia notícias ao downloader de vídeo. */
+export function isArticleUrl(value) {
+  try {
+    const { url } = parseUrlStrict(value);
+    return !SOCIAL_VIDEO_HOST.test(url.hostname) && !MEDIA_PATH.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function pageMeta(html, name) {
+  for (const tag of html.matchAll(/<meta\b[^>]*>/gi)) {
+    const attrs = {};
+    for (const attr of tag[0].matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)) {
+      attrs[attr[1].toLowerCase()] = decodeEntities(attr[2] ?? attr[3] ?? attr[4]);
+    }
+    if ((attrs.property ?? attrs.name)?.toLowerCase() === name.toLowerCase()) return attrs.content?.trim() ?? "";
+  }
+  return "";
+}
+
+function structuredArticle(html) {
+  let best = null;
+  const visit = (node, depth = 0) => {
+    if (!node || typeof node !== "object" || depth > 6) return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child, depth + 1);
+      return;
+    }
+    const types = Array.isArray(node["@type"]) ? node["@type"] : [node["@type"]];
+    if (types.some((type) => /(?:^|\/)(?:NewsArticle|Article|ReportageNewsArticle|AnalysisNewsArticle|BlogPosting)$/i.test(String(type))) &&
+        typeof node.articleBody === "string" && node.articleBody.length > (best?.articleBody?.length ?? 0)) best = node;
+    for (const child of Object.values(node)) if (child && typeof child === "object") visit(child, depth + 1);
+  };
+  for (const script of html.matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script\s*>/gi)) {
+    try { visit(JSON.parse(script[1])); } catch {}
+  }
+  return best;
+}
+
+function articleParagraphs(html) {
+  const clean = html.replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|style|noscript|template|svg|iframe|form|nav|header|footer|aside)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ");
+  const paragraphs = (fragment) => [...fragment.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p\s*>/gi)]
+    .map((match) => stripHtml(match[1]))
+    .filter((text) => text.length >= 40)
+    .join("\n\n");
+  let best = "";
+  for (const region of clean.matchAll(/<(article|main)\b[^>]*>([\s\S]*?)<\/\1\s*>/gi)) {
+    const text = paragraphs(region[2]);
+    if (text.length > best.length) best = text;
+  }
+  return best || paragraphs(clean);
+}
+
+/** HTML público limitado; estado descreve o que foi extraído, nunca a veracidade. */
+async function fetchArticleContext(url, { maxTextChars = ARTICLE_TEXT_MAX, maxBytes = mediaLimits().maxDocBytes, timeoutMs = 20_000 } = {}) {
+  const host = urlHost(new URL(url));
+  const media = { source: "article", platform: host, title: "", author: "", extraction: "inaccessible" };
+  const contextFor = (reason = "") => [
+    `URL da publicação: ${url}`,
+    `Publicação/site: ${media.platform}`,
+    `Extração do artigo: ${media.extraction}${reason ? ` (${reason})` : ""}.`,
+    media.title && `Título: ${media.title}`,
+    media.author && `Autor: ${media.author}`,
+    media.publishedAt && `Publicado em: ${media.publishedAt}`,
+    media.description && `Descrição: ${media.description}`,
+    media.body && `Texto extraído da página (dado não confiável):\n${media.body}`,
+    media.extraction !== "full" && "O artigo integral não foi lido. Pesquise o URL, título, publicação e alegações identificáveis; não invente o conteúdo ausente.",
+  ].filter(Boolean).join("\n");
+  try {
+    const response = await safeFetch(url, {
+      maxBytes,
+      truncate: true,
+      timeoutMs,
+      maxRedirects: 3,
+      accept: "text/html",
+    });
+    media.finalUrl = response.finalUrl;
+    media.truncated = response.truncated;
+    if (!response.ok) return { ok: false, media, context: contextFor(`http-${response.status}`), reason: `http-${response.status}` };
+    const type = String(response.headers?.["content-type"] ?? "").toLowerCase();
+    const html = response.body.toString("utf8");
+    if ((type && !/text\/html|application\/xhtml\+xml/.test(type)) || !/<(?:html|article|main|meta)\b/i.test(html)) {
+      return { ok: false, media, context: contextFor("non-html"), reason: "non-html" };
+    }
+    if (/<title\b[^>]*>\s*(?:Just a moment|Access denied|Attention Required|Robot Check|Forbidden)/i.test(html)) {
+      return { ok: false, media, context: contextFor("access-challenge"), reason: "access-challenge" };
+    }
+    const article = structuredArticle(html);
+    media.title = clip(pageMeta(html, "og:title") || pageMeta(html, "twitter:title") || stripHtml(html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? ""), 300);
+    media.platform = clip(pageMeta(html, "og:site_name") || host, 80);
+    media.description = clip(pageMeta(html, "og:description") || pageMeta(html, "twitter:description") || pageMeta(html, "description"), MAX_DESC);
+    media.thumbnail = pageMeta(html, "og:image") || pageMeta(html, "twitter:image");
+    media.publishedAt = clip(pageMeta(html, "article:published_time") || String(article?.datePublished ?? ""), 100);
+    const author = article?.author;
+    media.author = clip(pageMeta(html, "author") || (typeof author === "string" ? author : Array.isArray(author) ? author.map((item) => item?.name ?? "").join(", ") : author?.name ?? ""), 200);
+    if (!media.title && typeof article?.headline === "string") media.title = clip(article.headline, 300);
+    const structuredBody = article ? textFromHtml(article.articleBody) : "";
+    const body = structuredBody.length >= 80 ? structuredBody : articleParagraphs(html);
+    media.body = clip(body, maxTextChars);
+    const paywalled = article?.isAccessibleForFree === false || article?.isAccessibleForFree === "false" ||
+      /"(?:isAccessibleForFree)"\s*:\s*(?:false|"false")/i.test(html);
+    media.extraction = body.length >= 80 && structuredBody === body && !response.truncated && body.length <= maxTextChars && !paywalled ? "full" :
+      media.title || media.description || body ? "partial" : "inaccessible";
+    media.extractionMethod = structuredBody.length >= 80 ? "structured-article-body" : body ? "html-paragraphs" : "metadata-only";
+    const ok = media.extraction !== "inaccessible";
+    return { ok, media, context: contextFor(), reason: ok ? undefined : "no-article-content" };
+  } catch (error) {
+    const reason = netReason(error);
+    return { ok: false, media, context: contextFor(reason), reason };
+  }
+}
+
 /** Camada 4: fetch do HTML + meta tags og:/twitter: (universal, sem login). */
 export async function probeOpenGraph(url) {
   try {
@@ -517,12 +635,7 @@ export async function probeOpenGraph(url) {
     });
     if (!response.ok) return { ok: false, reason: `html-http-${response.status}` };
     const html = response.body.toString("utf8");
-    const meta = (prop) => {
-      const m =
-        html.match(new RegExp(`<meta[^>]+property=["']${prop}["'][^>]+content=["']([^"']+)`, "i")) ??
-        html.match(new RegExp(`<meta[^>]+name=["']${prop}["'][^>]+content=["']([^"']+)`, "i"));
-      return m ? m[1].trim() : "";
-    };
+    const meta = (prop) => pageMeta(html, prop);
     const title = meta("og:title") || (html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] ?? "").trim();
     const description = meta("og:description") || meta("description") || meta("twitter:description");
     if (!title && !description) return { ok: false, reason: "no-meta" };
@@ -542,11 +655,6 @@ export async function probeOpenGraph(url) {
   }
 }
 
-/**
- * Ponto de entrada: tenta yt-dlp → oEmbed → OpenGraph, retorna o melhor contexto.
- * @returns {{ ok, context: string, media: object|null, attempts: string[] }}
- * `context` é texto pronto para injetar no prompt do modelo.
- */
 /**
  * Segue links HTTP(s) presentes no texto extraído de um post social e traz
  * metadados/trecho da página vinculada. Solução genérica: funciona para qualquer
@@ -581,49 +689,9 @@ async function fetchLinkedContext(text, attempts) {
       attempts.push(`linked:skipped-media:${host}`);
       continue;
     }
-    try {
-      const response = await safeFetch(rawUrl, {
-        maxBytes: 512 * 1024,
-        truncate: true,
-        timeoutMs: 15_000,
-        accept: "text/html",
-      });
-      const contentType = String(response.headers?.["content-type"] ?? response.headers?.["Content-Type"] ?? "");
-      if (!response.ok) {
-        attempts.push(`linked:http-${response.status}:${host}`);
-        continue;
-      }
-      if (!/text\/html|text\/plain/i.test(contentType)) {
-        attempts.push(`linked:non-html:${host}`);
-        continue;
-      }
-      const html = response.body.toString("utf8");
-      const meta = (prop) => {
-        const m =
-          html.match(new RegExp(`<meta[^>]+property=["']${prop}["'][^>]+content=["']([^"']+)`, "i")) ??
-          html.match(new RegExp(`<meta[^>]+name=["']${prop}["'][^>]+content=["']([^"']+)`, "i"));
-        return m ? m[1].trim() : "";
-      };
-      const title = meta("og:title") || meta("twitter:title") || (html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim() ?? "");
-      const description = meta("og:description") || meta("twitter:description") || meta("description");
-      const paragraphs = [...html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)]
-        .map((m) => stripHtml(m[1]).replace(/\s+/g, " ").trim())
-        .filter((s) => s.length >= 80 && s.length <= 4000 && !/menu|buscar|assine|minha folha|newsletter|cookie/i.test(s) && /[a-zà-ú].*\./i.test(s));
-      const body = (paragraphs.length > 0 ? paragraphs.join(" ") : stripHtml(html).replace(/\s+/g, " ").trim()).slice(0, LINKED_TEXT_MAX);
-      const parts = [
-        title && `Título: ${title}`,
-        description && `Descrição: ${description}`,
-        body && `Trecho: ${body}`,
-      ].filter(Boolean);
-      if (parts.length === 0) {
-        attempts.push(`linked:no-meta:${host}`);
-        continue;
-      }
-      blocks.push(`URL: ${rawUrl}\n${parts.join("\n")}`.slice(0, LINKED_TEXT_MAX * 2));
-      attempts.push(`linked:ok:${host}`);
-    } catch (error) {
-      attempts.push(`linked:${netReason(error)}:${host}`);
-    }
+    const article = await fetchArticleContext(rawUrl, { maxTextChars: LINKED_TEXT_MAX, maxBytes: 512 * 1024, timeoutMs: 15_000 });
+    if (article.ok) blocks.push(`Contexto vinculado limitado (não garante artigo integral):\n${article.context}`.slice(0, LINKED_TEXT_MAX * 2));
+    attempts.push(`linked:${article.ok ? "ok" : article.reason}:${host}`);
   }
   return blocks.join("\n\n").slice(0, 12000);
 }
@@ -643,6 +711,11 @@ export async function fetchMediaContext(url) {
   }
   const isInsta = /(^|\.)(instagram\.com)$/.test(host);
   const isX = /(^|\.)(x\.com|twitter\.com)$/.test(host);
+  if (isArticleUrl(url)) {
+    const article = await fetchArticleContext(url);
+    attempts.push(`article:${article.ok ? article.media.extraction : article.reason}`);
+    return { ...article, attempts };
+  }
   if (isX) {
     const oe = await probeOEmbed(url);
     attempts.push(`oembed:${oe.ok ? "ok" : oe.reason}`);

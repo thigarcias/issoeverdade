@@ -45,7 +45,8 @@ Foi adicionado um resolvedor genérico de links presentes no texto extraído:
   - Quando o host de terceiros retorna HTML, extrai:
     - `og:title` / `twitter:title`;
     - `og:description` / `twitter:description` / `description`;
-    - parágrafos de `<p>` com filtro anti-boilerplate e limite de tamanho.
+    - corpo estruturado `articleBody`, quando disponível, ou parágrafos HTML,
+      removendo scripts/estilos e blocos de navegação, com limite de tamanho.
   - Registra tentativas em `attempts` (`linked:ok:...`, `linked:http-...`, etc.).
 - No caminho de X (`isX`), o contexto retornado passou a incluir:
   - texto do post original;
@@ -113,3 +114,13 @@ A função de extração de URLs é genérica, mas sua integração atual é exc
 - A ausência de fontes não deve ser mascarada atribuindo um veredito positivo. É necessário distinguir falha de extração, conteúdo parcial e insuficiência de evidência.
 - Verificação desta reavaliação: um smoke com `setCached/getCached` confirmou que a entrada antiga continua no namespace antigo, mas não é recuperada pelo novo; uma entrada nova é recuperada normalmente.
 - Extração real desta reavaliação: `fetchMediaContext` para o URL da Folha retornou `ok: true`, `oembed:ok` e `linked:ok:t.co`, com título, descrição e trecho. Isso comprova extração local, não implantação nem julgamento em produção.
+
+## Extração compartilhada com notícias diretas
+
+O extrator de páginas vinculadas agora compartilha a leitura de metadados/corpo
+com notícias enviadas diretamente. Posts mantêm até 3 links, 512 KiB/15 s por
+página, corpo de até 2.500 caracteres e contexto combinado de até 12.000.
+Cada trecho é identificado como contexto limitado, sem prometer artigo
+integral. A revisão atual do cache é `article-content-v3`, mantendo a metodologia
+`fact-check-5`. O histórico de smokes acima descreve execuções anteriores;
+as regras atuais de notícias e pesquisa estão em [Metodologia](metodologia-factual.md).

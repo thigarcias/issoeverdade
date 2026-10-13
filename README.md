@@ -111,13 +111,23 @@ metadados via downloader. Se áudio e visão não estiverem disponíveis, mas ho
 texto do post, a checagem se limita às afirmações explícitas nesse texto e mostra
 o aviso de que os anexos não foram examinados. Sem conteúdo acessível, mantém
 `inaccessible_media`, sem nota/veredito. O namespace do cache inclui a revisão
-de extração `post-text-v1` para não reaproveitar a antiga abstenção desse caminho.
+de extração `article-content-v3` para não reaproveitar abstenções anteriores.
 O cronômetro da interface é inicializado a cada envio e mede a duração daquela
 checagem, não o tempo desde a época Unix.
 
+Links comuns de notícias passam por extração HTML pública com limites de rede,
+antes do julgamento com busca web. A cobertura distingue corpo estruturado
+completo recebido (`full`), metadados/trechos (`partial`) e falha de acesso
+(`inaccessible`). Isso não autentica a matéria nem garante que o site forneceu
+todo o artigo. Se o acesso falhar, a pesquisa usa URL, título, publicação e
+alegações identificáveis, sem fingir leitura integral. `needs_media` legado não
+encerra esse caminho: há pesquisa antes da abstenção. Só a impossibilidade de
+identificar alegações justifica `insufficient_input`; ausência de provas para
+uma alegação identificada mantém `unproven`, sem forçar verdadeiro/falso.
+
 ## Metodologia e avaliação
 
-`fact-check-4` captura anotações e fontes estruturadas da busca, compartilha o
+`fact-check-5` investiga alegações implícitas em perguntas e distingue ações futuras de declarações ou medidas verificáveis. Mantém a captura de anotações e fontes estruturadas da busca, compartilha o
 dossiê entre julgamento/revisão, distingue períodos de pesquisa e paraleliza
 transcrição/visão. Depois da revisão final, o servidor obtém os documentos das
 fontes vinculadas, localiza os trechos citados e revisa a fidelidade das

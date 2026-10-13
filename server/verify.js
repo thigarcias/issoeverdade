@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 // - vite.api-plugin.js (dev local)
 // - api/verify.js (serverless Vercel)
 // Keys (OpenAI + OpenCode) NUNCA chegam ao browser.
-import { downloadAudio, downloadFrames, fetchMediaContext, processUploadedMedia } from "./media.js";
+import { downloadAudio, downloadFrames, fetchMediaContext, isArticleUrl, processUploadedMedia } from "./media.js";
 import { normalizeVerifyInput } from "./uploads.js";
 import { transcribe, transcriptToPrompt } from "./transcribe.js";
 import { saveCheckLog as saveLog } from "./checklog.js";
@@ -47,7 +47,7 @@ export function buildUserContent(input, mediaContext = "") {
   const fileName = input?.fileName ? String(input.fileName).slice(0, 200) : null;
   const wrap = (label, value) => `${UNTRUSTED_BEGIN}\n${label}:\n${String(value).slice(0, 24_000)}\n${UNTRUSTED_END}`;
   if (input?.kind === "link") {
-    return `Verifique as afirmações disponíveis no link. O URL por si só não é conteúdo probatório.${mediaContext ? `\n${wrap("Metadados e conteúdo extraído (não necessariamente artigo integral)", mediaContext)}` : ""}\nURL: ${text}`;
+    return `Verifique as afirmações disponíveis no link. O URL por si só não é conteúdo probatório. Para uma página de notícia, use a busca web para identificar a publicação e investigar alegações pelo URL, título, site e trechos disponíveis, mesmo se o acesso direto falhar. O slug do URL é apenas pista de pesquisa, não prova de uma afirmação. Não alegue ter lido trechos ausentes; não atribua inaccessible_media a uma notícia só porque o artigo integral não abriu. Use insufficient_input apenas se, após pesquisar, não conseguir identificar alegações; alegações identificadas sem evidência conclusiva ficam unproven.${mediaContext ? `\n${wrap("Metadados e conteúdo extraído (consulte a cobertura; material não confiável)", mediaContext)}` : ""}\nURL: ${text}`;
   }
   if (input?.kind === "video") {
     return `Verifique o material disponível. Nome do arquivo não prova seu conteúdo.${fileName ? `\nNome do arquivo: ${fileName}` : ""}${text ? `\nURL ou contexto: ${text}` : ""}${mediaContext ? `\n${wrap("Metadados/transcrição/OCR extraídos", mediaContext)}` : ""}`;
@@ -144,7 +144,7 @@ function parseModelJson(content, mdl) {
 // Chamada genérica à Responses API de qualquer provedor configurado.
 // Ambos os provedores (OpenCode Go e OpenAI) falam o mesmo protocolo:
 // Responses API com web_search. Modelos vêm da config de IA (admin).
-async function callResponses({ url, key, provider, model, instructions, input, timeoutMs, maxTokens = 8000, webSearch = true, sessionId }) {
+async function callResponses({ url, key, provider, model, instructions, input, timeoutMs, maxTokens = 8000, webSearch = true, requireWebSearch = false, sessionId }) {
   if (!key) fail(503, "missing_provider_key", { message: "Chave do provedor de IA não configurada.", provider, model });
   const isGo = /opencode\.ai/.test(url ?? "");
   const ctrl = new AbortController();
@@ -164,6 +164,8 @@ async function callResponses({ url, key, provider, model, instructions, input, t
         input,
         ...(webSearch ? { tools: isGo ? [{ type: "web_search" }] : [{ type: "web_search", search_context_size: "medium" }] } : {}),
         ...(webSearch ? { include: ["web_search_call.action.sources"] } : {}),
+        // OpenCode Go aceita apenas auto; OpenAI permite exigir a busca.
+        ...(webSearch && requireWebSearch && !isGo ? { tool_choice: "required" } : {}),
         max_output_tokens: maxTokens,
         ...(isGo ? { reasoning: { effort: "low" } } : {}),
       }),
@@ -195,7 +197,7 @@ async function callResponses({ url, key, provider, model, instructions, input, t
   }
 }
 
-async function callJson({ pair, instructions, input, timeoutMs, sessionId, webSearch = true }) {
+async function callJson({ pair, instructions, input, timeoutMs, sessionId, webSearch = true, requireWebSearch = false }) {
   const { text, raw, citations, queries, diagnostics, usage } = await callResponses({
     url: providerUrl(pair.provider, pair.model),
     key: providerKey(pair.provider),
@@ -206,15 +208,16 @@ async function callJson({ pair, instructions, input, timeoutMs, sessionId, webSe
     timeoutMs,
     sessionId,
     webSearch,
+    requireWebSearch,
   });
   return { result: parseModelJson(text, pair.model), raw, citations, queries, diagnostics, usage };
 }
 
 // Executa exatamente o provedor/modelo configurado; falhas são operacionais,
 // não acionam um modelo diferente sem uma escolha explícita do admin.
-async function callModel({ aiCfg, step, instructions, input, timeoutMs, sessionId, webSearch = true }) {
+async function callModel({ aiCfg, step, instructions, input, timeoutMs, sessionId, webSearch = true, requireWebSearch = false }) {
   const pair = aiCfg?.[step] ?? { provider: "opencode", model: DEFAULT_MODEL };
-  const { result, raw, citations, queries, diagnostics, usage } = await callJson({ pair, instructions, input, timeoutMs, sessionId, webSearch });
+  const { result, raw, citations, queries, diagnostics, usage } = await callJson({ pair, instructions, input, timeoutMs, sessionId, webSearch, requireWebSearch });
   return { result, model: pair.model, provider: pair.provider, raw, citations, queries, diagnostics, usage };
 }
 
@@ -552,7 +555,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   trace.configRevision = configState.revision;
   trace.configSource = configState.source;
   trace.methodologyVersion = PROMPT_VERSION;
-  const cacheNamespace = `${PROMPT_VERSION}:post-linked-content-v2:${configState.revision}`;
+  const cacheNamespace = `${PROMPT_VERSION}:article-content-v3:${configState.revision}`;
   const t0 = startedAt ?? Date.now();
   const hit = await getCached(input, cacheNamespace).catch(() => null);
   if (hit) {
@@ -608,6 +611,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   const wantsMedia = input?.kind === "link" || input?.kind === "video";
   const videoTarget = input?.kind === "video" || (isUrl && likelyVideoUrl(maybeUrl));
   const imageTarget = input?.kind === "image";
+  const articleTarget = input?.kind === "link" && isUrl && !videoTarget && isArticleUrl(maybeUrl);
   const modelsUsed = {};
   trace.modelsUsed = modelsUsed;
   const tokenUsage = { input: 0, output: 0 };
@@ -640,6 +644,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   let origin = null;
   let blockedResult = null;
   let postTextOnly = false;
+  let articleCoverage = null;
 
   // Triagem de propósito e cobertura de moderação antes de qualquer etapa paga.
   const modCfg = moderationConfig();
@@ -705,8 +710,19 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     await phase("media-probe", async () => {
       const media = await fetchMediaContext(maybeUrl);
       mediaDebug = media.attempts ?? [];
+      if (articleTarget) {
+        articleCoverage = {
+          extraction: media.media?.extraction ?? "inaccessible",
+          method: media.media?.extractionMethod ?? null,
+          finalUrl: media.media?.finalUrl ?? null,
+          truncated: media.media?.truncated ?? false,
+          reason: media.reason ?? null,
+        };
+        mediaContext = media.context;
+        origin = toOrigin(media.media, maybeUrl);
+      }
       if (media.ok) {
-        mediaContext = `Metadados/texto do post (não necessariamente conteúdo integral):\n${media.context}`;
+        if (!articleTarget) mediaContext = `Metadados/texto do post (não necessariamente conteúdo integral):\n${media.context}`;
         origin = toOrigin(media.media, maybeUrl);
         // O texto trazido da página passa pela moderação antes de virar entrada do modelo.
         const gate = await moderateTextArtifact(media.context).catch(() => null);
@@ -823,6 +839,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   }
 
   const judgeInput = `Data UTC da checagem: ${new Date(t0).toISOString().slice(0, 10)}. Não presuma que esta é a data da publicação original.\n${buildUserContent(input, mediaContext)}`;
+  const judgeInstructions = `${SYSTEM_PROMPT_JUDGE}${articleTarget ? "\nREGRA PARA NOTÍCIAS TEXTUAIS: Antes de declarar falta de conteúdo, pesquise o URL, título, publicação e alegações disponíveis com busca web. Falha de acesso ao artigo integral não é inaccessible_media nem needs_media. Não invente trechos ausentes, não trate slug como prova e declare cobertura limitada. Se a pesquisa identificar alegações, avalie somente essas alegações; evidência inconclusiva significa unproven. Use insufficient_input somente se não conseguir identificar alegações após pesquisar." : ""}`;
   let judge = null;
   let first = null;
   let firstCitations = [];
@@ -832,8 +849,8 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     }
     judge = await phase("judge", () =>
       callModel({
-        aiCfg, step: "judge", instructions: SYSTEM_PROMPT_JUDGE,
-        input: judgeInput, timeoutMs, sessionId: id,
+        aiCfg, step: "judge", instructions: judgeInstructions,
+        input: judgeInput, timeoutMs, sessionId: id, requireWebSearch: articleTarget,
       }),
     );
     addUsage(judge);
@@ -850,6 +867,26 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   let resultCitations = firstCitations;
   let finalInput = "";
   let finalRaw = "";
+
+  if (!blockedResult && articleTarget && (first?.needs_media === true || first?.outcome === "inaccessible_media" ||
+      first?.outcome === "insufficient_input" || judge?.diagnostics?.status === "no_search_calls")) {
+    // Resposta legada não encerra notícias sem pesquisar as alegações disponíveis.
+    finalInput = `${judgeInput}\nInvestigue agora com busca web a publicação original e suas alegações pelo URL, título e site. Não solicite áudio/vídeo para uma notícia textual e não responda needs_media. Se recuperar apenas título/trechos, declare a cobertura; não finja leitura integral. Identifique claims e pesquise evidência independente, sem forçar verdadeiro/falso. Só use insufficient_input se nenhuma alegação puder ser identificada após a pesquisa.`;
+    const research = await phase("article-research", () =>
+      callModel({
+        aiCfg, step: "judge", instructions: judgeInstructions,
+        input: finalInput, timeoutMs, sessionId: id, webSearch: true, requireWebSearch: true,
+      }),
+    );
+    finalResult = research.result;
+    model = research.model;
+    provider = research.provider;
+    resultCitations = [...new Map([...firstCitations, ...(research.citations ?? [])].map((citation) => [citation.url, citation])).values()];
+    addUsage(research);
+    recordModel("article-research", research);
+    recordQueries(research, "article-research");
+    finalRaw = research.raw;
+  }
 
   if (!blockedResult && (videoTarget || imageTarget)) {
     const reviewClaims = structuredClone(first?.claims ?? []);
@@ -884,7 +921,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     recordModel("final", final);
     recordQueries(final, "final");
     finalRaw = final.raw;
-  } else if (!blockedResult && first?.needs_media === true) {
+  } else if (!blockedResult && !articleTarget && first?.needs_media === true) {
     finalResult = {
       outcome: "inaccessible_media",
       verdict: null,
@@ -892,6 +929,16 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       claims: [],
       sources: [],
       summary: "Não consegui acessar o conteúdo integral necessário. Envie o texto ou uma mídia que possa ser analisada.",
+    };
+  }
+
+  if (!blockedResult && articleTarget && (finalResult?.needs_media === true || finalResult?.outcome === "inaccessible_media")) {
+    const hasClaims = Array.isArray(finalResult?.claims) && finalResult.claims.length > 0;
+    finalResult = {
+      ...finalResult,
+      needs_media: false,
+      outcome: hasClaims ? "checked" : "insufficient_input",
+      ...(!hasClaims ? { verdict: null, score: null, claims: [], sources: [] } : {}),
     };
   }
 
@@ -945,6 +992,15 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   if (postTextOnly) {
     fixed.summary = `Cobertura limitada ao texto disponível do post; imagens, áudio e vídeo anexados não foram examinados. ${fixed.summary ?? ""}`;
   }
+  if (articleCoverage && !blockedResult) {
+    const coverageNote = articleCoverage.extraction === "full"
+      ? "Checagem baseada no corpo estruturado extraído da página e na pesquisa de fontes."
+      : articleCoverage.extraction === "partial"
+        ? "O artigo integral não foi lido; checagem limitada aos metadados/trechos disponíveis e às alegações identificadas na pesquisa."
+        : "O artigo não pôde ser lido diretamente; checagem baseada nas alegações identificadas pela pesquisa do URL/publicação.";
+    fixed.summary = `${coverageNote} ${fixed.summary ?? ""}`;
+    if (fixed.outcome === "insufficient_input") fixed.summary = `${coverageNote} Não foi possível identificar alegações verificáveis com o material e a pesquisa disponíveis. Envie o texto da notícia.`;
+  }
   const dossierNote = evidenceDossier ? evidenceNote(evidenceDossier.summary) : "";
   if (dossierNote) fixed.summary = `${fixed.summary ?? ""} ${dossierNote}`.trim();
   if (corrections.length > 0) phases.push({ name: "result-validation", ms: 0, ok: true, corrections });
@@ -957,7 +1013,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     fileHash: input?.fileHash ?? "",
   })).digest("hex");
   const promptHashes = {
-    judge: createHash("sha256").update(SYSTEM_PROMPT_JUDGE).digest("hex"),
+    judge: createHash("sha256").update(judgeInstructions).digest("hex"),
     final: createHash("sha256").update(SYSTEM_PROMPT_FINAL).digest("hex"),
   };
   const entry = {
@@ -1016,6 +1072,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       sampledFrameTimestamps: mediaFrameTimes,
       durationSec: mediaDurationSec,
       image: imageTarget ? (vision ? "described" : "unavailable") : null,
+      article: articleCoverage,
     },
     transcriptSegs: transcript?.segments?.length ?? 0,
     transcriptPreview: transcriptToPrompt(transcript).slice(0, 2000),

@@ -4,13 +4,74 @@
 
 ## Fluxo efetivo e versão
 
-As novas checagens usam `fact-check-4`. O fluxo configura/cacheia a entrada, aplica triagem de propósito e moderação, extrai mídia quando necessário, executa julgamento com busca web, revisa com dossiê, **obtém os documentos das fontes vinculadas para localizar os trechos citados** e valida evidências/pontuação antes de fixar score/veredito. Para imagens/vídeos, a etapa final recebe o material e um dossiê da primeira avaliação, com claims, fontes elegíveis, URLs estruturadas e consultas. Quando todos os claims da prévia têm classificação sustentada, a revisão não recebe ferramenta de busca; quando há claims sem comprovação, pode pesquisar lacunas e conflitos. Texto e links comuns usam o julgamento. Não são dois pesquisadores independentes.
+As novas checagens usam `fact-check-5`. O fluxo configura/cacheia a entrada, aplica triagem de propósito e moderação, extrai mídia quando necessário, executa julgamento com busca web, revisa com dossiê, **obtém os documentos das fontes vinculadas para localizar os trechos citados** e valida evidências/pontuação antes de fixar score/veredito. Para imagens/vídeos, a etapa final recebe o material e um dossiê da primeira avaliação, com claims, fontes elegíveis, URLs estruturadas e consultas. Quando todos os claims da prévia têm classificação sustentada, a revisão não recebe ferramenta de busca; quando há claims sem comprovação, pode pesquisar lacunas e conflitos. Texto e links comuns usam o julgamento. Não são dois pesquisadores independentes.
 
 Ordem das etapas de segurança: (1) política de URL no endpoint; (2) triagem de propósito (pedido direto ao assistente não é afirmação verificável); (3) moderação de texto/imagem antes das chamadas caras; (4) cobertura de vídeo declarada; (5) moderação da transcrição e dos frames amostrados antes da visão; (6) análise factual; (7) dossiê de evidências; (8) validação e registro.
 
 A entrada do modelo é tratada como material não confiável: instruções embutidas em texto, páginas, OCR e transcrição não devem alterar a tarefa. Isso é uma instrução e uma salvaguarda de prompt, não uma prova de resistência a prompt injection.
 
 A versão e a revisão da configuração integram o namespace do cache, junto da época de invalidação (`iev-cache-v2/epoch.json`): uma correção editorial invalidada pelo painel deixa de servir resultados antigos como versão vigente. Registros antigos não são reexecutados; quando não têm versão de metodologia, o painel os identifica como legados. Um registro preservado descreve aquela execução e não garante que uma execução atual repita a conclusão.
+
+### Notícias e falha de acesso ao artigo
+
+Links de páginas comuns usam extração HTML com `safeFetch`, sem downloader de
+vídeo. O registro `mediaCoverage.article` distingue `full` (campo estruturado
+articleBody recebido sem corte e sem indicação de paywall), `partial`
+(metadados/parágrafos/cortes) e `inaccessible` (falha de acesso/extração).
+`full` não comprova integralidade editorial nem autenticidade da página.
+Scripts/estilos/navegação são descartados; conteúdo da página permanece dado
+não confiável e passa pela moderação. Tetos de bytes, caracteres, redirects e
+tempo continuam vigentes; não há execução de JavaScript nem bypass de paywall.
+
+O julgamento de notícias orienta busca web, inclusive se o acesso direto falhar.
+OpenAI recebe `tool_choice: required`; OpenCode Go aceita somente a escolha
+automática, por isso recebe a exigência nas instruções. Sem chamadas de busca
+registradas, com abstenção por conteúdo insuficiente ou com uma resposta legada
+`needs_media`/`inaccessible_media`, há uma avaliação adicional de pesquisa.
+Isso não garante que o provedor devolva fontes utilizáveis; os diagnósticos de
+pesquisa registram o ocorrido. URL, título, publicação/site e trechos orientam
+a identificação de alegações, não provam o conteúdo. A síntese declara quando
+o artigo integral não foi lido. Uma notícia não termina como mídia inacessível
+só por falha de acesso: sem alegações identificáveis, `insufficient_input`;
+claims identificados sem evidência suficiente ficam `unproven`. A revisão de
+extração `article-content-v3` integra o cache sem alterar as regras
+`fact-check-5` para perguntas e alegações futuras.
+
+#### Evidência local de extração e pesquisa
+
+- URL exercitado:
+  `https://veja.abril.com.br/politica/de-olho-no-segundo-turno-pt-fara-atos-com-foco-no-eleitorado-cristao-em-sete-capitais/`.
+  A extração retornou `article:full`, título/site VEJA e 1.612 caracteres de
+  `articleBody`, sem truncamento. `runVerify` com OpenCode Go/Muse retornou
+  `checked`, 5 claims, 3 fontes, score 75 (`mostly_true`); o anúncio dos atos
+  em sete capitais permaneceu `unproven`. Foram registradas 10 consultas e
+  chamadas reais de busca. A ferramenta do provedor não abriu a página VEJA,
+  embora a extração HTTP do servidor tenha funcionado.
+- Cenário de acesso negado: servidor HTTP local controlado devolveu 403 para
+  URL com o mesmo slug e uma pista de publicação VEJA. Com o modelo real,
+  houve 5 consultas/chamadas de pesquisa; resultado `checked/unproven`, score
+  35, 1 claim, nenhuma fonte vinculada. A síntese declarou que o artigo não
+  foi lido diretamente. A hipótese do slug não foi tratada como comprovação.
+- Os testes de endpoint com respostas de modelo controladas exercitam
+  `needs_media`, preservação de claims e `insufficient_input` sem score/
+  veredito quando nenhuma alegação é identificável.
+
+São observações de execuções locais, não garantia de repetição, integralidade
+editorial, qualidade das fontes ou implantação. No smoke VEJA, o dossiê
+registrou **0/5 trechos localizados** nos documentos obtidos; a pontuação
+observada não equivale a validação humana nem deve ser apresentada como prova
+de que todas as fontes/alegações foram confirmadas.
+
+
+
+### Perguntas, rumores e ações futuras
+
+`fact-check-5` orienta julgamento e revisão a investigar hipóteses factuais implícitas em perguntas, inclusive informais. Uma pergunta sobre uma ação futura atribuída a alguém deve levar à busca de declarações, anúncios, propostas ou medidas verificáveis, não à previsão do futuro nem à classificação automática como `no_verifiable_claims`.
+
+O claim deve explicitar a hipótese investigada, sem inventar uma fala ou alvo. Um caso individual não identificado fica em `notCheckedClaims`; isso não impede investigar a alegação geral. Desmentidos antigos são contexto, não refutação automática de uma hipótese atual. Sem evidência adequada, o claim fica `unproven`. Opiniões e previsões puras continuam sem pontuação factual; os controles de segurança não foram relaxados.
+
+Smoke real da pergunta “o lula vai fechar a minha igreja???”: `checked`, claim geral `unproven`, pesquisa sobre declarações/medidas e caso individual registrado como não checado. O desmentido de 2022 foi usado como contexto. Esta execução confirma o caminho exercitado, não garante respostas idênticas em todas as execuções do modelo.
+
 
 ## Fontes e limites de evidência
 

@@ -7,14 +7,42 @@ de links antes de checar. Tudo roda server-side (`server/media.js`).
 
 ### 1. `fetchMediaContext(url)` — extração em camadas (principal)
 
-Tenta em ordem, para na primeira que funciona. Retorna
-`{ ok, context, media, attempts }` — `context` é texto pronto pro prompt.
+URLs comuns de páginas (fora de redes sociais, plataformas de vídeo e arquivos
+de mídia) usam extração HTML direta, sem worker/yt-dlp. Redes sociais e vídeo
+mantêm as camadas abaixo. Retorna `{ ok, context, media, attempts }`;
+`context` é material não confiável para o prompt, não instrução.
 
 | Camada | O que faz | Cobre | Requer |
 | ------ | ---------- | ----- | ------ |
 | `yt-dlp` | `--dump-json`: título, autor, data, duração, descrição, thumbnail | X, Instagram, TikTok, YouTube, Facebook, Kwai, Reddit, +1000 sites | binário `yt-dlp` no servidor |
 | `oEmbed` | JSON oficial do post | X (`publish.twitter.com`), YouTube, TikTok | só HTTP (Instagram removeu o público em 2024) |
 | `OpenGraph` | fetch do HTML + tags `og:*`/`twitter:*` | qualquer portal de notícias | só HTTP |
+
+### Extração de notícias
+
+A mesma extração de texto é usada para notícias enviadas diretamente e páginas
+vinculadas em posts do X. `safeFetch` mantém política de destinos públicos e
+validação de cada redirect (até 3). Notícias diretas usam timeout de 20 s e teto
+`IEV_MAX_DOC_BYTES` (padrão 8 MiB), com até 18.000 caracteres de corpo enviados ao
+julgamento. Links em posts mantêm até 3 páginas, 512 KiB/15 s por página,
+2.500 caracteres de corpo e contexto combinado de até 12.000 caracteres.
+
+A extração usa `articleBody` de JSON-LD Article/NewsArticle quando disponível;
+caso contrário, parágrafos em article/main ou na página, removendo scripts,
+estilos e blocos de navegação. Metadados incluem título, publicação/site,
+descrição, autor e data quando disponíveis. Não há bypass de login/paywall,
+execução de JavaScript nem inferência de texto ausente.
+
+- `full`: corpo estruturado recebido sem corte de bytes/caracteres nem
+  indicação estruturada de paywall. Significa completo **nesse campo recebido**,
+  não garantia de que o site forneceu o artigo editorial inteiro.
+- `partial`: parágrafos, metadados, corpo cortado ou indicação de paywall.
+- `inaccessible`: falha HTTP/rede, desafio de acesso, formato não HTML ou nenhum
+  conteúdo extraível. URL/site permanecem disponíveis como pistas de pesquisa.
+
+O endpoint expõe essa cobertura em `mediaCoverage.article` e na síntese.
+Conteúdo extraído passa pela moderação antes do julgamento; ordens embutidas na
+página são dados não confiáveis. Inacessibilidade não significa falsidade.
 
 ### 2. `downloadAudio(url, outDir)` — MP3 para transcrição futura
 
@@ -70,17 +98,23 @@ node scripts/fetch-media.mjs <url> --audio    # + baixa o MP3
 }
 ```
 
-## Fluxo em 2 passes (runVerify)
+## Fluxo efetivo (runVerify)
 
-1. **Passo 1 — rápido:** metadados do link (yt-dlp probe / oEmbed / OpenGraph).
-   A IA julga com o que tem; se faltar conteúdo, responde `{"needs_media":true}`.
-2. **Passo 2 — sob demanda:** só roda se a IA pedir mídia **ou** se for vídeo
-   com URL (vídeo sempre transcreve). Baixa o MP3 (`downloadAudio`) +
-   transcreve com Whisper (`transcribe`) + rejulga com a transcrição.
-   **Sem fala no áudio?** Extrai frames (`downloadFrames`) e roda OCR/visão
-   (`describeFrames`) para capturar o texto na tela, e rejulga com ele.
-
-Texto puro e links com conteúdo suficiente: 1 passo, sem download.
+1. **Notícias comuns:** extrai HTML e orienta julgamento com busca web. OpenAI
+   recebe escolha obrigatória de ferramenta; OpenCode Go aceita só `auto` e
+   recebe a exigência nas instruções. Se a página não abrir, pesquisa
+   URL/título/publicação e alegações identificáveis, sem fingir leitura integral.
+   `needs_media`, `inaccessible_media`, `insufficient_input` ou ausência de
+   chamadas de busca na primeira avaliação acionam uma avaliação de pesquisa,
+   não download de vídeo nem abstenção automática. Sem alegação identificável:
+   `insufficient_input`; claim identificado sem prova suficiente: `unproven`.
+2. **Vídeo com URL/upload:** extração de metadados, áudio/transcrição e frames/
+   visão, com moderação e limites. Julgamento e revisão compartilham dossiê.
+   Se áudio/visão falharem, mas houver texto do post, checa somente esse texto
+   e explicita que anexos não foram examinados. Sem conteúdo: `inaccessible_media`.
+3. **Texto e links comuns com resultado suficiente:** um julgamento, sem
+   download de áudio/vídeo. A obtenção/revisão dos documentos citados ainda pode
+   executar etapas adicionais de evidência.
 
 ## Transcrição (API da OpenAI)
 

@@ -7,6 +7,7 @@ const { createGuard, limitsConfig } = await import("./limits.js");
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 
 const post = (body, extra = {}) => ({ method: "POST", headers: {}, body, socketAddress: "203.0.113.9", ...extra });
 
@@ -92,4 +93,82 @@ test("IP confiável do proxy é usado quando configurado", async () => {
   assert.equal(clientIp({ "x-forwarded-for": "1.1.1.1, 10.0.0.1" }, "127.0.0.1"), "1.1.1.1");
   assert.equal(clientIp({}, "127.0.0.1"), "127.0.0.1");
   assert.equal(clientIp({ "x-forwarded-for": "9.9.9.9" }, "127.0.0.1", { IEV_TRUST_PROXY: "0" }), "127.0.0.1");
+});
+
+test("notícias inacessíveis são pesquisadas e não descartam claims por needs_media", async (t) => {
+  const savedEnv = Object.fromEntries(["OPENCODE_API", "OPENAI_API_KEY", "IEV_ALLOW_PRIVATE_HOSTS", "IEV_HTTP_PORTS", "IEV_EVIDENCE_FETCH"].map((key) => [key, process.env[key]]));
+  const originalFetch = globalThis.fetch;
+  const server = createServer((_req, res) => {
+    res.writeHead(403, { "Content-Type": "text/html" });
+    res.end("<html><title>Forbidden</title></html>");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  process.env.IEV_ALLOW_PRIVATE_HOSTS = "1";
+  process.env.IEV_HTTP_PORTS = String(port);
+  process.env.OPENCODE_API = "test-only-key";
+  delete process.env.OPENAI_API_KEY;
+  process.env.IEV_EVIDENCE_FETCH = "0";
+  let responses = [];
+  globalThis.fetch = async (url, options) => {
+    if (String(url).endsWith("/responses")) {
+      const result = responses.shift();
+      assert.ok(result, "requisição inesperada ao modelo");
+      return new Response(JSON.stringify({
+        output: [
+          { type: "web_search_call", status: "completed", action: { type: "search", query: "publicação escolas municipais", sources: [] } },
+          { type: "message", content: [{ type: "output_text", text: JSON.stringify(result) }] },
+        ],
+      }), { status: 200 });
+    }
+    if (String(url).endsWith("/models")) return new Response(JSON.stringify({ data: [{ id: "muse-spark-1.3-contributor" }] }), { status: 200 });
+    return originalFetch(url, options);
+  };
+  try {
+    await t.test("alegação identificada sobrevive ao pedido legado de mídia", async () => {
+      responses = [
+        { needs_media: true },
+        { outcome: "checked", claims: [{ text: "O município anunciou sete escolas.", status: "unproven", score: 35, note: "Pesquisa identificou a alegação, mas não prova suficiente.", evidence: [] }], sources: [], summary: "Não confirmado." },
+      ];
+      const out = await handleVerifyRequest(post({ kind: "link", text: `http://127.0.0.1:${port}/noticia-escolas` }, { guard: guardWith() }));
+      assert.equal(out.status, 200);
+      assert.equal(out.body.result.outcome, "checked");
+      assert.equal(out.body.result.claims.length, 1);
+      assert.equal(out.body.result.claims[0].status, "unproven");
+      assert.equal(out.body.result.verdict, "unproven");
+      assert.match(out.body.result.summary, /não pôde ser lido diretamente/);
+      assert.equal(out.body.mediaCoverage.article.extraction, "inaccessible");
+      assert.equal(responses.length, 0);
+    });
+    await t.test("pesquisa sem alegação identificável não inventa score nem artigo", async () => {
+      responses = [{ needs_media: true }, { needs_media: true, outcome: "inaccessible_media", claims: [], sources: [] }];
+      const out = await handleVerifyRequest(post({ kind: "link", text: `http://127.0.0.1:${port}/publicacao-nao-identificada` }, { guard: guardWith() }));
+      assert.equal(out.status, 200);
+      assert.equal(out.body.result.outcome, "insufficient_input");
+      assert.equal(out.body.result.score, null);
+      assert.equal(out.body.result.verdict, null);
+      assert.equal(out.body.result.claims.length, 0);
+      assert.match(out.body.result.summary, /Não foi possível identificar alegações/);
+      assert.equal(responses.length, 0);
+    });
+    await t.test("sinalizador legado com claims não apaga alegações na validação", async () => {
+      responses = [
+        { needs_media: true },
+        { needs_media: true, claims: [{ text: "A cidade anunciou sete escolas.", status: "unproven", score: 35, evidence: [] }], sources: [] },
+      ];
+      const out = await handleVerifyRequest(post({ kind: "link", text: `http://127.0.0.1:${port}/claims-disponiveis` }, { guard: guardWith() }));
+      assert.equal(out.status, 200);
+      assert.equal(out.body.result.outcome, "checked");
+      assert.equal(out.body.result.claims.length, 1);
+      assert.equal(out.body.result.verdict, "unproven");
+      assert.equal(responses.length, 0);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

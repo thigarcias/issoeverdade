@@ -33,8 +33,9 @@ export async function saveCheckLog(entry) {
     phases: entry.phases ?? [],
     totalMs: entry.totalMs ?? null,
     model: entry.model ?? null,
+    provider: entry.provider ?? null,
+    aiConfig: entry.aiConfig ?? null,
     verdict: entry.verdict ?? null,
-    score: entry.score ?? null,
     summary: String(entry.summary ?? "").slice(0, 1000),
     claims: Array.isArray(entry.claims) ? entry.claims.slice(0, 10) : [],
     sources: Array.isArray(entry.sources) ? entry.sources.slice(0, 10) : [],
@@ -83,6 +84,7 @@ export async function saveCheckLog(entry) {
       score: record.score,
       totalMs: record.totalMs,
       model: record.model,
+      provider: record.provider ?? null,
       error: record.error,
       inputPreview: record.inputPreview,
     };

@@ -227,7 +227,20 @@ function DetailDialog({ detail, loading, onClose, showToast }) {
                     {detail.fileName ? ` · ${detail.fileName}` : ""} — “{detail.inputPreview}”
                   </dd>
                   <dt>Modelo</dt>
-                  <dd>{detail.model ?? "—"}</dd>
+                  <dd>
+                    {detail.model ?? "—"}
+                    {detail.provider ? ` (${detail.provider === "openai" ? "OpenAI" : "OpenCode Go"})` : ""}
+                  </dd>
+                  {detail.aiConfig && (
+                    <>
+                      <dt>Config de IA</dt>
+                      <dd className="admin-mut">
+                        {Object.entries(detail.aiConfig)
+                          .map(([s, v]) => `${s}: ${v}`)
+                          .join(" · ")}
+                      </dd>
+                    </>
+                  )}
                   <dt>Resumo</dt>
                   <dd>{detail.summary || "—"}</dd>
                   {detail.cachedFrom && (
@@ -367,6 +380,84 @@ const SORTS = [
   { id: "lowest", label: "Menor score" },
 ];
 
+const STEP_LABEL = {
+  judge: "Julgamento (passo 1)",
+  final: "Veredito final (passo 2)",
+  vision: "Visão / OCR de vídeo",
+  transcribe: "Transcrição de áudio",
+};
+
+function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSave, onReload }) {
+  if (!catalog || !draft) return null;
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  const providers = catalog.providers ?? {};
+  function setStep(step, patch) {
+    onChange({ ...draft, [step]: { ...draft[step], ...patch } });
+  }
+  return (
+    <section className="card admin-ai" aria-label="Modelo de IA do site">
+      <div className="admin-ai-head">
+        <h3>IA do site</h3>
+        <span className="admin-mut">{persisted ? "salvo no servidor" : "só nesta instância (sem Blob)"}</span>
+      </div>
+      <p className="admin-mut">Qual provedor e modelo cada passo usa. Vale para as próximas checagens.</p>
+      <div className="admin-ai-grid">
+        {(catalog.steps ?? []).map((step) => {
+          const pair = draft[step] ?? {};
+          const prov = providers[pair.provider] ?? {};
+          const models = [...(prov.models ?? [])];
+          if (pair.model && !models.some((m) => m.id === pair.model)) {
+            models.push({ id: pair.model, label: `${pair.model} (atual)` });
+          }
+          return (
+            <div key={step} className="admin-ai-row">
+              <span className="admin-ai-step">{STEP_LABEL[step] ?? step}</span>
+              <label>
+                Provedor
+                <select
+                  value={pair.provider ?? ""}
+                  onChange={(e) => {
+                    const next = providers[e.target.value] ?? {};
+                    const firstModel = next.models?.[0]?.id ?? pair.model;
+                    setStep(step, { provider: e.target.value, model: firstModel });
+                  }}
+                >
+                  {Object.entries(providers).map(([id, p]) => (
+                    <option key={id} value={id} disabled={!p.hasKey}>
+                      {p.label}
+                      {p.hasKey ? "" : " (sem chave)"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Modelo
+                <select value={pair.model ?? ""} onChange={(e) => setStep(step, { model: e.target.value })}>
+                  {models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label ?? m.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          );
+        })}
+      </div>
+      <div className="admin-ai-actions">
+        <button className="btn primary" type="button" onClick={onSave} disabled={saving || !dirty}>
+          {saving ? "Salvando…" : "Salvar modelo"}
+        </button>
+        {dirty && (
+          <button className="btn ghost" type="button" onClick={onReload} disabled={saving}>
+            Descartar
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function Admin({ showToast }) {
   const [secret, setSecret] = useState(() => sessionStorage.getItem(SECRET_KEY) ?? "");
   const [input, setInput] = useState("");
@@ -380,6 +471,11 @@ export default function Admin({ showToast }) {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [hint, setHint] = useState("");
+  const [aiCatalog, setAiCatalog] = useState(null);
+  const [aiConfig, setAiConfig] = useState(null);
+  const [aiDraft, setAiDraft] = useState(null);
+  const [aiSaving, setAiSaving] = useState(false);
+  const [aiPersisted, setAiPersisted] = useState(true);
 
   const authedFetch = useCallback(
     async (path) => {
@@ -422,8 +518,54 @@ export default function Admin({ showToast }) {
     [secret, authedFetch, items, showToast],
   );
 
+  const loadAi = useCallback(async () => {
+    if (!secret) return;
+    try {
+      const data = await authedFetch("/api/admin?config=1");
+      setAiCatalog(data.catalog ?? null);
+      setAiConfig(data.config ?? null);
+      setAiDraft(data.config ?? null);
+      setAiPersisted(data.persisted !== false);
+    } catch {
+      setAiCatalog(null);
+    }
+  }, [secret, authedFetch]);
+
+  async function saveAi() {
+    if (!aiDraft) return;
+    setAiSaving(true);
+    try {
+      const res = await fetch("/api/admin?config=1", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ config: aiDraft }),
+      });
+      if (res.status === 401) {
+        sessionStorage.removeItem(SECRET_KEY);
+        setSecret("");
+        setItems(null);
+        showToast("Sessão inválida. Entre de novo.");
+        return;
+      }
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        showToast("Não consegui salvar a config de IA.");
+        return;
+      }
+      setAiConfig(data.saved ?? aiDraft);
+      setAiDraft(data.saved ?? aiDraft);
+      setAiPersisted(data.persisted !== false);
+      showToast(data.persisted === false ? "Salvo (só nesta instância — sem Blob)." : "Modelo de IA atualizado.");
+    } catch {
+      showToast("Não consegui salvar a config de IA.");
+    } finally {
+      setAiSaving(false);
+    }
+  }
+
   useEffect(() => {
     load({ silent: true });
+    loadAi();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secret]);
 
@@ -578,6 +720,17 @@ export default function Admin({ showToast }) {
           <dd>{loading ? "…" : stats.errors}</dd>
         </div>
       </dl>
+
+      <AiConfigCard
+        catalog={aiCatalog}
+        draft={aiDraft}
+        saved={aiConfig}
+        saving={aiSaving}
+        persisted={aiPersisted}
+        onChange={setAiDraft}
+        onSave={saveAi}
+        onReload={loadAi}
+      />
 
       <div className="search-panel">
         <div className="search-box">

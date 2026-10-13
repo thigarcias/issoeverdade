@@ -3,6 +3,7 @@
 import { loadEnv } from "vite";
 import { runVerify } from "./server/verify.js";
 import { getCheckLog, listCheckLogs, logEnabled } from "./server/checklog.js";
+import { aiConfigCatalog, getAiConfig, providerKey, saveAiConfig } from "./server/ai-config.js";
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -17,21 +18,13 @@ function readBody(req) {
 }
 
 export function apiVerifyPlugin() {
-  let apiKey = process.env.OPENCODE_API || "";
   return {
     name: "iev-api-verify",
     apply: "serve",
     configResolved(config) {
       const full = loadEnv(config.mode, config.root || process.cwd(), "");
-      apiKey = apiKey || full.OPENCODE_API || "";
-      if (full.OPENAI_API_KEY && !process.env.OPENAI_API_KEY) {
-        process.env.OPENAI_API_KEY = full.OPENAI_API_KEY;
-      }
-      if (full.BLOB_READ_WRITE_TOKEN && !process.env.BLOB_READ_WRITE_TOKEN) {
-        process.env.BLOB_READ_WRITE_TOKEN = full.BLOB_READ_WRITE_TOKEN;
-      }
-      if (full.ADMIN_SECRET && !process.env.ADMIN_SECRET) {
-        process.env.ADMIN_SECRET = full.ADMIN_SECRET;
+      for (const k of ["OPENCODE_API", "OPENAI_API_KEY", "BLOB_READ_WRITE_TOKEN", "ADMIN_SECRET", "MEDIA_WORKER_URL", "MEDIA_WORKER_SECRET"]) {
+        if (full[k] && !process.env[k]) process.env[k] = full[k];
       }
     },
     configureServer(server) {
@@ -52,7 +45,7 @@ export function apiVerifyPlugin() {
         const fileName = input?.fileName ? String(input.fileName) : null;
         if (!text && !fileName) return send(400, { error: "empty_input" });
         try {
-          const out = await runVerify({ kind: input.kind, text, fileName }, { apiKey });
+          const out = await runVerify({ kind: input.kind, text, fileName });
           return send(200, out);
         } catch (err) {
           return send(err.status ?? 502, err.payload ?? { error: "upstream_error" });
@@ -69,11 +62,40 @@ export function apiVerifyPlugin() {
         if (String(req.headers.authorization ?? "") !== `Bearer ${secret}`) {
           return send(401, { error: "unauthorized" });
         }
+        const params = new URL(req.url, "http://local").searchParams;
+        if (params.has("config") && params.get("config") !== "0") {
+          if (req.method === "GET") {
+            const catalog = aiConfigCatalog();
+            for (const id of Object.keys(catalog.providers)) {
+              catalog.providers[id].hasKey = Boolean(providerKey(id));
+            }
+            return send(200, {
+              catalog,
+              config: await getAiConfig(),
+              persisted: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
+            });
+          }
+          if (req.method === "POST") {
+            let body = null;
+            try {
+              body = JSON.parse(await readBody(req));
+            } catch {
+              return send(400, { error: "bad_config" });
+            }
+            if (!body || typeof body.config !== "object") return send(400, { error: "bad_config" });
+            try {
+              return send(200, await saveAiConfig(body.config));
+            } catch {
+              return send(502, { error: "config_save_failed" });
+            }
+          }
+          return send(405, { error: "method_not_allowed" });
+        }
         if (req.method !== "GET") return send(405, { error: "method_not_allowed" });
         if (!logEnabled()) {
           return send(200, { enabled: false, items: [], hint: "BLOB_READ_WRITE_TOKEN ausente — logs só no console." });
         }
-        const id = new URL(req.url, "http://local").searchParams.get("id") || "";
+        const id = params.get("id") || "";
         if (id) {
           const record = await getCheckLog(id);
           if (!record) return send(404, { error: "not_found" });

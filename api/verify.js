@@ -68,10 +68,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "private_url" });
   }
   try {
-    const out = await runVerify(
-      { kind: input.kind, text, fileName },
-      { apiKey: process.env.OPENCODE_API || "" },
-    );
+    const out = await runVerify({ kind: input.kind, text, fileName });
     return res.status(200).json(out);
   } catch (err) {
     return res.status(err.status ?? 502).json(err.payload ?? { error: "upstream_error" });

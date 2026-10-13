@@ -33,28 +33,31 @@ function formatTs(sec) {
 
 /**
  * @param {string} audioPath caminho do MP3/WAV/M4A (lê do disco e faz upload)
+ * @param {{ model?: string }} opts override de modelo (config de IA do admin)
  * @returns {{ ok, segments?: [{ts,start,end,text}], text?, duration?, model?, reason? }}
  */
-export async function transcribe(audioPath) {
-  if (cache.has(audioPath)) return cache.get(audioPath);
+export async function transcribe(audioPath, opts = {}) {
+  const model = typeof opts.model === "string" && opts.model ? opts.model : MODEL;
+  const cacheKey = `${audioPath}::${model}`;
+  if (cache.has(cacheKey)) return cache.get(cacheKey);
   const job = queue.then(async () => {
     while (running >= MAX_PARALLEL) {
       await new Promise((r) => setTimeout(r, 200));
     }
     running++;
     try {
-      return await runTranscribe(audioPath);
+      return await runTranscribe(audioPath, model);
     } finally {
       running--;
     }
   });
   queue = job.catch(() => {});
   const out = await job;
-  if (out.ok) cache.set(audioPath, out);
+  if (out.ok) cache.set(cacheKey, out);
   return out;
 }
 
-async function runTranscribe(audioPath) {
+async function runTranscribe(audioPath, model = MODEL) {
   if (!apiKey()) return { ok: false, reason: "no-openai-key" };
   let size = 0;
   try {
@@ -103,7 +106,7 @@ async function runTranscribe(audioPath) {
       segments,
       text: segments.map((s) => s.text).join(" ") || String(data.text ?? ""),
       duration: data.duration ?? null,
-      model: MODEL,
+      model,
     };
   } catch (err) {
     if (err?.name === "AbortError") return { ok: false, reason: "transcribe-timeout" };

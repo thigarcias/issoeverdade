@@ -6,6 +6,7 @@ import { downloadAudio, downloadFrames, fetchMediaContext } from "./media.js";
 import { transcribe, transcriptToPrompt } from "./transcribe.js";
 import { saveCheckLog as saveLog } from "./checklog.js";
 import { getCached, setCached } from "./cache.js";
+import { getAiConfig, providerKey, providerUrl } from "./ai-config.js";
 import {
   SYSTEM_PROMPT_FINAL,
   SYSTEM_PROMPT_JUDGE,
@@ -14,8 +15,10 @@ import {
 
 export const OPENCODE_URL = "https://opencode.ai/zen/go/v1/responses";
 export const OPENAI_URL = "https://api.openai.com/v1/responses";
-export const DEFAULT_MODEL = "muse-spark-1.3-contributor"; // OpenCode Go com web_search nativo (primário, custo zero)
-export const FALLBACK_MODEL = "gpt-6-luna"; // OpenAI com web_search (fallback pago)
+// Modelos de fábrica (fallback se a config de IA falhar). O painel admin
+// troca provedor/modelo por passo via server/ai-config.js.
+export const DEFAULT_MODEL = "muse-spark-1.3-contributor";
+export const FALLBACK_MODEL = "gpt-6-luna";
 export function buildUserContent(input, mediaContext = "") {
   const text = String(input?.text ?? "").slice(0, 8000);
   const fileName = input?.fileName ? String(input.fileName).slice(0, 200) : null;
@@ -71,69 +74,30 @@ function parseModelJson(content, mdl) {
   }
 }
 
-async function callOpenAI({ instructions, input, timeoutMs }) {
-  const key = process.env.OPENAI_API_KEY || "";
-  if (!key) fail(503, "missing_openai_key", { message: "OPENAI_API_KEY não configurada." });
+// Chamada genérica à Responses API de qualquer provedor configurado.
+// Ambos os provedores (OpenCode Go e OpenAI) falam o mesmo protocolo:
+// Responses API com web_search. Modelos vêm da config de IA (admin).
+async function callResponses({ url, key, model, instructions, input, timeoutMs, maxTokens = 8000, webSearch = true }) {
+  if (!key) fail(503, "missing_provider_key", { message: "Chave do provedor de IA não configurada.", model });
+  const isGo = /opencode\.ai/.test(url ?? "");
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const upstream = await fetch(OPENAI_URL, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: FALLBACK_MODEL,
-        instructions,
-        input,
-        tools: [{ type: "web_search", search_context_size: "medium" }],
-        max_output_tokens: 8000,
-      }),
-      signal: ctrl.signal,
-    });
-    const raw = await upstream.text();
-    if (!upstream.ok) {
-      let code = "openai_error";
-      try {
-        const p = JSON.parse(raw);
-        code = p?.error?.code ?? p?.error?.type ?? code;
-      } catch { /* mantém genérico */ }
-      fail(502, code, { message: raw.slice(0, 500), model: FALLBACK_MODEL });
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      fail(502, "upstream_bad_json", { model: FALLBACK_MODEL });
-    }
-    const text = extractText(parsed);
-    return { result: parseModelJson(text, FALLBACK_MODEL), raw: text };
-  } catch (err) {
-    if (err?.payload) throw err;
-    if (err?.name === "AbortError") fail(504, "upstream_timeout", { model: FALLBACK_MODEL });
-    fail(502, "upstream_fetch_failed", { model: FALLBACK_MODEL });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function callGo({ apiKey, instructions, input, timeoutMs }) {
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const upstream = await fetch(OPENCODE_URL, {
+    const upstream = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
         "User-Agent": "issoeverdade/0.1",
-        "x-opencode-session": `iev-${Date.now().toString(36)}`,
+        ...(isGo ? { "x-opencode-session": `iev-${Date.now().toString(36)}` } : {}),
       },
       body: JSON.stringify({
-        model: DEFAULT_MODEL,
+        model,
         instructions,
         input,
-        tools: [{ type: "web_search" }],
-        max_output_tokens: 8000,
-        reasoning: { effort: "low" },
+        ...(webSearch ? { tools: isGo ? [{ type: "web_search" }] : [{ type: "web_search", search_context_size: "medium" }] } : {}),
+        max_output_tokens: maxTokens,
+        ...(isGo ? { reasoning: { effort: "low" } } : {}),
       }),
       signal: ctrl.signal,
     });
@@ -141,41 +105,56 @@ async function callGo({ apiKey, instructions, input, timeoutMs }) {
     if (!upstream.ok) {
       let code = "upstream_error";
       try {
-        const parsed = JSON.parse(raw);
-        code = parsed?.error?.type ?? parsed?.type ?? code;
+        const p = JSON.parse(raw);
+        code = p?.error?.code ?? p?.error?.type ?? p?.type ?? code;
       } catch { /* mantém genérico */ }
-      fail(502, code, { message: raw.slice(0, 500), model: DEFAULT_MODEL });
+      fail(502, code, { message: raw.slice(0, 500), model });
     }
     let parsed;
     try {
       parsed = JSON.parse(raw);
     } catch {
-      fail(502, "upstream_bad_json", { model: DEFAULT_MODEL });
+      fail(502, "upstream_bad_json", { model });
     }
     const text = extractText(parsed);
-    return { result: parseModelJson(text, DEFAULT_MODEL), raw: text };
+    return { text, raw: text };
   } catch (err) {
     if (err?.payload) throw err;
-    if (err?.name === "AbortError") fail(504, "upstream_timeout", { model: DEFAULT_MODEL });
-    fail(502, "upstream_fetch_failed", { model: DEFAULT_MODEL });
+    if (err?.name === "AbortError") fail(504, "upstream_timeout", { model });
+    fail(502, "upstream_fetch_failed", { model });
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function callModel({ apiKey, instructions, input, timeoutMs }) {
-  // Muse Spark (Go, custo zero) primeiro; GPT Luna (OpenAI) como fallback pago.
-  if (apiKey) {
-    try {
-      const { result, raw } = await callGo({ apiKey, instructions, input, timeoutMs });
-      return { result, model: DEFAULT_MODEL, raw };
-    } catch (err) {
-      console.error(`[iev] Go falhou (${err?.payload?.error ?? err?.message}), usando fallback Luna`);
-      if (!process.env.OPENAI_API_KEY) throw err;
-    }
+async function callJson({ pair, instructions, input, timeoutMs }) {
+  const { text, raw } = await callResponses({
+    url: providerUrl(pair.provider),
+    key: providerKey(pair.provider),
+    model: pair.model,
+    instructions,
+    input,
+    timeoutMs,
+  });
+  return { result: parseModelJson(text, pair.model), raw };
+}
+
+// Passo de julgamento com config de IA: tenta o par configurado; se ele
+// for do OpenCode e falhar, tenta a Luna (OpenAI) como rede de segurança —
+// salvo quando a própria config já usa OpenAI (sem retry redundante).
+async function callModel({ aiCfg, step, instructions, input, timeoutMs }) {
+  const pair = aiCfg?.[step] ?? { provider: "opencode", model: DEFAULT_MODEL };
+  try {
+    const { result, raw } = await callJson({ pair, instructions, input, timeoutMs });
+    return { result, model: pair.model, provider: pair.provider, raw };
+  } catch (err) {
+    const fallbackKey = process.env.OPENAI_API_KEY || "";
+    if (pair.provider === "openai" || !fallbackKey) throw err;
+    console.error(`[iev] ${pair.model} falhou (${err?.payload?.error ?? err?.message}), usando fallback Luna`);
+    const fb = { provider: "openai", model: FALLBACK_MODEL };
+    const { result, raw } = await callJson({ pair: fb, instructions, input, timeoutMs });
+    return { result, model: fb.model, provider: fb.provider, raw };
   }
-  const { result, raw } = await callOpenAI({ instructions, input, timeoutMs });
-  return { result, model: FALLBACK_MODEL, raw };
 }
 
 /**
@@ -292,65 +271,37 @@ async function sanitizeSources(sources, claims = null) {
 /**
  * Analisa frames do vídeo com o modelo de visão — OCR do texto na tela +
  * descrição das cenas. Usado quando o vídeo não tem fala (só música/trilha).
- * Muse (custo zero) primeiro; Luna (OpenAI) como fallback. Falha → null.
+ * Usa o par "vision" da config de IA (admin); Luna como rede de segurança.
  * @param {string[]} frames JPEGs em base64, na ordem temporal.
  * @returns {Promise<string|null>} "[frame N] TEXTO: ... | CENA: ..." por linha.
  */
-async function describeFrames(frames, { apiKey, timeoutMs = 120_000 } = {}) {
+async function describeFrames(frames, { aiCfg, timeoutMs = 120_000 } = {}) {
   if (!Array.isArray(frames) || frames.length === 0) return null;
   const instructions = `Você analisa frames, em ordem, de um vídeo de política brasileira que NÃO tem fala (só música ou trilha). Para CADA frame: extraia LITERALMENTE todo texto visível (títulos, legendas queimadas, marca d'água, assinatura de propaganda eleitoral) e descreva a cena em 1 frase curta. Formato exato, uma linha por frame: "[frame N] TEXTO: <texto literal ou (nenhum)> | CENA: <descrição>". Sem markdown, sem introdução, sem comentários.`;
   const content = [{ type: "input_text", text: `Analise os ${frames.length} frames na ordem em que aparecem:` }];
   for (const f of frames) content.push({ type: "input_image", image_url: `data:image/jpeg;base64,${f}` });
   const input = [{ role: "user", content }];
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    if (apiKey) {
-      try {
-        const res = await fetch(OPENCODE_URL, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            "User-Agent": "issoeverdade/0.1",
-            "x-opencode-session": `iev-${Date.now().toString(36)}`,
-          },
-          body: JSON.stringify({
-            model: DEFAULT_MODEL,
-            instructions,
-            input,
-            max_output_tokens: 4000,
-            reasoning: { effort: "low" },
-          }),
-          signal: ctrl.signal,
-        });
-        if (res.ok) {
-          const text = extractText(await res.json()).trim();
-          if (text) return text.slice(0, 6000);
-        }
-      } catch { /* tenta o fallback */ }
-    }
-    const key = process.env.OPENAI_API_KEY || "";
-    if (!key) return null;
-    const res = await fetch(OPENAI_URL, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: FALLBACK_MODEL,
-        instructions,
-        input,
-        max_output_tokens: 4000,
-      }),
-      signal: ctrl.signal,
+  const pair = aiCfg?.vision ?? { provider: "opencode", model: DEFAULT_MODEL };
+  async function attempt(p) {
+    const { text } = await callResponses({
+      url: providerUrl(p.provider),
+      key: providerKey(p.provider),
+      model: p.model,
+      instructions,
+      input,
+      timeoutMs,
+      maxTokens: 4000,
+      webSearch: false,
     });
-    if (!res.ok) return null;
-    const text = extractText(await res.json()).trim();
-    return text ? text.slice(0, 6000) : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
+    const clean = text.trim();
+    return clean ? clean.slice(0, 6000) : null;
   }
+  const first = await attempt(pair).catch(() => null);
+  if (first) return first;
+  if (pair.provider !== "openai" && providerKey("openai")) {
+    return await attempt({ provider: "openai", model: FALLBACK_MODEL }).catch(() => null);
+  }
+  return null;
 }
 
 function toOrigin(media, url) {
@@ -377,7 +328,7 @@ async function enrichWithMedia(maybeUrl, opts = {}) {
   const debug = [...media.attempts];
   debug.push(`audio:${dl.ok ? `${dl.via}:${dl.file}` : dl.reason}`);
   if (dl.ok) {
-    const t = await transcribe(dl.file);
+    const t = await transcribe(dl.file, { model: opts.aiCfg?.transcribe?.model });
     debug.push(`whisper:${t.ok ? `${t.segments?.length ?? 0} segs` : t.reason}`);
     if (t.ok && t.text) {
       transcript = t;
@@ -391,7 +342,7 @@ async function enrichWithMedia(maybeUrl, opts = {}) {
     const fr = await downloadFrames(maybeUrl);
     debug.push(`frames:${fr.ok ? `${fr.via}:${fr.count}` : fr.reason}`);
     if (fr.ok) {
-      const vision = await describeFrames(fr.frames, { apiKey: opts.apiKey });
+      const vision = await describeFrames(fr.frames, { aiCfg: opts.aiCfg, timeoutMs: opts.timeoutMs });
       debug.push(`vision:${vision ? "ok" : "failed"}`);
       if (vision) {
         mediaContext += `\n\nVídeo sem fala — texto na tela e cenas (análise visual frame a frame):\n${vision}`;
@@ -446,9 +397,10 @@ export async function runVerify(input, opts = {}) {
   }
 }
 
-async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
-  // Go (Muse) é o primário; OpenAI (Luna) é fallback. Pelo menos um precisa existir.
-  if (!apiKey && !process.env.OPENAI_API_KEY) {
+async function runVerifyInner(input, { timeoutMs = 120_000 } = {}) {
+  // Config de IA (admin): qual provedor/modelo cada passo usa. Falha = fábrica.
+  const aiCfg = await getAiConfig().catch(() => null);
+  if (!providerKey("opencode") && !providerKey("openai")) {
     fail(503, "missing_api_key", { message: "Nenhuma chave de IA configurada no servidor." });
   }
   // Cache: mesma entrada em <24h = resultado idêntico, sem custo.
@@ -525,22 +477,30 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
     });
   }
   const judgeInput = buildUserContent(input, mediaContext);
-  let { result: first, model: firstModel, raw: firstRaw } = await phase("judge", () =>
+  let { result: first, model: firstModel, provider: firstProvider, raw: firstRaw } = await phase("judge", () =>
     callModel({
-      apiKey,
+      aiCfg,
+      step: "judge",
       instructions: SYSTEM_PROMPT_JUDGE,
       input: judgeInput,
       timeoutMs,
     }),
   );
-  // Retry cruzado: Muse às vezes pede mídia para texto checável — Luna tenta antes de desistir.
-  if (first?.needs_media === true && !wantsMedia && firstModel === DEFAULT_MODEL && process.env.OPENAI_API_KEY) {
+  // Retry cruzado: o modelo do passo às vezes pede mídia para texto checável —
+  // a Luna (outro provedor) tenta antes de desistir.
+  if (first?.needs_media === true && !wantsMedia && firstProvider === "opencode" && providerKey("openai")) {
     const retry = await phase("judge-retry", () =>
-      callOpenAI({ instructions: SYSTEM_PROMPT_JUDGE, input: judgeInput, timeoutMs }),
+      callJson({
+        pair: { provider: "openai", model: FALLBACK_MODEL },
+        instructions: SYSTEM_PROMPT_JUDGE,
+        input: judgeInput,
+        timeoutMs,
+      }),
     ).catch(() => null);
     if (retry && retry.result?.needs_media !== true) {
       first = retry.result;
       firstModel = FALLBACK_MODEL;
+      firstProvider = "openai";
       firstRaw = retry.raw;
     }
   }
@@ -552,7 +512,7 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
   if (mustTranscribe) {
     await phase("enrich", async () => {
       try {
-        const enriched = await enrichWithMedia(maybeUrl, { apiKey });
+        const enriched = await enrichWithMedia(maybeUrl, { aiCfg, timeoutMs });
         mediaDebug = [...mediaDebug, ...enriched.debug];
         if (enriched.mediaContext && enriched.mediaContext !== mediaContext) {
           mediaContext = enriched.mediaContext;
@@ -566,9 +526,10 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
     if (transcript || mediaContext) {
       const kindLabel = input?.kind === "video" ? "vídeo/áudio" : "link";
       const finalInput = `Cheque este ${kindLabel}: ${maybeUrl}\n\nDados extraídos (confie nestes dados):\n${mediaContext}`;
-      const { result: second, model: secondModel, raw: secondRaw } = await phase("final", () =>
+      const { result: second, model: secondModel, provider: secondProvider, raw: secondRaw } = await phase("final", () =>
         callModel({
-          apiKey,
+          aiCfg,
+          step: "final",
           instructions: SYSTEM_PROMPT_FINAL,
           input: finalInput,
           timeoutMs,
@@ -576,7 +537,7 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
       );
       const clean = await sanitizeSources(second.sources, second.claims);
       second.sources = clean.sources;
-      return await finish({ result: second, model: secondModel, debug: { finalInput, secondRaw }, dropped: clean.dropped });
+      return await finish({ result: second, model: secondModel, provider: secondProvider, debug: { finalInput, secondRaw }, dropped: clean.dropped });
     }
   }
 
@@ -591,15 +552,20 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
         sources: [],
       },
       model: firstModel,
+      provider: firstProvider,
     });
   }
   const clean = await sanitizeSources(first.sources, first.claims);
   first.sources = clean.sources;
-  return await finish({ result: first, model: firstModel, dropped: clean.dropped });
+  return await finish({ result: first, model: firstModel, provider: firstProvider, dropped: clean.dropped });
 
-  async function finish({ result, model, debug, dropped = [] }) {
+  async function finish({ result, model, provider = null, debug, dropped = [] }) {
     const totalMs = Date.now() - t0;
     const checkId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    const usedCfg = {};
+    for (const s of ["judge", "final", "vision", "transcribe"]) {
+      if (aiCfg?.[s]) usedCfg[s] = `${aiCfg[s].provider}:${aiCfg[s].model}`;
+    }
     // Validação determinística: recalcula score/veredito pela rubrica.
     const { fixed, corrections } = validateResult(result);
     if (dropped.length > 0) {
@@ -617,6 +583,8 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
       phases,
       totalMs,
       model,
+      provider,
+      aiConfig: usedCfg,
       verdict: fixed?.verdict ?? null,
       score: typeof fixed?.score === "number" ? fixed.score : null,
       summary: fixed?.summary ?? "",
@@ -639,7 +607,7 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
       saveLog(entry).catch(() => {}),
       new Promise((r) => setTimeout(r, 8000)),
     ]);
-    const out = { result: fixed, model, media: mediaDebug, transcript, origin, checkId, totalMs };
+    const out = { result: fixed, model, provider, media: mediaDebug, transcript, origin, checkId, totalMs };
     setCached(input, out).catch(() => {});
     return out;
   }

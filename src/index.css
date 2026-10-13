@@ -957,6 +957,71 @@ main {
   white-space: nowrap;
 }
 
+.admin-ai {
+  margin-top: 14px;
+  padding: 16px;
+}
+
+.admin-ai-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.admin-ai-head h3 {
+  font: 400 20px / 1.2 var(--serif);
+}
+
+.admin-ai-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.admin-ai-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+  align-items: end;
+  padding: 10px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.admin-ai-step {
+  font: 500 var(--t-body) / 1.4 var(--sans);
+}
+
+.admin-ai-row label {
+  display: grid;
+  gap: 4px;
+  font: 500 var(--t-label) / 1.4 var(--sans);
+  color: var(--fg-3);
+}
+
+.admin-ai-row select {
+  font: 500 var(--t-body) / 1.4 var(--sans);
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  padding: 6px 8px;
+  max-width: 100%;
+}
+
+.admin-ai-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+@media (width <= 560px) {
+  .admin-ai-row {
+    grid-template-columns: 1fr;
+  }
+ }
 .admin-pages {
   display: flex;
   align-items: center;

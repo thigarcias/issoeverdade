@@ -87,18 +87,50 @@ export async function saveCheckLog(entry) {
       inputPreview: record.inputPreview,
     };
     index = [entry_, ...index.filter((e) => e.id !== record.id)].slice(0, MAX_INDEX);
-    // Remove JSONs que caíram do índice para não acumular lixo.
-    const keep = new Set(index.map((e) => e.id));
+    // Self-healing: JSONs órfãos (fora do índice por falha anterior) voltam
+    // ao índice em vez de serem deletados — delete só acima de 2x o limite.
     try {
       const all = await list({ prefix: "iev-logs/", token: tok });
-      const stale = all.blobs
+      const known = new Set(index.map((e) => e.id));
+      const orphans = all.blobs
         .map((b) => b.pathname)
         .filter((p) => p.startsWith("iev-logs/") && p.endsWith(".json") && p !== INDEX_KEY)
-        .filter((p) => !keep.has(p.slice("iev-logs/".length, -".json".length)));
-      for (const p of stale.slice(0, 20)) {
-        await del(p, { token: tok }).catch(() => {});
+        .map((p) => p.slice("iev-logs/".length, -".json".length))
+        .filter((id) => !known.has(id));
+      for (const id of orphans.slice(0, 10)) {
+        try {
+          const rec = await getCheckLog(id);
+          if (rec) {
+            index.push({
+              id: rec.id,
+              at: rec.at,
+              kind: rec.kind,
+              verdict: rec.verdict,
+              score: rec.score,
+              totalMs: rec.totalMs,
+              model: rec.model,
+              error: rec.error,
+              inputPreview: rec.inputPreview,
+            });
+          }
+        } catch { /* órfão ilegível, ignora */ }
       }
-    } catch { /* limpeza best-effort */ }
+      index.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+      index = index.slice(0, MAX_INDEX);
+      const keep = new Set(index.map((e) => e.id));
+      const total = all.blobs.filter(
+        (b) => b.pathname.startsWith("iev-logs/") && b.pathname.endsWith(".json") && b.pathname !== INDEX_KEY,
+      );
+      // Delete conservador: só quando acumular 2x o limite.
+      if (total.length > MAX_INDEX * 2) {
+        const stale = total
+          .map((b) => b.pathname)
+          .filter((p) => !keep.has(p.slice("iev-logs/".length, -".json".length)));
+        for (const p of stale.slice(0, 20)) {
+          await del(p, { token: tok }).catch(() => {});
+        }
+      }
+    } catch { /* healing best-effort */ }
     await put(INDEX_KEY, JSON.stringify(index), {
       access: "private",
       contentType: "application/json",

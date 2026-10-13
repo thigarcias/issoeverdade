@@ -151,18 +151,29 @@ export async function renderShareCard(result) {
   ctx.font = `600 22px ${SANS}`;
   ctx.fillText("ELEIÇÕES 2026  ·  SEGUNDO TURNO", W / 2, 126);
 
-  // Card principal (igual .card: painel + borda tinta + sombra dura)
+  // Card principal (igual .card: painel + borda tinta + sombra dura).
+  // Título calculado ANTES para a altura do card abraçar o conteúdo.
   const cx0 = 70;
   const cw = W - 140;
-  hardShadow(ctx, cx0, 210, cw, 690, 28);
+  const cardTop = 200;
+  ctx.font = `400 42px ${SERIF}`;
+  let cleanTitle = result.title.replace(/^\[MOCK\]\s*/, "");
+  const urlMatch = cleanTitle.match(/https?:\/\/[^\s]+/);
+  if (urlMatch) {
+    try {
+      const host = new URL(urlMatch[0]).hostname.replace(/^www\./, "");
+      cleanTitle = cleanTitle.replace(urlMatch[0], host).trim();
+    } catch { /* mantém original, wrap quebra */ }
+  }
+  const titleLines = wrap(ctx, cleanTitle, cw - 120).slice(0, 3);
+  const cardBottom = 640 + titleLines.length * 54 + 40;
+  hardShadow(ctx, cx0, cardTop, cw, cardBottom - cardTop, 28);
   ctx.fillStyle = PANEL;
   ctx.strokeStyle = INK;
   ctx.lineWidth = 3;
-  rr(ctx, cx0, 210, cw, 690, 28);
+  rr(ctx, cx0, cardTop, cw, cardBottom - cardTop, 28);
   ctx.fill();
   ctx.stroke();
-
-  // Anel de nota (igual ScoreRing: track + barra arredondada)
   const ringX = cx0 + 170;
   const ringY = 430;
   const R = 105;
@@ -200,27 +211,19 @@ export async function renderShareCard(result) {
   ctx.fill();
   ctx.fillText(chipLabel, chipX + 52, chipY + 41);
 
-  // Título serifado (igual .result-title h3). URL longa vira host curto.
+  // Título serifado centralizado (largura total = URLs cabem sem vazar).
   ctx.fillStyle = INK;
-  ctx.font = `400 44px ${SERIF}`;
-  let cleanTitle = result.title.replace(/^\[MOCK\]\s*/, "");
-  const urlMatch = cleanTitle.match(/https?:\/\/[^\s]+/);
-  if (urlMatch) {
-    try {
-      const host = new URL(urlMatch[0]).hostname.replace(/^www\./, "");
-      cleanTitle = cleanTitle.replace(urlMatch[0], host).trim();
-    } catch { /* mantém original, wrap quebra */ }
-  }
-  const titleLines = wrap(ctx, cleanTitle, cw - 300).slice(0, 3);
-  let ty = chipY + 120;
+  ctx.font = `400 42px ${SERIF}`;
+  ctx.textAlign = "center";
+  let ty = 640;
   for (const line of titleLines) {
-    ctx.fillText(line, chipX, ty);
-    ty += 56;
+    ctx.fillText(line, W / 2, ty);
+    ty += 54;
   }
 
   // Claims como linhas do site (badge + texto). Para antes do rodapé.
   const FOOTER_TOP = H - 150;
-  let y = 990;
+  let y = 640 + titleLines.length * 54 + 50;
   const roomFor = (lines) => y + 40 + lines * 40 + 22 < FOOTER_TOP - (sources.length > 0 ? 130 : 0);
   for (const c of claims) {
     const st = CLAIM_STATUS[c.status] ?? CLAIM_STATUS.unproven;

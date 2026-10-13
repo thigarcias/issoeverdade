@@ -252,15 +252,88 @@ async function enrichWithMedia(maybeUrl) {
  * 2. se a IA pedir mídia (needs_media), baixa + transcreve e rejulga.
  * @returns {{ result: object, model: string, media: string[], transcript: object|null }}
  */
-export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
+export async function runVerify(input, opts = {}) {
+  try {
+    return await runVerifyInner(input, opts);
+  } catch (err) {
+    // Erros também vão pro admin (com filtro "Com erro").
+    const code = err?.payload?.error ?? err?.message ?? "unknown";
+    await Promise.race([
+      saveLog({
+        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        kind: input?.kind,
+        inputPreview: String(input?.text ?? ""),
+        fileName: input?.fileName ? String(input.fileName) : null,
+        phases: [],
+        totalMs: null,
+        model: err?.payload?.model ?? null,
+        verdict: null,
+        score: null,
+        summary: "",
+        claims: [],
+        sources: [],
+        claimsCount: 0,
+        sourcesCount: 0,
+        mediaAttempts: [],
+        transcriptSegs: 0,
+        transcriptPreview: "",
+        origin: null,
+        judgePromptPreview: "",
+        judgeRawPreview: "",
+        finalPromptPreview: "",
+        finalRawPreview: String(err?.payload?.message ?? err?.message ?? "").slice(0, 2000),
+        corrections: [],
+        error: String(code).slice(0, 200),
+      }).catch(() => {}),
+      new Promise((r) => setTimeout(r, 8000)),
+    ]);
+    throw err;
+  }
+}
+
+async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
   // OpenAI (Luna) é o primário; Go (Muse) é fallback. Pelo menos um precisa existir.
   if (!apiKey && !process.env.OPENAI_API_KEY) {
     fail(503, "missing_api_key", { message: "Nenhuma chave de IA configurada no servidor." });
   }
   // Cache: mesma entrada em <24h = resultado idêntico, sem custo.
-  const hit = await getCached(input).catch(() => null);
-  if (hit) return hit;
+  // Ainda assim registra no admin (com novo id) para auditoria completa.
   const t0 = Date.now();
+  const hit = await getCached(input).catch(() => null);
+  if (hit) {
+    const hitId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    await Promise.race([
+      saveLog({
+        id: hitId,
+        kind: input?.kind,
+        inputPreview: String(input?.text ?? ""),
+        fileName: input?.fileName ? String(input.fileName) : null,
+        phases: [{ name: "cache-hit", ms: Date.now() - t0, ok: true }],
+        totalMs: Date.now() - t0,
+        model: hit.model ?? null,
+        verdict: hit.result?.verdict ?? null,
+        score: typeof hit.result?.score === "number" ? hit.result.score : null,
+        summary: hit.result?.summary ?? "",
+        claims: hit.result?.claims ?? [],
+        sources: hit.result?.sources ?? [],
+        claimsCount: hit.result?.claims?.length ?? 0,
+        sourcesCount: hit.result?.sources?.length ?? 0,
+        mediaAttempts: hit.media ?? [],
+        transcriptSegs: hit.transcript?.segments?.length ?? 0,
+        transcriptPreview: "",
+        origin: hit.origin ?? null,
+        judgePromptPreview: "",
+        judgeRawPreview: "",
+        finalPromptPreview: "",
+        finalRawPreview: "",
+        corrections: [],
+        error: null,
+        cachedFrom: hit.checkId ?? null,
+      }).catch(() => {}),
+      new Promise((r) => setTimeout(r, 8000)),
+    ]);
+    return { ...hit, checkId: hitId, cached: true };
+  }
   const phases = [];
   async function phase(name, fn) {
     const start = Date.now();

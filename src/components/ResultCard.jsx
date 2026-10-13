@@ -42,7 +42,7 @@ function AnimatedScore({ score, color }) {
   return <ScoreRing score={shown} color={color} title={`Nota ${score} de 100`} />;
 }
 
-export default function ResultCard({ result, showToast, titleId }) {
+export default function ResultCard({ result, showToast, titleId, onShareCard }) {
   const verdict = VERDICTS[result.verdict];
   const origin = result.origin;
   const [imgOk, setImgOk] = useState(true);
@@ -173,8 +173,11 @@ export default function ResultCard({ result, showToast, titleId }) {
       </div>
 
       <div className="result-actions">
+        <button className="btn primary" onClick={() => onShareCard?.(result)}>
+          Gerar card
+        </button>
         <button className="btn" onClick={share}>
-          Compartilhar checagem
+          Copiar texto
         </button>
         <button
           className="btn ghost"

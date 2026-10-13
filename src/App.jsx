@@ -4,8 +4,8 @@ import Hero from "./components/Hero.jsx";
 import Verifier from "./components/Verifier.jsx";
 import Feed from "./components/Feed.jsx";
 import DetailDialog from "./components/DetailDialog.jsx";
+import ShareDialog from "./components/ShareDialog.jsx";
 import HowItWorks from "./components/HowItWorks.jsx";
-import Admin from "./components/Admin.jsx";
 import { VERDICTS } from "./data/constants.js";
 import { useToast } from "./lib/hooks.js";
 const HISTORY_KEY = "iev-history-v2";
@@ -21,13 +21,11 @@ function loadHistory() {
 }
 
 export default function App() {
-  const { message, show } = useToast();
   const [openResult, setOpenResult] = useState(null);
+  const [shareResult, setShareResult] = useState(null);
   const [history, setHistory] = useState(loadHistory);
   const [quickInput, setQuickInput] = useState(null);
   const [heroCollapsed, setHeroCollapsed] = useState(false);
-  const aboutRef = useRef(null);
-  const howRef = useRef(null);
 
   useEffect(() => {
     try {
@@ -88,7 +86,7 @@ export default function App() {
 
         <div className="wrap">
           <section className="section section-tight" id="verificar" aria-label="Verificador">
-            <Verifier showToast={show} onChecked={handleChecked} quickInput={quickInput} />
+            <Verifier showToast={show} onChecked={handleChecked} quickInput={quickInput} onShareCard={setShareResult} />
           </section>
 
           <section className="section" id="recentes" aria-label="Suas checagens">
@@ -145,7 +143,8 @@ export default function App() {
         </div>
       </footer>
 
-      <DetailDialog result={openResult} onClose={() => setOpenResult(null)} showToast={show} />
+      <DetailDialog result={openResult} onClose={() => setOpenResult(null)} showToast={show} onShareCard={setShareResult} />
+      <ShareDialog result={shareResult} onClose={() => setShareResult(null)} showToast={show} />
       <div id="toast" role="status" className={message ? "show" : ""}>
         {message}
       </div>

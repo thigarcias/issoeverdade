@@ -40,7 +40,7 @@ function formatDuration(ms) {
   return `${m}min ${String(s % 60).padStart(2, "0")}s`;
 }
 
-export default function Verifier({ showToast, onChecked, quickInput }) {
+export default function Verifier({ showToast, onChecked, quickInput, onShareCard }) {
   const [tab, setTab] = useState("link");
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
@@ -496,7 +496,7 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
             </div>
           )}
 
-          {result && <ResultCard result={result} showToast={showToast} />}
+          {result && <ResultCard result={result} showToast={showToast} onShareCard={onShareCard} />}
         </div>
       </div>
 

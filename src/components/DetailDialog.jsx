@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import ResultCard from "./ResultCard.jsx";
 
-export default function DetailDialog({ result, onClose, showToast }) {
+export default function DetailDialog({ result, onClose, showToast, onShareCard }) {
   const ref = useRef(null);
 
   useEffect(() => {
@@ -37,7 +37,7 @@ export default function DetailDialog({ result, onClose, showToast }) {
       </div>
       <div className="dialog-body">
         {result ? (
-          <ResultCard result={result} showToast={showToast} titleId="dialog-title" />
+          <ResultCard result={result} showToast={showToast} titleId="dialog-title" onShareCard={onShareCard} />
         ) : null}
       </div>
     </dialog>

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Como funciona a análise factual automática, os estados de resultado, fontes e limites de cobertura.">
+<title>Metodologia factual — Isso é Verdade?</title>
+<style>
+:root{color-scheme:light;--ink:#26231f;--muted:#625d55;--paper:#faf8f2;--line:#ded8cb;--accent:#a83227}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:1rem/1.7 system-ui,-apple-system,"Segoe UI",sans-serif}header,main,footer{width:min(100% - 2rem,54rem);margin-inline:auto}header{padding:1.5rem 0;border-bottom:1px solid var(--line)}nav{display:flex;flex-wrap:wrap;gap:.5rem 1.25rem}a{color:#84271f;text-underline-offset:.18em}a:focus-visible{outline:3px solid var(--accent);outline-offset:3px;border-radius:2px}.current{font-weight:700;text-decoration:none}main{padding:2rem 0 3rem}h1,h2{line-height:1.2}h1{font-size:clamp(2rem,7vw,3rem);margin:.35rem 0 1rem}h2{margin:2rem 0 .5rem;font-size:1.4rem}.date,.note{color:var(--muted)}.note{border-left:4px solid var(--accent);padding:.8rem 1rem;background:#f0ece2}footer{border-top:1px solid var(--line);padding:1rem 0 2rem;color:var(--muted)}@media(min-width:42rem){main{padding-top:3rem}}
+</style>
+</head>
+<body>
+<header><nav aria-label="Transparência"><a class="current" aria-current="page" href="metodologia.html">Metodologia</a><a href="correcoes.html">Correções</a><a href="privacidade.html">Privacidade</a></nav></header>
+<main>
+<p class="date">Metodologia `fact-check-3`</p>
+<h1>Metodologia factual</h1>
+<p class="note">Ferramenta automática; não substitui apuração, revisão profissional ou julgamento humano. Não declaramos certificação ou afiliação ao IFCN. As conclusões podem conter erros e precisam ser conferidas nas fontes.</p>
+<h2>Como a checagem funciona</h2>
+<p>O fluxo usa um modelo configurado para julgamento e busca web. Imagens e vídeos podem passar por visão/OCR e áudio pode ser transcrito; uma etapa final é chamada para imagens e vídeos. Isso não equivale a dois pesquisadores independentes. Metadados ou texto de um post não são prova do conteúdo integral de uma página ou vídeo.</p>
+<p>O texto enviado e os materiais extraídos são considerados conteúdo não confiável: instruções encontradas neles não devem mudar a tarefa. Essa salvaguarda de prompt não é prova de resistência a prompt injection.</p>
+<h2>Fontes e afirmações</h2>
+<p>Uma fonte só permanece no resultado se a URL específica aparecer nas citações devolvidas pelo provedor, não for apenas uma homepage genérica e estiver vinculada a uma afirmação. O servidor verifica relação, identificador e estrutura do trecho; não abre a página para confirmar independentemente que o trecho existe ou sustenta a conclusão. Título, URL, citação, relação e pertinência ainda podem estar errados.</p>
+<p>As relações são suporte, refutação ou contexto. A busca pode ser solicitada pelo modelo sem que consultas e páginas abertas sejam preservadas como um dossiê independente. Afirmações não verificáveis, como opinião e previsão, não devem entrar na nota factual.</p>
+<h2>Estados e pontuação</h2>
+<p>O sistema distingue checagem concluída, cobertura parcial, material insuficiente, mídia inacessível, ausência de afirmação verificável e erro operacional. Sem base suficiente, não deve inventar nota nem veredito; erro de processamento não significa falsidade. Registros antigos podem não conter a versão metodológica atual e não são reexecutados.</p>
+<p>Quando há claims verificáveis, o servidor aplica âncoras de pontuação e calcula a média aritmética dos claims; um claim falso total limita a nota geral a 64. As faixas são: 90–100 Verdadeiro; 75–89 Maioria verdadeira; 65–74 Parcialmente verdadeiro; 55–64 Distorcido; 35–54 Sem comprovação; 15–34 Enganoso; 0–14 Falso. A nota não é probabilidade calibrada nem taxa de precisão. A segmentação das afirmações influencia a média.</p>
+<h2>Imagem, vídeo e upload</h2>
+<p>Uploads de imagem/vídeo enviam os bytes do arquivo, limitados a 3 MiB e validados pelo servidor. Extração de vídeo depende de um worker disponível: pode obter áudio e até 10 frames dos primeiros 300 segundos. Transcrição, OCR ou extração podem falhar; o painel registra cobertura quando há dados. Amostragem parcial não significa análise integral nem autentica autoria, data ou contexto.</p>
+<p>Links de plataformas, inclusive X, dependem do extractor e do worker configurados; um post pode ser acessível enquanto seu vídeo não pode ser baixado. Não garantimos que todos os links ou arquivos tenham áudio, frames ou OCR disponíveis.</p>
+<h2>Avaliação humana</h2>
+<p>O repositório contém um harness reproduzível para métricas por versão, modelo e modalidade, mas ainda não contém um corpus humano anotado. Por isso não publicamos benchmark, percentual de precisão ou certificação. O limiar inicial recomendado é 200 casos únicos; esse número, sozinho, não comprova representatividade nem qualidade.</p>
+<p>Leia também <a href="correcoes.html">Correções</a> e <a href="privacidade.html">Privacidade</a>.</p>
+</main>
+<footer><p>Esta descrição reflete o código do repositório; a configuração ativa e a implantação em produção não foram verificadas nesta atualização.</p></footer>
+</body>
+</html>

@@ -17,12 +17,13 @@ export const VERDICTS = {
  */
 export function migrateVerdict(verdict, score) {
   if (verdict === "mixed") return (Number(score) || 0) >= 65 ? "partially_true" : "distorted";
+  if ((verdict == null || verdict === "") && score == null) return null;
   return VERDICTS[verdict] ? verdict : "unproven";
 }
 
 export const CLAIM_STATUS = {
   true: { label: "Verdade", tint: "tint-up", color: "#2f6b44" },
-  false: { label: "Mentira", tint: "tint-down", color: "#c22a17" },
+  false: { label: "Falso", tint: "tint-down", color: "#c22a17" },
   unproven: { label: "Sem comprovação", tint: "tint-warn", color: "#7a5b1e" },
   context: { label: "Precisa de contexto", tint: "tint-info", color: "#33608f" },
 };
@@ -31,27 +32,27 @@ export const PIPELINE_STEPS = [
   {
     id: "intake",
     title: "Recebendo seu conteúdo",
-    hint: "Guardamos o link, texto, foto ou vídeo.",
+    hint: "Preparamos link, texto, imagem ou vídeo para análise.",
   },
   {
     id: "transcribe",
-    title: "Ouvindo o vídeo ou áudio",
-    hint: "Tudo vira texto para poder checar parte por parte.",
+    title: "Analisando conteúdo disponível",
+    hint: "Áudio pode ser transcrito e quadros podem ser amostrados; a cobertura pode ser parcial.",
   },
   {
     id: "claims",
     title: "Separando cada afirmação",
-    hint: "Cada frase importante vira um item da checagem.",
+    hint: "Identificamos afirmações verificáveis e registramos limites da análise.",
   },
   {
     id: "sources",
-    title: "Conferindo as fontes",
-    hint: "Comparamos com notícias e dados oficiais.",
+    title: "Buscando evidências",
+    hint: "Vinculamos trechos e fontes às afirmações quando há material disponível.",
   },
   {
     id: "score",
-    title: "Dando a nota final",
-    hint: "Nota de 0 a 100 para o conteúdo todo.",
+    title: "Consolidando o resultado",
+    hint: "A nota não é probabilidade calibrada; pode não haver veredito.",
   },
 ];
 
@@ -61,8 +62,8 @@ export const THINKING_LINES = [
   "Lendo o conteúdo…",
   "Entendendo o contexto…",
   "Separando as afirmações…",
-  "Buscando fontes oficiais…",
-  "Conferindo com o TSE…",
+  "Buscando evidências…",
+  "Comparando com as evidências…",
   "Comparando versões…",
   "Pesando as evidências…",
   "Montando o veredito…",

@@ -1,19 +1,19 @@
 const STEPS = [
   {
-    title: "Você manda o conteúdo",
-    text: "Pode ser link, texto, foto, áudio ou vídeo — do Instagram, WhatsApp, YouTube ou jornal.",
+    title: "Você envia o material",
+    text: "Pode ser link, texto, imagem ou vídeo. Só analisamos conteúdo que o sistema consiga acessar e processar.",
   },
   {
-    title: "A gente ouve e lê tudo",
-    text: "Vídeo e áudio viram texto, para cada frase poder ser checada separadamente.",
+    title: "Lemos o que está disponível",
+    text: "Áudio pode ser transcrito e quadros podem ser amostrados; isso não garante cobertura integral do vídeo nem autenticidade da imagem.",
   },
   {
-    title: "Checamos frase por frase",
-    text: "Cada parte recebe um selo: verdade, mentira, sem comprovação ou precisa de contexto.",
+    title: "Separar afirmações e evidências",
+    text: "Cada afirmação verificável é comparada com evidências vinculadas. Uma fonte sobre o mesmo tema não basta para comprová-la.",
   },
   {
-    title: "Você recebe a nota com fontes",
-    text: "Nota de 0 a 100 para o conteúdo todo, sempre mostrando de onde veio cada informação.",
+    title: "Você recebe resultado e limites",
+    text: "O resultado pode ser verdadeiro, maioria verdadeira, parcialmente verdadeiro, distorcido, enganoso, falso ou sem comprovação — e às vezes não há base para um veredito. A nota não é probabilidade calibrada.",
   },
 ];
 

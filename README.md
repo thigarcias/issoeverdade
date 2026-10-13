@@ -1,55 +1,88 @@
 # isso é verdade?
 
-Verificador minimalista de conteúdo político — Brasil, segundo turno 2026.
-Cole um link, texto, imagem ou vídeo e receba um **score da verdade** (0–100),
-com cada afirmação checada e suas fontes.
+Verificador automático de afirmações públicas no Brasil. Envie link, texto,
+imagem ou vídeo e receba um resultado com afirmações, evidências vinculadas,
+limites explícitos e, quando houver base, uma nota 0–100. A nota **não** é
+probabilidade calibrada e o sistema pode não atribuir veredito.
 
-## Rodar localmente (com IA de verdade)
+## Rodar localmente
 
 ```bash
 npm install
-npm run dev     # http://localhost:5173
+npm run dev        # http://localhost:5173
+npm run build      # build de produção
+npm run lint       # oxlint
 ```
 
-Crie um `.env` na raiz (nunca commitar — já está no `.gitignore`):
+Crie um `.env` na raiz (já ignorado pelo git):
 
 ```bash
-OPENCODE_API=sua-key-do-opencode-go
-# Opcional (padrão: muse-spark-1.3-contributor):
-OPENCODE_MODEL=muse-spark-1.3-contributor
+OPENAI_API_KEY=...            # julgamento/final/visão e transcrição OpenAI
+OPENCODE_API=...              # provedor alternativo (OpenCode Go)
+ADMIN_SECRET=...              # habilita /admin
+BLOB_READ_WRITE_TOKEN=...     # opcional: cache/logs/config privados na Vercel Blob
+MEDIA_WORKER_URL=...          # opcional: worker de extração de áudio/frames
+MEDIA_WORKER_SECRET=...
 ```
 
-Em dev, o Vite serve `POST /api/verify` via `vite.api-plugin.js`: a key fica
-só no servidor (Node) e o frontend chama o modelo **Muse Spark 1.3 Contributor**
-pelo gateway OpenCode Go (`/zen/go/v1/responses`). O header mostra **ao vivo**
-quando o backend responde, e cada resultado real leva o selo **ao vivo · IA**.
+Sem `BLOB_READ_WRITE_TOKEN`, cache, logs e configuração ficam apenas em memória
+da instância (o código registra isso na interface em vez de fingir persistência).
 
-Sem backend ou sem key, o site cai sozinho para a **demonstração local**
-(mock), avisando via toast — o feed de exemplos continua mockado de propósito.
+## Rotas
 
-## O que funciona
+| Rota | Papel |
+| --- | --- |
+| `/` | site público: verificador, histórico local e transparência |
+| `/admin` | **URL canônica do painel** — `vercel.json` reescreve para o SPA; em Vite dev o fallback de SPA já resolve |
+| `/#/admin` | alias equivalente aceito pelo roteador do app |
+| `POST /api/verify` | execução da checagem (`api/verify.js` na Vercel, `vite.api-plugin.js` em dev) |
+| `GET/POST /api/admin` | lista/detalhe de registros e catálogo+configuração de IA (Bearer `ADMIN_SECRET`) |
+| `/metodologia.html`, `/correcoes.html`, `/privacidade.html` | transparência pública |
 
-- **Verificador**: 4 abas — link, texto, vídeo/áudio, imagem — com drag & drop,
-  exemplos clicáveis, checagem rápida no topo e pipeline em 5 etapas.
-- **Resultado (IA)**: veredito, score 0–100, afirmações com score individual,
-  notas e fontes clicáveis retornadas pelo modelo, normalizadas em `src/lib/api.js`.
-- **Resultado (mock)**: mesmos componentes, com transcrição trecho a trecho
-  nos cenários de vídeo/áudio.
-- **Feed**: busca full-text, filtros por veredito, cards com score e modal.
-- Responsivo (mobile 390px testado) e `prefers-reduced-motion` respeitado.
+Deep-link do detalhe: `/admin?detail=<id>` (restaurado no carregamento e no
+`popstate`, sem reabrir um detalhe já fechado quando a resposta chega atrasada).
 
-## Notas da integração
+## Chaves e modelos
 
-| Item | Detalhe |
-| ---- | ------- |
-| Endpoint | `https://opencode.ai/zen/go/v1/responses` (Responses API; o modelo não aceita Chat Completions) |
-| Modelo padrão | `muse-spark-1.3-contributor` (assinatura Go; o `-free` só roda dentro do OpenCode) |
-| Reasoning | `effort: low` — no padrão o modelo gasta os tokens pensando e não responde |
-| Headers Go | `User-Agent: issoeverdade/0.1` + `x-opencode-session` por checagem (exigência anti-abuso) |
-| Custo aprox. | $0.10/$0.20 por 1M tokens; ~226 mil checagens/mês no Go |
+As chaves ficam somente no servidor. Modelos são escolhidos **por etapa**
+(julgamento, conclusão, visão/OCR, transcrição) em *Modelos & provedores*, a
+partir do inventário descoberto nos provedores configurados:
+
+- Modelos sem protocolo/capacidade validados aparecem no inventário com o
+  motivo, mas não podem ser selecionados.
+- Combinação incompatível é rejeitada no servidor (HTTP 400 com campo
+  específico) e **não** altera a configuração vigente.
+- Não há troca automática de provedor quando uma etapa falha: a falha é
+  registrada como erro operacional e o par escolhido é o que executa.
+- A configuração é versionada (revisão) e a revisão integra o namespace do
+  cache, então uma nova revisão não reaproveita resultado antigo.
+
+Variáveis opcionais de compatibilidade: `IEV_<ETAPA>` (JSON por etapa) e
+`OPENAI_TRANSCRIBE_MODEL`.
+
+## Dados e privacidade
+
+Uploads de imagem/vídeo enviam os bytes reais (limite de 3 MiB, validação por
+assinatura de arquivo). Resultados recentes ficam em `localStorage` (até 20) no
+navegador. No servidor, logs e cache só são duráveis com Blob privado
+configurado; limites e lacunas estão em [docs/privacidade-dados-ia.md](docs/privacidade-dados-ia.md).
+
+## Metodologia e avaliação
+
+- [docs/metodologia-factual.md](docs/metodologia-factual.md): fluxo efetivo,
+  estados operacionais, faixas de score e limites de evidência.
+- [docs/politica-correcoes.md](docs/politica-correcoes.md): o que o sistema
+  corrige automaticamente e ausência de canal público de correção.
+- [docs/admin-overview-plano.md](docs/admin-overview-plano.md): plano/auditoria
+  que originou esta implementação.
+- [docs/admin-status-implementacao.md](docs/admin-status-implementacao.md):
+  status por fase, evidências e pendências reais.
+- Harness de avaliação: `node scripts/evaluate-factual.mjs <corpus.jsonl>`
+  (métricas por versão/modelo/modalidade, bootstrap determinístico por `caseId`).
+  **Não há corpus humano entregue nem taxa de precisão publicada.**
 
 ## Design
 
-Inspirado em [bolsomaster.site](https://bolsomaster.site/): fundo creme
-`#F2ECDC`, tinta `#1A140C`, vermelho `#D9341F`, serifada Faustina + Geist,
-cards com borda dura e sombra offset.
+Creme `#F2ECDC`, tinta `#1A140C`, vermelho `#D9341F`, serifada Faustina + Geist,
+bordas duras e sombra offset. O shell administrativo reusa a identidade com
+tipografia sans para dados/controles e navegação lateral no desktop.

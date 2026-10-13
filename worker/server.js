@@ -8,9 +8,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createServer } from "node:http";
-import { readFile, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const execFileAsync = promisify(execFile);
 const PORT = Number(process.env.PORT || 8080);
@@ -26,12 +26,21 @@ function send(res, status, obj) {
 function readBody(req, limit = 64 * 1024) {
   return new Promise((resolve, reject) => {
     let data = "";
-    req.on("data", (c) => {
-      data += c;
-      if (data.length > limit) reject(new Error("payload too large"));
+    let failed = false;
+    req.on("data", (chunk) => {
+      if (failed) return;
+      data += chunk;
+      if (Buffer.byteLength(data) > limit) {
+        failed = true;
+        reject(new Error("payload too large"));
+      }
     });
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
+    req.on("end", () => {
+      if (!failed) resolve(data);
+    });
+    req.on("error", (error) => {
+      if (!failed) reject(error);
+    });
   });
 }
 
@@ -139,11 +148,14 @@ async function fetchFrames(url) {
     const jpgs = (await readdir(dir)).filter((f) => /^f-\d+\.jpg$/.test(f)).sort();
     const frames = [];
     let bytes = 0;
-    for (const j of jpgs.slice(0, MAX_FRAMES)) {
+    for (const [index, j] of jpgs.slice(0, MAX_FRAMES).entries()) {
       const buf = await readFile(join(dir, j));
       if (bytes + buf.length > MAX_FRAMES_BYTES) break;
       bytes += buf.length;
-      frames.push(buf.toString("base64"));
+      frames.push({
+        image_b64: buf.toString("base64"),
+        timestamp_sec: Math.round((index / fps) * 100) / 100,
+      });
     }
     if (!frames.length) return { ok: false, reason: "no-frames" };
     return { ok: true, frames, count: frames.length, seconds: seconds || null, bytes };
@@ -155,6 +167,78 @@ async function fetchFrames(url) {
 async function mkdtempSafe() {
   const { mkdtemp } = await import("node:fs/promises");
   return mkdtemp(join(tmpdir(), "iev-"));
+}
+
+const MAX_UPLOAD_BYTES = 3 * 1024 * 1024;
+const UPLOAD_MIMES = new Set([
+  "video/mp4", "video/quicktime", "video/webm",
+  "audio/mpeg", "audio/mp4", "audio/wav", "audio/webm", "audio/ogg",
+]);
+
+async function processUpload(encoded, mime) {
+  if (!UPLOAD_MIMES.has(mime) || typeof encoded !== "string" || encoded.length > Math.ceil(MAX_UPLOAD_BYTES / 3) * 4) {
+    return { ok: false, reason: "unsupported-upload" };
+  }
+  const bytes = Buffer.from(encoded, "base64");
+  if (!bytes.length || bytes.length > MAX_UPLOAD_BYTES || bytes.toString("base64") !== encoded) {
+    return { ok: false, reason: "invalid-upload" };
+  }
+  const dir = await mkdtempSafe();
+  try {
+    const ext = mime === "video/quicktime" ? "mov"
+      : mime === "video/webm" || mime === "audio/webm" ? "webm"
+      : mime === "audio/wav" ? "wav"
+      : mime === "audio/ogg" ? "ogg"
+      : mime === "audio/mpeg" ? "mp3" : "mp4";
+    const src = join(dir, `input.${ext}`);
+    await writeFile(src, bytes, { flag: "wx" });
+    let durationSec = 0;
+    try {
+      const { stdout } = await execFileAsync(
+        "ffprobe",
+        ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", src],
+        { timeout: 30_000 },
+      );
+      durationSec = Math.ceil(Number(stdout.trim()) || 0);
+    } catch { /* áudio/frame podem continuar sem duração */ }
+
+    let audio = null;
+    try {
+      const audioPath = join(dir, "audio.mp3");
+      await execFileAsync(
+        "ffmpeg",
+        ["-y", "-hide_banner", "-loglevel", "error", "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k", audioPath],
+        { timeout: 150_000, maxBuffer: 2 * 1024 * 1024 },
+      );
+      const audioBytes = await readFile(audioPath);
+      if (audioBytes.length <= MAX_AUDIO_BYTES) audio = { audio_b64: audioBytes.toString("base64"), mime: "audio/mpeg", bytes: audioBytes.length };
+    } catch { /* arquivo sem trilha de áudio */ }
+
+    let frames = [];
+    if (mime.startsWith("video/")) {
+      try {
+        const span = Math.max(1, Math.min(300, durationSec || 60));
+        const fps = Math.min(1, MAX_FRAMES / span);
+        await execFileAsync(
+          "ffmpeg",
+          ["-y", "-hide_banner", "-loglevel", "error", "-i", src, "-vf", `fps=${fps.toFixed(4)},scale=448:-2`, "-frames:v", String(MAX_FRAMES), "-q:v", "7", `${dir}/f-%02d.jpg`],
+          { timeout: 120_000, maxBuffer: 2 * 1024 * 1024 },
+        );
+        const jpgs = (await readdir(dir)).filter((file) => /^f-\d+\.jpg$/.test(file)).sort();
+        let totalBytes = 0;
+        for (const [index, file] of jpgs.slice(0, MAX_FRAMES).entries()) {
+          const frame = await readFile(join(dir, file));
+          if (totalBytes + frame.length > MAX_FRAMES_BYTES) break;
+          totalBytes += frame.length;
+          frames.push({ image_b64: frame.toString("base64"), timestamp_sec: Math.round((index / fps) * 100) / 100 });
+        }
+      } catch { /* vídeo sem frames decodificáveis */ }
+    }
+    if (!audio && frames.length === 0) return { ok: false, reason: "no-readable-media" };
+    return { ok: true, audio, frames, duration_sec: durationSec || null };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 const server = createServer(async (req, res) => {
@@ -170,9 +254,17 @@ const server = createServer(async (req, res) => {
     if (req.method !== "POST") return send(res, 405, { ok: false, reason: "method_not_allowed" });
     let body;
     try {
-      body = JSON.parse(await readBody(req));
-    } catch {
-      return send(res, 400, { ok: false, reason: "bad_request" });
+      const limit = req.url === "/upload" ? 4_300_000 : 64 * 1024;
+      body = JSON.parse(await readBody(req, limit));
+    } catch (error) {
+      return send(res, error?.message === "payload too large" ? 413 : 400, { ok: false, reason: error?.message === "payload too large" ? "payload-too-large" : "bad_request" });
+    }
+    if (req.url === "/upload") {
+      try {
+        return send(res, 200, await processUpload(body?.file_b64, String(body?.mime ?? "")));
+      } catch (error) {
+        return send(res, 200, { ok: false, reason: "upload-processing-failed", detail: String(error?.message ?? error).slice(0, 200) });
+      }
     }
     const url = String(body?.url ?? "");
     if (!/^https?:\/\//.test(url)) return send(res, 400, { ok: false, reason: "bad_url" });

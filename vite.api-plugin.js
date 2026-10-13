@@ -3,17 +3,49 @@
 import { loadEnv } from "vite";
 import { runVerify } from "./server/verify.js";
 import { getCheckLog, listCheckLogs, logEnabled } from "./server/checklog.js";
-import { aiConfigCatalog, getAiConfig, providerKey, saveAiConfig } from "./server/ai-config.js";
+import { aiConfigCatalog, getAiConfigState, saveAiConfig } from "./server/ai-config.js";
+import { normalizeVerifyInput } from "./server/uploads.js";
+import { PROMPT_VERSION, VERDICT_BANDS } from "./server/scoring.js";
 
-function readBody(req) {
+const METHODOLOGY = {
+  version: PROMPT_VERSION,
+  bands: VERDICT_BANDS,
+  statuses: [
+    { id: "checked", label: "Checagem executada" },
+    { id: "partial_coverage", label: "Cobertura parcial" },
+    { id: "insufficient_input", label: "Material insuficiente" },
+    { id: "inaccessible_media", label: "Mídia inacessível" },
+    { id: "no_verifiable_claims", label: "Sem afirmação verificável" },
+    { id: "error", label: "Erro operacional" },
+    { id: "legacy", label: "Registro legado" },
+  ],
+  evaluation: {
+    harness: "scripts/evaluate-factual.mjs",
+    corpus: null,
+    benchmarkPublished: false,
+    note: "Nenhum corpus humano anotado foi entregue; nenhuma taxa de precisão é publicada.",
+  },
+};
+
+
+function readBody(req, limit = 200_000) {
   return new Promise((resolve, reject) => {
     let data = "";
+    let failed = false;
     req.on("data", (chunk) => {
+      if (failed) return;
       data += chunk;
-      if (data.length > 200_000) reject(new Error("payload too large"));
+      if (Buffer.byteLength(data) > limit) {
+        failed = true;
+        reject(new Error("payload too large"));
+      }
     });
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
+    req.on("end", () => {
+      if (!failed) resolve(data);
+    });
+    req.on("error", (error) => {
+      if (!failed) reject(error);
+    });
   });
 }
 
@@ -35,20 +67,24 @@ export function apiVerifyPlugin() {
           res.end(JSON.stringify(obj));
         };
         if (req.method !== "POST") return send(405, { error: "method_not_allowed" });
+        let body;
+        try {
+          body = JSON.parse(await readBody(req, 4_300_000));
+        } catch (error) {
+          return send(error?.message === "payload too large" ? 413 : 400, { error: error?.message === "payload too large" ? "payload_too_large" : "bad_request" });
+        }
         let input;
         try {
-          input = JSON.parse(await readBody(req));
-        } catch {
-          return send(400, { error: "bad_request" });
+          input = normalizeVerifyInput(body);
+        } catch (error) {
+          return send(error.status ?? 400, { error: error.message ?? "invalid_input" });
         }
-        const text = String(input?.text ?? "");
-        const fileName = input?.fileName ? String(input.fileName) : null;
-        if (!text && !fileName) return send(400, { error: "empty_input" });
+        if (!input.text && !input.fileName && !input.fileBuffer) return send(400, { error: "empty_input" });
         try {
-          const out = await runVerify({ kind: input.kind, text, fileName });
+          const out = await runVerify(input);
           return send(200, out);
         } catch (err) {
-          return send(err.status ?? 502, err.payload ?? { error: "upstream_error" });
+          return send(err.status ?? 502, err.payload ?? { error: err.message ?? "upstream_error" });
         }
       });
       server.middlewares.use("/api/admin", async (req, res) => {
@@ -65,14 +101,17 @@ export function apiVerifyPlugin() {
         const params = new URL(req.url, "http://local").searchParams;
         if (params.has("config") && params.get("config") !== "0") {
           if (req.method === "GET") {
-            const catalog = aiConfigCatalog();
-            for (const id of Object.keys(catalog.providers)) {
-              catalog.providers[id].hasKey = Boolean(providerKey(id));
-            }
+            const catalog = await aiConfigCatalog({ refresh: params.get("refresh") === "1" });
+            const state = await getAiConfigState();
             return send(200, {
               catalog,
-              config: await getAiConfig(),
-              persisted: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
+              config: state.config,
+              configErrors: state.configErrors,
+              source: state.source,
+              revision: state.revision,
+              updatedAt: state.updatedAt,
+              persisted: state.persisted,
+              methodology: METHODOLOGY,
             });
           }
           if (req.method === "POST") {
@@ -85,7 +124,8 @@ export function apiVerifyPlugin() {
             if (!body || typeof body.config !== "object") return send(400, { error: "bad_config" });
             try {
               return send(200, await saveAiConfig(body.config));
-            } catch {
+            } catch (error) {
+              if (error?.status === 400) return send(400, { error: "invalid_ai_config", fields: error.fields });
               return send(502, { error: "config_save_failed" });
             }
           }

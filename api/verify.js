@@ -1,6 +1,8 @@
 // Serverless Vercel: POST /api/verify (mesma lógica do dev local).
 // Env vars na Vercel: OPENAI_API_KEY (primário), OPENCODE_API (fallback).
 import { runVerify } from "../server/verify.js";
+import { normalizeVerifyInput } from "../server/uploads.js";
+
 
 export const config = { maxDuration: 300 };
 
@@ -23,7 +25,7 @@ function rateLimited(ip) {
   }
   return false;
 }
-const MAX_TEXT = 8000;
+const MAX_REQUEST_BYTES = 4_300_000;
 const KINDS = new Set(["link", "text", "video", "image"]);
 
 function isPrivateUrl(value) {
@@ -52,25 +54,36 @@ export default async function handler(req, res) {
     return res.status(429).json({ error: "rate_limited", message: "Muitas checagens em pouco tempo. Aguarde alguns minutos." });
   }
   const rawLen = Number(req.headers["content-length"] ?? 0);
-  if (rawLen > 32 * 1024) {
+  if (rawLen > MAX_REQUEST_BYTES) {
     return res.status(413).json({ error: "payload_too_large" });
   }
-  const input = req.body ?? {};
-  if (!KINDS.has(input?.kind)) {
+  let body = req.body ?? {};
+  if (typeof body === "string") {
+    try {
+      body = JSON.parse(body || "{}");
+    } catch {
+      return res.status(400).json({ error: "bad_request" });
+    }
+  }
+  if (!KINDS.has(body?.kind)) {
     return res.status(400).json({ error: "bad_kind" });
   }
-  const text = String(input?.text ?? "").slice(0, MAX_TEXT);
-  const fileName = input?.fileName ? String(input.fileName).slice(0, 200) : null;
-  if (!text && !fileName) {
+  let input;
+  try {
+    input = normalizeVerifyInput(body);
+  } catch (error) {
+    return res.status(error.status ?? 400).json({ error: error.message ?? "invalid_input" });
+  }
+  if (!input.text && !input.fileName && !input.fileBuffer) {
     return res.status(400).json({ error: "empty_input" });
   }
-  if (text && /^https?:\/\//i.test(text.trim()) && isPrivateUrl(text)) {
+  if (input.text && /^https?:\/\//i.test(input.text.trim()) && isPrivateUrl(input.text)) {
     return res.status(400).json({ error: "private_url" });
   }
   try {
-    const out = await runVerify({ kind: input.kind, text, fileName });
+    const out = await runVerify(input);
     return res.status(200).json(out);
   } catch (err) {
-    return res.status(err.status ?? 502).json(err.payload ?? { error: "upstream_error" });
+    return res.status(err.status ?? 502).json(err.payload ?? { error: err.message ?? "upstream_error" });
   }
 }

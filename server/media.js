@@ -18,6 +18,8 @@ const MAX_DESC = 2000;
 const WORKER_URL = (process.env.MEDIA_WORKER_URL || "").replace(/\/$/, "");
 const WORKER_SECRET = process.env.MEDIA_WORKER_SECRET || "";
 
+const MAX_WORKER_AUDIO_BYTES = 20 * 1024 * 1024;
+
 /** Camada 0: delega probe ao worker remoto (Fly.io). */
 async function probeViaWorker(url) {
   if (!WORKER_URL) return { ok: false, reason: "no-worker-url" };
@@ -72,6 +74,62 @@ async function downloadViaWorker(url, outDir) {
     return { ok: true, file, via: "worker" };
   } catch {
     return { ok: false, reason: "worker-unreachable" };
+  }
+}
+
+/** Processes an uploaded video/audio file through the isolated media worker. */
+export async function processUploadedMedia(fileBuffer, mime) {
+  if (!WORKER_URL || !Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) {
+    return { ok: false, reason: !WORKER_URL ? "no-worker-url" : "empty-upload" };
+  }
+  let audioDir = null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 180_000);
+  try {
+    const response = await fetch(`${WORKER_URL}/upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(WORKER_SECRET ? { Authorization: `Bearer ${WORKER_SECRET}` } : {}),
+      },
+      body: JSON.stringify({ file_b64: fileBuffer.toString("base64"), mime }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return { ok: false, reason: `worker-http-${response.status}` };
+    const data = await response.json();
+    if (!data?.ok) return { ok: false, reason: data?.reason ?? "worker-upload-failed" };
+    let audio = null;
+    if (typeof data.audio?.audio_b64 === "string") {
+      const encoded = data.audio.audio_b64;
+      if (encoded.length <= Math.ceil(MAX_WORKER_AUDIO_BYTES / 3) * 4) {
+        const audioBytes = Buffer.from(encoded, "base64");
+        if (audioBytes.length > 0 && audioBytes.length <= MAX_WORKER_AUDIO_BYTES && audioBytes.toString("base64") === encoded) {
+          const { mkdtemp, writeFile } = await import("node:fs/promises");
+          const { tmpdir } = await import("node:os");
+          const { join } = await import("node:path");
+          audioDir = await mkdtemp(join(tmpdir(), "iev-upload-"));
+          const file = join(audioDir, "audio.mp3");
+          await writeFile(file, audioBytes, { flag: "wx" });
+          audio = { ok: true, file, dir: audioDir, via: "worker-upload" };
+        }
+      }
+    }
+    return {
+      ok: true,
+      audio,
+      frames: Array.isArray(data.frames) ? data.frames : [],
+      count: Array.isArray(data.frames) ? data.frames.length : 0,
+      durationSec: Number.isFinite(data.duration_sec) ? data.duration_sec : null,
+      via: "worker-upload",
+    };
+  } catch (error) {
+    if (audioDir) {
+      const { rm } = await import("node:fs/promises");
+      await rm(audioDir, { recursive: true, force: true }).catch(() => {});
+    }
+    return { ok: false, reason: error?.name === "AbortError" ? "worker-upload-timeout" : "worker-unreachable" };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -252,11 +310,11 @@ async function framesViaYtDlp(url) {
     const frames = [];
     let bytes = 0;
     const { readFile } = await import("node:fs/promises");
-    for (const j of jpgs.slice(0, MAX_FRAMES)) {
+    for (const [index, j] of jpgs.slice(0, MAX_FRAMES).entries()) {
       const buf = await readFile(`${dir}/${j}`);
       if (bytes + buf.length > MAX_FRAMES_BYTES) break;
       bytes += buf.length;
-      frames.push(buf.toString("base64"));
+      frames.push({ data: buf.toString("base64"), timestampSec: Math.round((index / fps) * 100) / 100 });
     }
     if (!frames.length) return { ok: false, reason: "no-frames" };
     return { ok: true, frames, count: frames.length, seconds: seconds || null, via: "yt-dlp" };

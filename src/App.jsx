@@ -54,7 +54,10 @@ export default function App() {
 
   function handleChecked(result) {
     setHistory((h) => [result, ...h.filter((r) => r.id !== result.id)].slice(0, 20));
-    show(`Pronto: nota ${result.score}/100 (${VERDICTS[result.verdict].label}).`);
+    const verdict = VERDICTS[result.verdict];
+    show(verdict && result.score != null
+      ? `Checagem concluída: ${verdict.label} · ${result.score}/100.`
+      : "Checagem concluída sem veredito factual.");
   }
 
   function handleQuickCheck(value) {
@@ -62,25 +65,26 @@ export default function App() {
     setQuickInput(value);
   }
 
-  const [isAdmin, setIsAdmin] = useState(() => location.hash === "#/admin");
+  const [isAdmin, setIsAdmin] = useState(() => location.pathname === "/admin" || location.hash.startsWith("#/admin"));
   useEffect(() => {
-    function onHash() {
-      setIsAdmin(location.hash === "#/admin");
+    function onLocation() {
+      setIsAdmin(location.pathname === "/admin" || location.hash.startsWith("#/admin"));
     }
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
+    window.addEventListener("hashchange", onLocation);
+    window.addEventListener("popstate", onLocation);
+    return () => {
+      window.removeEventListener("hashchange", onLocation);
+      window.removeEventListener("popstate", onLocation);
+    };
   }, []);
 
   if (isAdmin) {
     return (
       <>
-        <Header />
-        <main className="main-full">
+        <main className="main-full admin-main" id="main-content">
           <Admin showToast={show} />
         </main>
-        <div id="toast" role="status" className={message ? "show" : ""}>
-          {message}
-        </div>
+        <div id="toast" role="status" className={message ? "show" : ""}>{message}</div>
       </>
     );
   }
@@ -126,14 +130,10 @@ export default function App() {
             </summary>
             <div className="about-content">
               <p>
-                O <b>isso é verdade?</b> é uma fonte da verdade para a política
-                do Brasil no segundo turno de 2026: qualquer pessoa cola um link, texto,
-                imagem ou vídeo e recebe uma nota de 0 a 100 com cada afirmação checada
-                e suas fontes.
+                O <b>isso é verdade?</b> é uma ferramenta automática para analisar afirmações públicas. Ela pode errar e não substitui apuração independente. Opinião, previsão, evidência insuficiente e mídia inacessível não são falsidade; quando falta base, a checagem pode não atribuir veredito.
               </p>
               <p>
-                Vídeos são baixados e transcritos automaticamente; cada frase vira um
-                item auditável cruzado com fontes oficiais e confiáveis.
+                Links podem fornecer metadados, mas o URL não comprova uma afirmação. Vídeos e uploads são processados somente quando o conteúdo está acessível; amostras de áudio e imagem podem ser parciais. A nota não é probabilidade calibrada.
               </p>
             </div>
           </details>
@@ -145,11 +145,13 @@ export default function App() {
           <span className="footer-brand">
             isso é verdade<span className="brand-dot">?</span>
           </span>
-          <p>segundo turno 2026 · checagem por IA com fontes citadas</p>
+          <p>checagem automática · consulte evidências e limites</p>
+          <p>
+            <a href="/metodologia.html">Metodologia</a> · <a href="/correcoes.html">Correções</a> · <a href="/privacidade.html">Privacidade</a>
+          </p>
           <span>v1.0</span>
         </div>
       </footer>
-
       <DetailDialog result={openResult} onClose={() => setOpenResult(null)} showToast={show} onShareCard={setShareResult} />
       <ShareDialog result={shareResult} onClose={() => setShareResult(null)} showToast={show} />
       <div id="toast" role="status" className={message ? "show" : ""}>

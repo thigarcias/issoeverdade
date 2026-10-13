@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Dados enviados à checagem, processamento por IA, uploads, armazenamento e limites conhecidos.">
+<title>Privacidade — Isso é Verdade?</title>
+<style>
+:root{color-scheme:light;--ink:#26231f;--muted:#625d55;--paper:#faf8f2;--line:#ded8cb;--accent:#a83227}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:1rem/1.7 system-ui,-apple-system,"Segoe UI",sans-serif}header,main,footer{width:min(100% - 2rem,54rem);margin-inline:auto}header{padding:1.5rem 0;border-bottom:1px solid var(--line)}nav{display:flex;flex-wrap:wrap;gap:.5rem 1.25rem}a{color:#84271f;text-underline-offset:.18em}a:focus-visible{outline:3px solid var(--accent);outline-offset:3px;border-radius:2px}.current{font-weight:700;text-decoration:none}main{padding:2rem 0 3rem}h1,h2{line-height:1.2}h1{font-size:clamp(2rem,7vw,3rem);margin:.35rem 0 1rem}h2{margin:2rem 0 .5rem;font-size:1.4rem}.date,.note{color:var(--muted)}.note{border-left:4px solid var(--accent);padding:.8rem 1rem;background:#f0ece2}footer{border-top:1px solid var(--line);padding:1rem 0 2rem;color:var(--muted)}@media(min-width:42rem){main{padding-top:3rem}}
+</style>
+</head>
+<body>
+<header><nav aria-label="Transparência"><a href="metodologia.html">Metodologia</a><a href="correcoes.html">Correções</a><a class="current" aria-current="page" href="privacidade.html">Privacidade</a></nav></header>
+<main>
+<p class="date">Informações sobre processamento</p>
+<h1>Privacidade e processamento de dados por IA</h1>
+<p class="note">Esta página descreve o código do repositório; não é aconselhamento jurídico nem garantia sobre práticas de terceiros. A configuração ativa e a implantação em produção não foram verificadas nesta atualização. Não envie conteúdo que você não esteja autorizado a compartilhar.</p>
+<h2>O que pode ser processado</h2>
+<p>Uma checagem pode incluir texto, URL, nome/hash de arquivo, metadados, afirmações, fontes, consultas e citações de busca, transcrição, OCR/descrição visual, resultado, modelo e dados técnicos da execução. O texto submetido pode conter dados pessoais ou sensíveis.</p>
+<h2>Provedores e mídia</h2>
+<p>O servidor envia a entrada e o contexto necessário ao provedor/modelo selecionado no painel. A busca web é solicitada pela API do provedor. Não há troca automática de provedor se a etapa falhar. Uploads de imagem/vídeo enviam bytes reais (máximo 3 MiB) após validação de tipo. A imagem pode ser enviada ao modelo de visão; o áudio pode ser enviado à transcrição OpenAI. Vídeo/áudio pode ser encaminhado ao worker configurado para extração e depois os textos/frames necessários podem ser enviados aos modelos selecionados. Link, metadados e mídia podem ser tratados por serviços de terceiros.</p>
+<p>O código inclui OpenAI e OpenCode Go como provedores possíveis. A seleção ativa em produção é desconhecida. Adequação do serviço, retenção, treinamento e região devem ser conferidos nos termos de cada fornecedor; não afirmamos que os dados não sejam retidos ou usados para treinamento.</p>
+<h2>Armazenamento no navegador e no serviço</h2>
+<p>O navegador guarda até 20 resultados recentes em <code>localStorage</code>, incluindo partes do resultado, afirmações e referências, até que sejam substituídos ou o armazenamento seja limpo.</p>
+<ul>
+<li>O cache do serviço é privado quando o Blob está configurado e deixa de ser servido após 24 horas. Esse prazo não apaga fisicamente objetos expirados. Sem Blob, o cache é de memória.</li>
+<li>Logs administrativos privados podem guardar previews de entrada/transcrição, prompts e respostas truncados, claims, fontes, modelos e fases. O índice contém até 200 registros; a remoção física é best-effort e não há prazo fixo de retenção.</li>
+<li>Bytes brutos de arquivo não são escritos no log/cache pelo código; nome/hash e textos derivados, como transcrição/OCR, podem ser persistidos. Arquivos temporários usados na extração são removidos pelo código.</li>
+<li>Preferências de modelo são guardadas em Blob privado se disponível. Chaves de API ficam server-side e não são retornadas ao navegador.</li>
+</ul>
+<h2>Limites de retenção e acesso</h2>
+<p>TTL de cache não é prazo de exclusão física. A limpeza da antiga área pública do cache é best-effort; logs, cópias, backups, logs de plataforma e retenção dos provedores não são cobertos por uma garantia de exclusão. A configuração de Blob, worker, credenciais, retenção e região efetivamente ativa em produção não foi verificada. Arquivos podem falhar ao serem processados e mídia parcial não significa cobertura integral.</p>
+<p>Consulte também <a href="metodologia.html">Metodologia</a> e <a href="correcoes.html">Correções</a>.</p>
+</main>
+<footer><p>Descrição limitada ao comportamento do código analisado; não constitui auditoria jurídica ou confirmação dos contratos upstream e da configuração de produção.</p></footer>
+</body>
+</html>

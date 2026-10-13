@@ -4,6 +4,7 @@ import { VERDICTS } from "../data/constants.js";
 const FILTERS = [
   { id: "all", label: "Todas" },
   ...Object.keys(VERDICTS).map((id) => ({ id, label: VERDICTS[id].label })),
+  { id: "unverified", label: "Sem veredito" },
 ];
 
 /** Checagens feitas neste navegador (histórico local). */
@@ -14,7 +15,8 @@ export default function Feed({ items: allItems, onOpen }) {
   const counts = useMemo(() => {
     const c = { all: allItems.length };
     for (const item of allItems) {
-      c[item.verdict] = (c[item.verdict] ?? 0) + 1;
+      const key = VERDICTS[item.verdict] ? item.verdict : "unverified";
+      c[key] = (c[key] ?? 0) + 1;
     }
     return c;
   }, [allItems]);
@@ -22,7 +24,8 @@ export default function Feed({ items: allItems, onOpen }) {
   const items = useMemo(() => {
     const q = query.trim().toLowerCase();
     return allItems.filter((item) => {
-      if (filter !== "all" && item.verdict !== filter) return false;
+      const key = VERDICTS[item.verdict] ? item.verdict : "unverified";
+      if (filter !== "all" && key !== filter) return false;
       if (!q) return true;
       const hay = `${item.title} ${item.summary} ${item.author}`.toLowerCase();
       return q.split(/\s+/).every((word) => hay.includes(word));
@@ -118,21 +121,21 @@ export default function Feed({ items: allItems, onOpen }) {
                   aria-label={`Abrir checagem: ${item.title}`}
                 >
                   <div className="feed-top">
-                    <span className={`chip ${v.tint}`}>
-                      <i /> {v.label}
+                    <span className={`chip ${v?.tint ?? "tint-info"}`}>
+                      <i /> {v?.label ?? "Sem veredito"}
                     </span>
-                    <div className="feed-score">
-                      <b style={{ color: v.color }}>{item.score}</b>
-                      <small>
-                        nota
-                        <br />
-                        /100
-                      </small>
+                    {v && item.score != null && (
+                      <div className="feed-score">
+                        <b style={{ color: v.color }}>{item.score}</b>
+                        <small>nota<br />/100</small>
+                      </div>
+                    )}
+                  </div>
+                  {v && item.score != null && (
+                    <div className="score-bar" aria-hidden="true">
+                      <i style={{ width: `${item.score}%`, background: v.color }} />
                     </div>
-                  </div>
-                  <div className="score-bar" aria-hidden="true">
-                    <i style={{ width: `${item.score}%`, background: v.color }} />
-                  </div>
+                  )}
                   <h3>{item.title}</h3>
                   <p className="excerpt">{item.summary}</p>
                   <div className="feed-bottom">

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { renderShareCard } from "../lib/shareCard.js";
+import { VERDICTS } from "../data/constants.js";
 
 export default function ShareDialog({ result, onClose, showToast }) {
   const ref = useRef(null);
@@ -63,7 +64,8 @@ export default function ShareDialog({ result, onClose, showToast }) {
 
   function shareText() {
     const url = `${location.origin}${location.pathname}`;
-    return `🔍 ${result.title} — nota ${result.score}/100 (${result.verdict === "true" || result.verdict === "mostly_true" ? "verdade" : result.verdict === "false" || result.verdict === "misleading" ? "mentira" : "sem comprovação"}).\n\nViu algo suspeito? Confira você também em ${url}`;
+    const label = VERDICTS[result.verdict]?.label ?? "Sem veredito";
+    return `🔍 ${result.title} — nota ${result.score}/100 (${label.toLowerCase()}).\n\nViu algo suspeito? Confira você também em ${url}`;
   }
 
   async function share() {

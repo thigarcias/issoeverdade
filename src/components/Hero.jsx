@@ -32,8 +32,7 @@ export default function Hero({ onQuickCheck, collapsed }) {
           Isso é verdade<span className="dot">?</span>
         </h1>
         <p className="quick-sub">
-          Cole o link, o texto ou suba o vídeo. A gente diz o que é verdade, o
-          que é mentira — e mostra a fonte.
+          Cole um link, texto ou envie mídia. A checagem mostra o que as evidências sustentam — e quando não há base suficiente para concluir.
         </p>
         <form className="quick-form" onSubmit={submit} role="search" aria-label="Checagem rápida">
           <div className="input-box quick-input">

@@ -16,7 +16,7 @@ const PLACEHOLDERS = {
   video: "https://www.instagram.com/reel/…",
 };
 
-const MAX_FILE_BYTES = 200 * 1024 * 1024;
+const MAX_FILE_BYTES = 3 * 1024 * 1024;
 
 function isValidHttpUrl(value) {
   try {
@@ -39,7 +39,9 @@ function formatDuration(ms) {
   const m = Math.floor(s / 60);
   return `${m}min ${String(s % 60).padStart(2, "0")}s`;
 }
-
+function fileFingerprint(file) {
+  return file ? `${file.name}:${file.size}:${file.lastModified}` : null;
+}
 export default function Verifier({ showToast, onChecked, quickInput, onShareCard }) {
   const [tab, setTab] = useState("link");
   const [text, setText] = useState("");
@@ -109,6 +111,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     aborter.current?.abort();
     runId.current += 1;
     setTab(next);
+    setFile(null);
     setResult(null);
     setError(null);
     setStep(-1);
@@ -123,10 +126,16 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     setResult(null);
     setError(null);
     setExpanded(false);
-    startRef.current = Date.now();
-    setElapsedMs(0);
     try {
-      const snapshot = { kind: tab, text: text.trim(), fileName: file?.name ?? null };
+      const uploadFile = file;
+      const snapshot = {
+        kind: tab,
+        text: text.trim(),
+        fileName: uploadFile?.name ?? null,
+        fileMime: uploadFile?.type ?? "",
+        file: uploadFile ?? undefined,
+        fileFingerprint: fileFingerprint(uploadFile),
+      };
       const { result: r } = await verify(
         snapshot,
         { onStep: setStep, signal: aborter.current.signal },
@@ -134,7 +143,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
       if (runId.current !== mine) return; // execução obsoleta
       r.elapsedMs = Date.now() - startRef.current;
       setResult(r);
-      setCheckedInput(snapshot);
+      setCheckedInput({ kind: snapshot.kind, text: snapshot.text, fileName: snapshot.fileName, fileFingerprint: snapshot.fileFingerprint });
       onChecked?.(r);
     } catch (err) {
       if (err?.name === "AbortError") return;
@@ -166,18 +175,16 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
 
   function handleFiles(files) {
     const f = files?.[0];
+    if (fileInput.current) fileInput.current.value = "";
     if (!f) return;
-    const accept = tab === "video" ? /^(video|audio)\// : /^image\//;
-    if (!accept.test(f.type)) {
-      showToast(
-        tab === "video"
-          ? "Envie um vídeo ou áudio."
-          : "Envie uma imagem.",
-      );
+    const videoTypes = new Set(["video/mp4", "video/quicktime", "video/webm", "audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav", "audio/webm", "audio/ogg"]);
+    const validType = tab === "video" ? videoTypes.has(f.type) : ["image/jpeg", "image/png", "image/webp"].includes(f.type);
+    if (!validType) {
+      showToast(tab === "video" ? "Envie MP4, MOV, WebM ou áudio compatível." : "Envie uma imagem PNG, JPEG ou WebP.");
       return;
     }
     if (f.size > MAX_FILE_BYTES) {
-      showToast("Arquivo acima do limite de 200 MB.");
+      showToast("Arquivo acima do limite de 3 MB.");
       return;
     }
     setFile(f);
@@ -200,8 +207,8 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
       <div className={`verify-grid${result && !running && !expanded ? " verify-result-mode" : ""}${running && !result ? " verify-processing-mode" : ""}`}>
         <form className={`card${result && !running && !expanded ? " form-collapsed" : ""}${running && !result ? " form-hidden" : ""}`} onSubmit={handleSubmit} aria-label="Enviar conteúdo para checagem">
           <div className="hd">
-            <h3>{result && !running && !expanded ? "Checagem concluída" : "O que você quer checar?"}</h3>
-            <span className="aside">{result && !running && !expanded ? `nota ${result.score}/100` : "link · texto · vídeo · foto"}</span>
+            <h3>{result && !running ? "Checagem concluída" : "O que você quer checar?"}</h3>
+            <span className="aside">{result && !running ? (result.score != null ? `nota ${result.score}/100` : "sem veredito") : "link · texto · vídeo · foto"}</span>
           </div>
 
           <div className="tabs" role="tablist" aria-label="Tipo de conteúdo">
@@ -307,8 +314,8 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                 <div>
                   <span className="field-label" id="file-label">
                     {tab === "video"
-                      ? "Ou suba o arquivo (a gente transcreve o áudio)"
-                      : "Imagem ou print (lemos o texto dela)"}
+                      ? "Suba um vídeo ou áudio para analisar fala e, em vídeos, amostras visuais"
+                      : "Suba uma imagem ou captura de tela"}
                   </span>
                   <div
                     className={`drop${drag ? " drag" : ""}`}
@@ -351,7 +358,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                       <>
                         <b>Arraste o arquivo ou clique para escolher</b>
                         <span>
-                          {tab === "video" ? "MP4, MP3, MOV" : "PNG, JPG, prints de posts"} · até 200 MB
+                          {tab === "video" ? "MP4, MOV, WebM ou áudio compatível" : "PNG, JPEG ou WebP"} · até 3 MB
                         </span>
                       </>
                     )}
@@ -361,7 +368,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                     type="file"
                     hidden
                     aria-label="Escolher arquivo"
-                    accept={tab === "video" ? "video/*,audio/*" : "image/*"}
+                    accept={tab === "video" ? "video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp4,audio/wav,audio/x-wav,audio/webm,audio/ogg" : "image/jpeg,image/png,image/webp"}
                     onChange={(e) => handleFiles(e.target.files)}
                   />
                 </div>
@@ -400,10 +407,10 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
         <div className="card result-pane" aria-label="Resultado da checagem" ref={resultPane}>
           <div className="hd">
             <h3>{result ? "Resultado" : running ? "Analisando…" : error ? "Algo deu errado" : "Seu resultado aparece aqui"}</h3>
-            <span className="aside">{result ? `nota ${result.score}/100` : running ? "a IA está trabalhando" : "leva segundos"}</span>
+            <span className="aside">{result ? (result.score == null ? "sem veredito" : `nota ${result.score}/100`) : running ? "a IA está trabalhando" : "leva segundos"}</span>
           </div>
           {result && !running && expanded && checkedInput &&
-            (text.trim() !== checkedInput.text || tab !== checkedInput.kind || (file?.name ?? null) !== checkedInput.fileName) && (
+            (text.trim() !== checkedInput.text || tab !== checkedInput.kind || fileFingerprint(file) !== checkedInput.fileFingerprint) && (
               <p className="stale-warning" role="status">
                 Você alterou o conteúdo — este resultado é da checagem anterior.{" "}
                 <button type="button" className="quiet-link" onClick={handleSubmit} disabled={!canSubmit}>
@@ -425,9 +432,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
               </div>
               <p className="eta-line">
                 {formatDuration(elapsedMs)} decorridos
-                {tab === "video" && (
-                  <> · vídeos longos podem levar alguns minutos — quanto maior o vídeo, mais demora a transcrição</>
-                )}
+                {tab === "video" && <> · vídeos e arquivos enviados podem levar alguns minutos; o upload aceita até 3 MB</>}
               </p>
               <ol className="pipeline">
                 {PIPELINE_STEPS.map((s, i) => (
@@ -455,10 +460,9 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
 
           {!running && !result && !error && (
             <div className="result-empty">
-              <h3>É verdade ou mentira? A gente responde.</h3>
+              <h3>Uma checagem com limites explícitos.</h3>
               <p>
-                Cole o conteúdo ao lado e receba uma nota de 0 a 100, com cada
-                parte marcada: verdade, mentira ou sem comprovação — sempre com a fonte.
+                Envie texto, link ou mídia. O sistema apresenta afirmações, evidências e limitações; se faltar base suficiente, pode não atribuir veredito.
               </p>
               <span className="chip tint-info">
                 <i /> toque num exemplo abaixo do formulário para testar
@@ -482,8 +486,9 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
 
       {result && (
         <p className="verify-hint" style={{ marginTop: 10 }}>
-          Veredito: <b>{VERDICTS[result.verdict].label}</b> · nota {result.score}/100 ·{" "}
-          {result.claims.length} {result.claims.length === 1 ? "afirmação" : "afirmações"} · {result.sources.length} {result.sources.length === 1 ? "fonte" : "fontes"}
+          {result.verdict && VERDICTS[result.verdict] ? <>Veredito: <b>{VERDICTS[result.verdict].label}</b></> : "Sem veredito factual"}
+          {result.score != null && <> · nota {result.score}/100</>}
+          {" "}· {result.claims.length} {result.claims.length === 1 ? "afirmação" : "afirmações"} · {result.sources.length} {result.sources.length === 1 ? "fonte" : "fontes"}
           {typeof result.elapsedMs === "number" && <> · checada em {formatDuration(result.elapsedMs)}</>}.
         </p>
       )}

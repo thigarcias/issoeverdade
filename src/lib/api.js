@@ -36,50 +36,70 @@ function titleFrom(input) {
 /** Normaliza o JSON do modelo para o formato que o ResultCard espera. */
 function normalize(raw, input, origin) {
   const statuses = ["true", "false", "unproven", "context"];
-  const clamp = (n, dflt) => {
-    const v = Number(n);
-    return Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : dflt;
+  const clamp = (value, fallback) => {
+    if (value == null || value === "") return fallback;
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.max(0, Math.min(100, Math.round(number))) : fallback;
   };
-  // Backend já remove fontes sem URL válida; aqui filtramos por segurança.
   const sources = Array.isArray(raw?.sources)
     ? raw.sources
-        .filter((s) => typeof s?.url === "string" && /^https?:\/\//.test(s.url))
-        .slice(0, 8)
-        .map((s) => ({
-          outlet: String(s?.outlet ?? "Fonte").slice(0, 120),
-          detail: String(s?.detail ?? "").slice(0, 120),
-          url: s.url,
+        .filter((source) => typeof source?.url === "string" && /^https?:\/\//.test(source.url))
+        .slice(0, 30)
+        .map((source) => ({
+          outlet: String(source?.outlet ?? "Fonte").slice(0, 120),
+          detail: String(source?.detail ?? "").slice(0, 180),
+          citationTitle: String(source?.citationTitle ?? "").slice(0, 300),
+          url: source.url,
         }))
     : [];
   const claims = Array.isArray(raw?.claims)
-    ? raw.claims.slice(0, 10).map((c, i) => {
-        // Servidor novo envia sourceIds (0-based, podados); sem eles, vincula todas (compat).
-        const ids = Array.isArray(c?.sourceIds)
-          ? c.sourceIds.filter((n) => Number.isInteger(n) && n >= 0 && n < sources.length)
-          : sources.map((_, idx) => idx);
+    ? raw.claims.slice(0, 50).map((claim, index) => {
+        const sourceIds = Array.isArray(claim?.sourceIds)
+          ? claim.sourceIds.filter((id) => Number.isInteger(id) && id >= 0 && id < sources.length)
+          : [];
         return {
-          id: `c${i + 1}`,
-          status: statuses.includes(c?.status) ? c.status : "unproven",
-          score: clamp(c?.score, 50),
-          text: String(c?.text ?? "Afirmação").slice(0, 400),
-          note: String(c?.note ?? "").slice(0, 400),
-          sourceIds: ids,
+          id: `c${index + 1}`,
+          status: statuses.includes(claim?.status) ? claim.status : "unproven",
+          score: clamp(claim?.score, 35),
+          text: String(claim?.text ?? "Afirmação").slice(0, 600),
+          note: String(claim?.note ?? "").slice(0, 800),
+          sourceIds,
+          evidence: Array.isArray(claim?.evidence)
+            ? claim.evidence
+                .filter((item) => sourceIds.includes(item?.sourceId) && ["supports", "refutes", "context"].includes(item?.relation))
+                .map((item) => ({
+                  sourceId: item.sourceId,
+                  relation: item.relation,
+                  quote: String(item.quote ?? "").slice(0, 600),
+                }))
+            : [],
         };
       })
     : [];
   return {
-    id: `r-${Date.now().toString(36)}`,
-    verdict: migrateVerdict(raw?.verdict, raw?.score),
-    score: clamp(raw?.score, 50),
+    id: raw?.checkId ?? `r-${Date.now().toString(36)}`,
+    verdict: raw?.verdict ? migrateVerdict(raw.verdict, raw.score) : null,
+    outcome: raw?.outcome ?? "legacy",
+    score: clamp(raw?.score, null),
     title: origin?.title ?? titleFrom(input),
     kind: kindLabel(input),
     author: origin?.author ?? "checagem por IA",
     publishedAt: new Date().toLocaleDateString("pt-BR"),
     checkedAt: "agora",
-    summary: String(raw?.summary ?? "Resultado gerado pela checagem.").slice(0, 600),
+    summary: String(raw?.summary ?? "Resultado gerado pela checagem.").slice(0, 1000),
     claims,
+    notCheckedClaims: Array.isArray(raw?.notCheckedClaims) ? raw.notCheckedClaims.slice(0, 50) : [],
+    omittedClaimsCount: Number(raw?.omittedClaimsCount) || 0,
     sources,
     origin: origin ?? null,
+    cached: Boolean(raw?.cached),
+    cachedFrom: raw?.cachedFrom ?? null,
+    modelsUsed: raw?.modelsUsed ?? {},
+    methodologyVersion: raw?.methodologyVersion ?? null,
+    configRevision: raw?.configRevision ?? null,
+    mediaCoverage: raw?.mediaCoverage ?? null,
+    media: Array.isArray(raw?.media) ? raw.media : [],
+    transcript: raw?.transcript ?? null,
   };
 }
 
@@ -93,6 +113,16 @@ function wait(ms, signal) {
   });
 }
 
+async function encodeUpload(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
 /**
  * @param {{ kind: "link"|"text"|"video"|"image", text: string, fileName: string|null }} input
  * @param {{ onStep?: (index: number) => void, signal?: AbortSignal }} opts
@@ -103,16 +133,22 @@ export async function verify(input, opts = {}) {
   await wait(400, opts.signal);
   opts.onStep?.(1);
   await wait(400, opts.signal);
-  opts.onStep?.(2);
   const ctrl = new AbortController();
   const onAbort = () => ctrl.abort();
   opts.signal?.addEventListener("abort", onAbort);
   let res;
   try {
+    const body = {
+      kind: input.kind,
+      text: input.text,
+      fileName: input.fileName,
+      fileMime: input.file?.type ?? input.fileMime ?? "",
+      fileData: input.file ? await encodeUpload(input.file) : undefined,
+    };
     res = await fetch("/api/verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: input.kind, text: input.text, fileName: input.fileName }),
+      body: JSON.stringify(body),
       signal: ctrl.signal,
     });
   } finally {
@@ -125,14 +161,19 @@ export async function verify(input, opts = {}) {
     try {
       code = (await res.json())?.error ?? code;
     } catch { /* corpo ilegível */ }
-    throw new Error(ERROR_MESSAGES[code] ?? "Não consegui checar agora. Tente de novo.");
+    const error = new Error(ERROR_MESSAGES[code] ?? (code === "payload_too_large" ? "O arquivo excede o limite de envio." : "Não consegui checar agora. Tente de novo."));
+    error.code = code;
+    throw error;
   }
   const data = await res.json();
   opts.onStep?.(4);
   await wait(300, opts.signal);
   opts.onStep?.(PIPELINE_STEPS.length);
+  const result = normalize(data.result, input, data.origin ?? null);
+  result.cached = Boolean(data.cached);
+  result.cachedFrom = data.cachedFrom ?? null;
   return {
-    result: normalize(data.result, input, data.origin ?? null),
+    result,
     steps: PIPELINE_STEPS,
   };
 }

@@ -1,14 +1,16 @@
 // Núcleo server-side da checagem — compartilhado entre:
 // - vite.api-plugin.js (dev local)
 // - api/verify.js (serverless Vercel)
-// A key OpenCode NUNCA chega ao browser.
+// Keys (OpenAI + OpenCode) NUNCA chegam ao browser.
 import { downloadAudio, fetchMediaContext } from "./media.js";
 import { transcribe, transcriptToPrompt } from "./transcribe.js";
 
 export const OPENCODE_URL = "https://opencode.ai/zen/go/v1/responses";
-export const DEFAULT_MODEL = "muse-spark-1.3-contributor";
+export const OPENAI_URL = "https://api.openai.com/v1/responses";
+export const DEFAULT_MODEL = "gpt-6-luna"; // OpenAI com web_search nativo
+export const FALLBACK_MODEL = "muse-spark-1.3-contributor"; // OpenCode Go, sem busca
 
-const BASE_RULES = `Regras: separe cada afirmação checável do conteúdo; "context" quando a frase é parcialmente verdadeira mas engana sem contexto; seja cético com prints sem origem e correntes de WhatsApp; cite no mínimo 3 fontes VARIADAS por checagem, nunca repetindo o mesmo outlet — alterne entre: fontes oficiais (TSE, Câmara, Senado, Planalto, STF, IBGE, Banco Central), agências de checagem (Lupa, Aos Fatos, Estadão Verifica, UOL Confere, AFP Checamos), veículos grandes (G1, Folha, Estadão, O Globo, UOL, Poder360, Metrópoles, CNN Brasil) e regionais quando relevante; cada URL deve ser plausível e específica da fonte citada (nunca invente slug de matéria — prefira a home/seção do veículo se não souber a URL exata); score geral pondera a gravidade de cada afirmação. Tudo em pt-BR.`;
+const BASE_RULES = `Regras: separe cada afirmação checável do conteúdo; "context" quando a frase é parcialmente verdadeira mas engana sem contexto; seja cético com prints sem origem e correntes de WhatsApp; USE A BUSCA NA WEB para verificar cada afirmação com dados atuais (não confie só na memória) — busque nomes, datas, números e eventos citados; cite no mínimo 3 fontes VARIADAS por checagem vindas dos resultados da busca, nunca repetindo o mesmo outlet — alterne entre: fontes oficiais (TSE, Câmara, Senado, Planalto, STF, IBGE, Banco Central), agências de checagem (Lupa, Aos Fatos, Estadão Verifica, UOL Confere, AFP Checamos), veículos grandes (G1, Folha, Estadão, O Globo, UOL, Poder360, Metrópoles, CNN Brasil) e regionais quando relevante; cada URL deve ser REAL, copiada dos resultados da busca (nunca invente); score geral pondera a gravidade de cada afirmação. Tudo em pt-BR.`;
 
 const RESULT_SHAPE = `{"verdict":"true|mostly_true|mixed|unproven|misleading|false","score":0-100,"summary":"resumo em pt-BR, 1-2 frases","claims":[{"status":"true|false|unproven|context","score":0-100,"text":"a afirmação entre aspas","note":"justificativa curta em pt-BR"}],"sources":[{"outlet":"nome da fonte","detail":"tipo · data","url":"https://..."}]}`;
 
@@ -82,7 +84,50 @@ function parseModelJson(content, mdl) {
   }
 }
 
-async function callModel({ apiKey, model, instructions, input, timeoutMs }) {
+async function callOpenAI({ instructions, input, timeoutMs }) {
+  const key = process.env.OPENAI_API_KEY || "";
+  if (!key) fail(503, "missing_openai_key", { message: "OPENAI_API_KEY não configurada." });
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const upstream = await fetch(OPENAI_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: DEFAULT_MODEL,
+        instructions,
+        input,
+        tools: [{ type: "web_search", search_context_size: "medium" }],
+        max_output_tokens: 8000,
+      }),
+      signal: ctrl.signal,
+    });
+    const raw = await upstream.text();
+    if (!upstream.ok) {
+      let code = "openai_error";
+      try {
+        const p = JSON.parse(raw);
+        code = p?.error?.code ?? p?.error?.type ?? code;
+      } catch { /* mantém genérico */ }
+      fail(502, code, { message: raw.slice(0, 500), model: DEFAULT_MODEL });
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      fail(502, "upstream_bad_json", { model: DEFAULT_MODEL });
+    }
+    return parseModelJson(extractText(parsed), DEFAULT_MODEL);
+  } catch (err) {
+    if (err?.payload) throw err;
+    if (err?.name === "AbortError") fail(504, "upstream_timeout", { model: DEFAULT_MODEL });
+    fail(502, "upstream_fetch_failed", { model: DEFAULT_MODEL });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function callGo({ apiKey, instructions, input, timeoutMs }) {
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -95,7 +140,7 @@ async function callModel({ apiKey, model, instructions, input, timeoutMs }) {
         "x-opencode-session": `iev-${Date.now().toString(36)}`,
       },
       body: JSON.stringify({
-        model,
+        model: FALLBACK_MODEL,
         instructions,
         input,
         max_output_tokens: 3000,
@@ -111,21 +156,35 @@ async function callModel({ apiKey, model, instructions, input, timeoutMs }) {
         const parsed = JSON.parse(raw);
         code = parsed?.error?.type ?? parsed?.type ?? code;
       } catch { /* mantém genérico */ }
-      fail(502, code, { message: raw.slice(0, 500), model });
+      fail(502, code, { message: raw.slice(0, 500), model: FALLBACK_MODEL });
     }
     let parsed;
     try {
       parsed = JSON.parse(raw);
     } catch {
-      fail(502, "upstream_bad_json", { model });
+      fail(502, "upstream_bad_json", { model: FALLBACK_MODEL });
     }
-    return parseModelJson(extractText(parsed), model);
+    return parseModelJson(extractText(parsed), FALLBACK_MODEL);
   } catch (err) {
     if (err?.payload) throw err;
-    if (err?.name === "AbortError") fail(504, "upstream_timeout", { model });
-    fail(502, "upstream_fetch_failed", { model });
+    if (err?.name === "AbortError") fail(504, "upstream_timeout", { model: FALLBACK_MODEL });
+    fail(502, "upstream_fetch_failed", { model: FALLBACK_MODEL });
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+async function callModel({ apiKey, instructions, input, timeoutMs }) {
+  // GPT Luna (com web_search) primeiro; Muse Spark (Go) como fallback.
+  try {
+    const result = await callOpenAI({ instructions, input, timeoutMs });
+    return { result, model: DEFAULT_MODEL };
+  } catch (openaiErr) {
+    if (!apiKey) throw openaiErr;
+    if (openaiErr?.payload?.error === "missing_openai_key") throw openaiErr;
+    console.error(`[iev] Luna falhou (${openaiErr?.payload?.error ?? openaiErr?.message}), usando fallback Go`);
+    const result = await callGo({ apiKey, instructions, input, timeoutMs });
+    return { result, model: FALLBACK_MODEL };
   }
 }
 
@@ -204,11 +263,11 @@ async function enrichWithMedia(maybeUrl) {
  * 2. se a IA pedir mídia (needs_media), baixa + transcreve e rejulga.
  * @returns {{ result: object, model: string, media: string[], transcript: object|null }}
  */
-export async function runVerify(input, { apiKey, model, timeoutMs = 120_000 } = {}) {
-  if (!apiKey) {
-    fail(503, "missing_api_key", { message: "OPENCODE_API não configurada no servidor." });
+export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
+  // OpenAI (Luna) é o primário; Go (Muse) é fallback. Pelo menos um precisa existir.
+  if (!apiKey && !process.env.OPENAI_API_KEY) {
+    fail(503, "missing_api_key", { message: "Nenhuma chave de IA configurada no servidor." });
   }
-  const mdl = model || DEFAULT_MODEL;
   const maybeUrl = String(input?.text ?? "").trim();
   const isUrl = /^https?:\/\//.test(maybeUrl);
   const wantsMedia = input?.kind === "link" || input?.kind === "video";
@@ -231,9 +290,8 @@ export async function runVerify(input, { apiKey, model, timeoutMs = 120_000 } = 
     }
   }
 
-  const first = await callModel({
+  const { result: first, model: firstModel } = await callModel({
     apiKey,
-    model: mdl,
     instructions: SYSTEM_PROMPT_JUDGE,
     input: buildUserContent(input, mediaContext),
     timeoutMs,
@@ -257,15 +315,14 @@ export async function runVerify(input, { apiKey, model, timeoutMs = 120_000 } = 
     }
     if (transcript || mediaContext) {
       const kindLabel = input?.kind === "video" ? "vídeo/áudio" : "link";
-      const second = await callModel({
+      const { result: second, model: secondModel } = await callModel({
         apiKey,
-        model: mdl,
         instructions: SYSTEM_PROMPT_FINAL,
         input: `Cheque este ${kindLabel}: ${maybeUrl}\n\nDados extraídos (confie nestes dados):\n${mediaContext}`,
         timeoutMs,
       });
       second.sources = await sanitizeSources(second.sources);
-      return { result: second, model: mdl, media: mediaDebug, transcript, origin };
+      return { result: second, model: secondModel, media: mediaDebug, transcript, origin };
     }
   }
 
@@ -279,12 +336,12 @@ export async function runVerify(input, { apiKey, model, timeoutMs = 120_000 } = 
         claims: [],
         sources: [],
       },
-      model: mdl,
+      model: firstModel,
       media: mediaDebug,
       transcript: null,
       origin,
     };
   }
   first.sources = await sanitizeSources(first.sources);
-  return { result: first, model: mdl, media: mediaDebug, transcript, origin };
+  return { result: first, model: firstModel, media: mediaDebug, transcript, origin };
 }

@@ -1,6 +1,6 @@
 // Serverless Vercel: POST /api/verify (mesma lógica do dev local).
-// Env vars na Vercel: OPENCODE_API (obrigatória), OPENCODE_MODEL (opcional).
-import { DEFAULT_MODEL, runVerify } from "../server/verify.js";
+// Env vars na Vercel: OPENAI_API_KEY (primário), OPENCODE_API (fallback).
+import { runVerify } from "../server/verify.js";
 
 export const config = { maxDuration: 120 };
 
@@ -17,10 +17,7 @@ export default async function handler(req, res) {
   try {
     const out = await runVerify(
       { kind: input.kind, text, fileName },
-      {
-        apiKey: process.env.OPENCODE_API || "",
-        model: process.env.OPENCODE_MODEL || DEFAULT_MODEL,
-      },
+      { apiKey: process.env.OPENCODE_API || "" },
     );
     return res.status(200).json(out);
   } catch (err) {

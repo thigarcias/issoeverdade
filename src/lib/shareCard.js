@@ -75,6 +75,18 @@ function wrap(ctx, text, maxW) {
 }
 
 const CLAIM_ICON = { true: "✓", false: "✕", unproven: "?", context: "◐" };
+const RELATION_LABEL = { supports: "Sustenta", refutes: "Contradiz", context: "Contextualiza" };
+
+/** Fatia linhas com "…" na última quando corta conteúdo. Usa a fonte atual do ctx. */
+function sliceLines(ctx, lines, max, maxW) {
+  const out = lines.slice(0, max);
+  if (lines.length > max && out.length > 0) {
+    let last = out[out.length - 1];
+    while (last.length > 1 && ctx.measureText(`${last}…`).width > maxW) last = last.slice(0, -1);
+    out[out.length - 1] = `${last}…`;
+  }
+  return out;
+}
 
 async function ensureFonts() {
   try {
@@ -165,34 +177,112 @@ export async function renderShareCard(result) {
       cleanTitle = cleanTitle.replace(urlMatch[0], host).trim();
     } catch { /* mantém original, wrap quebra */ }
   }
-  const titleLines = wrap(ctx, cleanTitle, cw - 120).slice(0, 3);
-  // Layout em 2 passes: mede claims/fontes primeiro; resumo encolhe (2→0 linhas)
-  // para garantir pelo menos 1 claim + fontes sempre visíveis.
-  ctx.font = `400 30px ${SANS}`;
-  const claimBlocks = claims.map((c) => {
-    const text = c.text.replace(/^["“]|["”]$/g, "");
-    const clines = wrap(ctx, text, W - 220).slice(0, 2);
-    ctx.font = `400 25px ${SANS}`;
-    const nlines = c.note ? wrap(ctx, c.note, W - 220).slice(0, 1) : [];
+  ctx.font = `400 42px ${SERIF}`;
+  const titleFull = wrap(ctx, cleanTitle, cw - 120);
+  // Layout em 2 passes: mede tudo primeiro; o ajuste (fit) garante pelo menos
+  // 1 claim com "porquê" (justificativa + trecho de evidência) e encolhe o resto
+  // (resumo → extras → título → texto → nota → evidência → fontes) até caber.
+  const prepared = claims.map((c, idx) => {
+    const text = String(c.text ?? "").replace(/^["“]|["”]$/g, "");
     ctx.font = `400 30px ${SANS}`;
-    return { c, clines, nlines, h: 40 + clines.length * 40 + nlines.length * 34 + 22 };
+    const textFull = wrap(ctx, text, W - 220);
+    ctx.font = `400 25px ${SANS}`;
+    const noteFull = c.note ? wrap(ctx, String(c.note), W - 220) : [];
+    const ev = (c.evidence ?? []).find((e) => e?.quote && String(e.quote).trim());
+    let evFull = [];
+    if (ev) {
+      const outlet = result.sources?.[ev.sourceId]?.outlet ?? "";
+      const rel = RELATION_LABEL[ev.relation] ?? "Evidência";
+      ctx.font = `400 24px ${SANS}`;
+      evFull = wrap(ctx, `${rel} · ${outlet}: “${String(ev.quote).trim()}”`, W - 236);
+    }
+    const first = idx === 0;
+    return {
+      c,
+      textFull,
+      noteFull,
+      evFull,
+      alloc: {
+        t: Math.min(2, textFull.length),
+        // Teto generoso no 1º claim: o fit corta até caber, então ocupa o espaço livre com "porquê".
+        n: Math.min(first ? 6 : 2, noteFull.length),
+        e: Math.min(first ? 4 : 1, evFull.length),
+      },
+    };
   });
   ctx.font = `400 27px ${SANS}`;
-  const sourceBlocks = sources.map((s) => {
+  const sourceFull = sources.map((s) => {
     const label = s.detail ? `•  ${s.outlet} — ${s.detail}` : `•  ${s.outlet}`;
-    return wrap(ctx, label, W - 220).slice(0, 2);
+    return wrap(ctx, label, W - 220);
   });
-  const sourcesH = sources.length > 0 ? 36 + 36 + sourceBlocks.reduce((a, b) => a + b.length * 36, 0) : 0;
-  const firstClaimH = claimBlocks.length > 0 ? claimBlocks[0].h : 0;
+  let titleN = Math.min(3, titleFull.length);
+  let summaryN = 0;
+  let visible = prepared.length;
+  let visibleSources = sourceFull.length;
+  // Orçamento: header(200) + anel/título(530→) + claims + fontes + rodapé(228).
+  const TITLE_Y = 530;
+  const FOOTER_TOP = H - 228;
+  const claimH = (p) => 38 + p.alloc.t * 38 + p.alloc.n * 31 + (p.alloc.e > 0 ? 6 + p.alloc.e * 30 : 0) + 14;
+  const sourcesH = () => visibleSources > 0
+    ? 30 + 30 + sourceFull.slice(0, visibleSources).reduce((a, b) => a + Math.min(2, b.length) * 34, 0)
+    : 0;
+  const totalH = () => {
+    const bottom = TITLE_Y + titleN * 52 + 10 + summaryN * 32 + 26;
+    const claimsH = prepared.slice(0, visible).reduce((a, p) => a + claimH(p), 0);
+    return bottom + 48 + claimsH + sourcesH();
+  };
+  const fitsAll = () => totalH() <= FOOTER_TOP;
+  // Resumo: alvo de 2 linhas; mantém pelo menos 1 para contextualizar o veredito.
   ctx.font = `400 26px ${SANS}`;
   const fullSummary = wrap(ctx, result.summary ?? "", cw - 120);
-  // Orçamento: header(200) + anel/título(600→) + claims + fontes + rodapé(150).
-  const TITLE_Y = 600;
-  const titleH = titleLines.length * 54;
-  let summaryLines = fullSummary.slice(0, 2);
-  const fits = (n) => TITLE_Y + titleH + 12 + n * 34 + 32 + 40 + firstClaimH + sourcesH < H - 150;
-  while (summaryLines.length > 0 && !fits(summaryLines.length)) summaryLines = summaryLines.slice(0, -1);
-  const cardBottom = TITLE_Y + titleH + 12 + summaryLines.length * 34 + 32;
+  summaryN = Math.min(2, fullSummary.length);
+  const minSummary = fullSummary.length > 0 ? 1 : 0;
+  while (summaryN > minSummary && !fitsAll()) summaryN -= 1;
+  // Claims extras: cortam evidência/nota antes de sumir.
+  for (let i = visible - 1; i >= 1 && !fitsAll(); i--) {
+    while (prepared[i].alloc.e > 0 && !fitsAll()) prepared[i].alloc.e -= 1;
+    const minN = prepared[i].noteFull.length > 0 ? 1 : 0;
+    while (prepared[i].alloc.n > minN && !fitsAll()) prepared[i].alloc.n -= 1;
+  }
+  while (visible > 1 && !fitsAll()) visible -= 1;
+  // Título, texto do 1º claim, 1ª nota e fontes entram no ajuste para o 1º claim
+  // sempre caber (mínimo: badge + 1 linha de texto + 1 de porquê + 1 fonte).
+  while (titleN > 2 && !fitsAll()) titleN -= 1;
+  if (visible > 0) {
+    const p0 = prepared[0];
+    while (p0.alloc.t > 1 && !fitsAll()) p0.alloc.t -= 1;
+    while (p0.alloc.n > 2 && !fitsAll()) p0.alloc.n -= 1;
+    const detailMin = p0.noteFull.length > 0 ? 0 : (p0.evFull.length > 0 ? 1 : 0);
+    while (p0.alloc.e > detailMin && !fitsAll()) p0.alloc.e -= 1;
+    while (summaryN > 0 && !fitsAll()) summaryN -= 1;
+    while (titleN > 1 && !fitsAll()) titleN -= 1;
+    const noteMin = p0.noteFull.length > 0 ? 1 : 0;
+    const evMin = noteMin === 0 && p0.evFull.length > 0 ? 1 : 0;
+    while (p0.alloc.n > noteMin && !fitsAll()) p0.alloc.n -= 1;
+    while (p0.alloc.e > evMin && !fitsAll()) p0.alloc.e -= 1;
+    while (visibleSources > 1 && !fitsAll()) visibleSources -= 1;
+    if (!fitsAll() && sources.length > 0) visibleSources = 0;
+  } else {
+    while (titleN > 1 && !fitsAll()) titleN -= 1;
+    while (summaryN > 0 && !fitsAll()) summaryN -= 1;
+    while (visibleSources > 1 && !fitsAll()) visibleSources -= 1;
+  }
+  ctx.font = `400 42px ${SERIF}`;
+  const titleLines = sliceLines(ctx, titleFull, titleN, cw - 120);
+  ctx.font = `400 26px ${SANS}`;
+  const summaryLines = sliceLines(ctx, wrap(ctx, result.summary ?? "", cw - 120), summaryN, cw - 120);
+  const claimBlocks = prepared.slice(0, visible).map((p) => {
+    ctx.font = `400 30px ${SANS}`;
+    const clines = sliceLines(ctx, p.textFull, p.alloc.t, W - 220);
+    ctx.font = `400 25px ${SANS}`;
+    const nlines = sliceLines(ctx, p.noteFull, p.alloc.n, W - 220);
+    ctx.font = `400 24px ${SANS}`;
+    const elines = sliceLines(ctx, p.evFull, p.alloc.e, W - 236);
+    return { c: p.c, clines, nlines, elines, h: 38 + clines.length * 38 + nlines.length * 31 + (elines.length > 0 ? 6 + elines.length * 30 : 0) + 14 };
+  });
+  ctx.font = `400 27px ${SANS}`;
+  const sourceBlocks = sourceFull.slice(0, visibleSources).map((lines) => sliceLines(ctx, lines, 2, W - 220));
+  const cardBottom = TITLE_Y + titleLines.length * 52 + 10 + summaryLines.length * 32 + 26;
   hardShadow(ctx, cx0, cardTop, cw, cardBottom - cardTop, 28);
   ctx.fillStyle = PANEL;
   ctx.strokeStyle = INK;
@@ -201,7 +291,7 @@ export async function renderShareCard(result) {
   ctx.fill();
   ctx.stroke();
   const ringX = cx0 + 170;
-  const ringY = 430;
+  const ringY = 360;
   const R = 105;
   ctx.lineWidth = 22;
   ctx.lineCap = "round";
@@ -244,63 +334,74 @@ export async function renderShareCard(result) {
   let ty = TITLE_Y;
   for (const line of titleLines) {
     ctx.fillText(line, W / 2, ty);
-    ty += 54;
+    ty += 52;
   }
-  ty += 12;
+  ty += 10;
   ctx.fillStyle = FG2;
   ctx.font = `400 26px ${SANS}`;
   for (const line of summaryLines) {
     ctx.fillText(line, W / 2, ty);
-    ty += 34;
+    ty += 32;
   }
 
-  // Claims como linhas do site (badge + texto + justificativa). Para antes do rodapé.
+  // Claims como linhas do site (badge + texto + justificativa + trecho de evidência). Para antes do rodapé.
   ctx.textAlign = "left";
-  const FOOTER_TOP = H - 150;
-  let y = cardBottom + 40;
-  const roomFor = (h) => y + h < FOOTER_TOP - sourcesH;
-  for (const { c, clines, nlines, h } of claimBlocks) {
+  let y = cardBottom + 48;
+  const roomFor = (h) => y + h <= FOOTER_TOP - sourcesH();
+  for (const { c, clines, nlines, elines, h } of claimBlocks) {
     const st = CLAIM_STATUS[c.status] ?? CLAIM_STATUS.unproven;
     const badge = `${CLAIM_ICON[c.status] ?? "?"}  ${st.label.toUpperCase()} · ${c.score}`;
     if (!roomFor(h)) break;
     ctx.fillStyle = st.color;
     ctx.font = `600 26px ${SANS}`;
     ctx.fillText(badge, 110, y);
-    y += 40;
+    y += 38;
     ctx.fillStyle = FG2;
     ctx.font = `400 30px ${SANS}`;
     for (const line of clines) {
       ctx.fillText(line, 110, y);
-      y += 40;
+      y += 38;
     }
     ctx.fillStyle = FG3;
     ctx.font = `400 25px ${SANS}`;
     for (const line of nlines) {
       ctx.fillText(line, 110, y);
-      y += 34;
+      y += 31;
     }
-    y += 22;
+    if (elines.length > 0) {
+      y += 6;
+      ctx.fillStyle = st.color;
+      ctx.fillRect(110, y - 22, 4, elines.length * 30 - 4);
+      ctx.fillStyle = FG2;
+      ctx.font = `400 24px ${SANS}`;
+      for (const line of elines) {
+        ctx.fillText(line, 126, y);
+        y += 30;
+      }
+    }
+    y += 14;
   }
 
   // Divisória + fontes (com detalhe tipo · data quando houver)
-  if (sources.length > 0) {
+  if (sourceBlocks.length > 0) {
     ctx.strokeStyle = LINE;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(110, y);
     ctx.lineTo(W - 110, y);
     ctx.stroke();
-    y += 36;
+    y += 30;
     ctx.fillStyle = FG3;
     ctx.font = `600 22px ${SANS}`;
-    ctx.fillText(`FONTES CONSULTADAS · ${result.sources.length}`, 110, y);
-    y += 36;
+    const hidden = sources.length - sourceBlocks.length;
+    ctx.fillText(`FONTES CONSULTADAS · ${result.sources.length}${hidden > 0 ? ` (mostrando ${sourceBlocks.length})` : ""}`, 110, y);
+    y += 30;
     ctx.font = `400 27px ${SANS}`;
     ctx.fillStyle = FG2;
     for (const lines of sourceBlocks) {
       for (const line of lines) {
         ctx.fillText(line, 110, y);
-        y += 36;
+        y += 34;
       }
     }
   }
@@ -322,7 +423,17 @@ export async function renderShareCard(result) {
   if (result.id) {
     ctx.fillStyle = FG3;
     ctx.font = `400 22px ${SANS}`;
-    ctx.fillText(`ID ${result.id} · confira correções em ${location.host}/correcoes.html?checkId=${result.id}`, W / 2, H - 140);
+    const host = location.host;
+    const id = result.id;
+    // URL de correções pode vazar da largura; encurta até caber.
+    const candidates = [
+      `ID ${id} · confira correções em ${host}/correcoes.html?checkId=${id}`,
+      `ID ${id} · ${host}/correcoes.html?checkId=${id}`,
+      `ID ${id} · ${host}/correcoes.html`,
+      `ID ${id}`,
+    ];
+    const idLine = candidates.find((t) => ctx.measureText(t).width <= W - 80) ?? `ID ${id}`;
+    ctx.fillText(idLine, W / 2, H - 140);
   }
   ctx.font = `400 26px ${SANS}`;
   ctx.fillText("Viu algo suspeito? Confira você também em", W / 2, H - 100);

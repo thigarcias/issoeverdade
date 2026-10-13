@@ -5,30 +5,12 @@
 import { downloadAudio, fetchMediaContext } from "./media.js";
 import { transcribe, transcriptToPrompt } from "./transcribe.js";
 import { saveCheckLog as saveLog } from "./checklog.js";
+import {
+  SYSTEM_PROMPT_FINAL,
+  SYSTEM_PROMPT_JUDGE,
+  validateResult,
+} from "./scoring.js";
 
-export const OPENCODE_URL = "https://opencode.ai/zen/go/v1/responses";
-export const OPENAI_URL = "https://api.openai.com/v1/responses";
-export const DEFAULT_MODEL = "gpt-6-luna"; // OpenAI com web_search nativo
-export const FALLBACK_MODEL = "muse-spark-1.3-contributor"; // OpenCode Go, sem busca
-
-const BASE_RULES = `Regras: separe cada afirmação checável do conteúdo; "context" quando a frase é parcialmente verdadeira mas engana sem contexto; seja cético com prints sem origem e correntes de WhatsApp; USE A BUSCA NA WEB para verificar cada afirmação com dados atuais (não confie só na memória) — busque nomes, datas, números e eventos citados; cite no mínimo 3 fontes VARIADAS por checagem vindas dos resultados da busca, nunca repetindo o mesmo outlet — alterne entre: fontes oficiais (TSE, Câmara, Senado, Planalto, STF, IBGE, Banco Central), agências de checagem (Lupa, Aos Fatos, Estadão Verifica, UOL Confere, AFP Checamos), veículos grandes (G1, Folha, Estadão, O Globo, UOL, Poder360, Metrópoles, CNN Brasil) e regionais quando relevante; cada URL deve ser REAL, copiada dos resultados da busca (nunca invente); score geral pondera a gravidade de cada afirmação. Tudo em pt-BR.`;
-
-const RESULT_SHAPE = `{"verdict":"true|mostly_true|mixed|unproven|misleading|false","score":0-100,"summary":"resumo em pt-BR, 1-2 frases","claims":[{"status":"true|false|unproven|context","score":0-100,"text":"a afirmação entre aspas","note":"justificativa curta em pt-BR"}],"sources":[{"outlet":"nome da fonte","detail":"tipo · data","url":"https://..."}]}`;
-
-// Passo 1: julga com o que tem; se faltar conteúdo (vídeo sem transcrição,
-// link sem texto), pede mídia em vez de chutar.
-export const SYSTEM_PROMPT_JUDGE = `Você é o verificador de fatos do "isso é verdade?", especializado na política do Brasil, segundo turno das Eleições 2026. Responda ESTRITAMENTE em JSON válido, sem markdown, sem texto fora do JSON.
-Se o conteúdo abaixo for suficiente para checar, responda neste formato exato:
-${RESULT_SHAPE}
-Se NÃO for suficiente (ex.: link de vídeo sem transcrição, post sem texto, imagem sem descrição), responda APENAS:
-{"needs_media":true,"reason":"motivo curto em pt-BR"}
-${BASE_RULES}`;
-
-// Passo 2: rejulga com transcrição/mídia extraída — aqui o veredito é final.
-export const SYSTEM_PROMPT_FINAL = `Você é o verificador de fatos do "isso é verdade?", especializado na política do Brasil, segundo turno das Eleições 2026. Responda ESTRITAMENTE em JSON válido, sem markdown, sem texto fora do JSON, com este formato exato:
-${RESULT_SHAPE}
-${BASE_RULES}
-Quando houver transcrição com timestamps, cheque frase por frase da transcrição.`;
 
 export function buildUserContent(input, mediaContext = "") {
   const text = String(input?.text ?? "").slice(0, 8000);
@@ -100,6 +82,7 @@ async function callOpenAI({ instructions, input, timeoutMs }) {
         input,
         tools: [{ type: "web_search", search_context_size: "medium" }],
         max_output_tokens: 8000,
+        seed: 20261012,
       }),
       signal: ctrl.signal,
     });
@@ -366,6 +349,11 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
   function finish({ result, model }) {
     const totalMs = Date.now() - t0;
     const checkId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    // Validação determinística: recalcula score/veredito pela rubrica.
+    const { fixed, corrections } = validateResult(result);
+    if (corrections.length > 0) {
+      phases.push({ name: "score-fix", ms: 0, ok: true, corrections });
+    }
     // Fire-and-forget: log nunca quebra a checagem.
     saveLog({
       id: checkId,
@@ -375,15 +363,15 @@ export async function runVerify(input, { apiKey, timeoutMs = 120_000 } = {}) {
       phases,
       totalMs,
       model,
-      verdict: result?.verdict ?? null,
-      score: typeof result?.score === "number" ? result.score : null,
-      claimsCount: Array.isArray(result?.claims) ? result.claims.length : 0,
-      sourcesCount: Array.isArray(result?.sources) ? result.sources.length : 0,
+      verdict: fixed?.verdict ?? null,
+      score: typeof fixed?.score === "number" ? fixed.score : null,
+      claimsCount: Array.isArray(fixed?.claims) ? fixed.claims.length : 0,
+      sourcesCount: Array.isArray(fixed?.sources) ? fixed.sources.length : 0,
       mediaAttempts: mediaDebug,
       transcriptSegs: transcript?.segments?.length ?? 0,
       origin,
       error: null,
     }).catch(() => {});
-    return { result, model, media: mediaDebug, transcript, origin, checkId, totalMs };
+    return { result: fixed, model, media: mediaDebug, transcript, origin, checkId, totalMs };
   }
 }

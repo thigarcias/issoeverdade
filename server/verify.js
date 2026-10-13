@@ -14,8 +14,8 @@ import {
 
 export const OPENCODE_URL = "https://opencode.ai/zen/go/v1/responses";
 export const OPENAI_URL = "https://api.openai.com/v1/responses";
-export const DEFAULT_MODEL = "gpt-6-luna"; // OpenAI com web_search nativo
-export const FALLBACK_MODEL = "muse-spark-1.3-contributor"; // OpenCode Go, sem busca
+export const DEFAULT_MODEL = "muse-spark-1.3-contributor"; // OpenCode Go com web_search nativo (primário, custo zero)
+export const FALLBACK_MODEL = "gpt-6-luna"; // OpenAI com web_search (fallback pago)
 export function buildUserContent(input, mediaContext = "") {
   const text = String(input?.text ?? "").slice(0, 8000);
   const fileName = input?.fileName ? String(input.fileName).slice(0, 200) : null;
@@ -81,7 +81,7 @@ async function callOpenAI({ instructions, input, timeoutMs }) {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: DEFAULT_MODEL,
+        model: FALLBACK_MODEL,
         instructions,
         input,
         tools: [{ type: "web_search", search_context_size: "medium" }],
@@ -95,54 +95,6 @@ async function callOpenAI({ instructions, input, timeoutMs }) {
       try {
         const p = JSON.parse(raw);
         code = p?.error?.code ?? p?.error?.type ?? code;
-      } catch { /* mantém genérico */ }
-      fail(502, code, { message: raw.slice(0, 500), model: DEFAULT_MODEL });
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      fail(502, "upstream_bad_json", { model: DEFAULT_MODEL });
-    }
-    const text = extractText(parsed);
-    return { result: parseModelJson(text, DEFAULT_MODEL), raw: text };
-  } catch (err) {
-    if (err?.payload) throw err;
-    if (err?.name === "AbortError") fail(504, "upstream_timeout", { model: DEFAULT_MODEL });
-    fail(502, "upstream_fetch_failed", { model: DEFAULT_MODEL });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function callGo({ apiKey, instructions, input, timeoutMs }) {
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const upstream = await fetch(OPENCODE_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "User-Agent": "issoeverdade/0.1",
-        "x-opencode-session": `iev-${Date.now().toString(36)}`,
-      },
-      body: JSON.stringify({
-        model: FALLBACK_MODEL,
-        instructions,
-        input,
-        max_output_tokens: 3000,
-        temperature: 0.2,
-        reasoning: { effort: "low" },
-      }),
-      signal: ctrl.signal,
-    });
-    const raw = await upstream.text();
-    if (!upstream.ok) {
-      let code = "upstream_error";
-      try {
-        const parsed = JSON.parse(raw);
-        code = parsed?.error?.type ?? parsed?.type ?? code;
       } catch { /* mantém genérico */ }
       fail(502, code, { message: raw.slice(0, 500), model: FALLBACK_MODEL });
     }
@@ -163,18 +115,67 @@ async function callGo({ apiKey, instructions, input, timeoutMs }) {
   }
 }
 
-async function callModel({ apiKey, instructions, input, timeoutMs }) {
-  // GPT Luna (com web_search) primeiro; Muse Spark (Go) como fallback.
+async function callGo({ apiKey, instructions, input, timeoutMs }) {
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const { result, raw } = await callOpenAI({ instructions, input, timeoutMs });
-    return { result, model: DEFAULT_MODEL, raw };
-  } catch (openaiErr) {
-    if (!apiKey) throw openaiErr;
-    if (openaiErr?.payload?.error === "missing_openai_key") throw openaiErr;
-    console.error(`[iev] Luna falhou (${openaiErr?.payload?.error ?? openaiErr?.message}), usando fallback Go`);
-    const { result, raw } = await callGo({ apiKey, instructions, input, timeoutMs });
-    return { result, model: FALLBACK_MODEL, raw };
+    const upstream = await fetch(OPENCODE_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "User-Agent": "issoeverdade/0.1",
+        "x-opencode-session": `iev-${Date.now().toString(36)}`,
+      },
+      body: JSON.stringify({
+        model: DEFAULT_MODEL,
+        instructions,
+        input,
+        tools: [{ type: "web_search" }],
+        max_output_tokens: 8000,
+        reasoning: { effort: "low" },
+      }),
+      signal: ctrl.signal,
+    });
+    const raw = await upstream.text();
+    if (!upstream.ok) {
+      let code = "upstream_error";
+      try {
+        const parsed = JSON.parse(raw);
+        code = parsed?.error?.type ?? parsed?.type ?? code;
+      } catch { /* mantém genérico */ }
+      fail(502, code, { message: raw.slice(0, 500), model: DEFAULT_MODEL });
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      fail(502, "upstream_bad_json", { model: DEFAULT_MODEL });
+    }
+    const text = extractText(parsed);
+    return { result: parseModelJson(text, DEFAULT_MODEL), raw: text };
+  } catch (err) {
+    if (err?.payload) throw err;
+    if (err?.name === "AbortError") fail(504, "upstream_timeout", { model: DEFAULT_MODEL });
+    fail(502, "upstream_fetch_failed", { model: DEFAULT_MODEL });
+  } finally {
+    clearTimeout(timeout);
   }
+}
+
+async function callModel({ apiKey, instructions, input, timeoutMs }) {
+  // Muse Spark (Go, custo zero) primeiro; GPT Luna (OpenAI) como fallback pago.
+  if (apiKey) {
+    try {
+      const { result, raw } = await callGo({ apiKey, instructions, input, timeoutMs });
+      return { result, model: DEFAULT_MODEL, raw };
+    } catch (err) {
+      console.error(`[iev] Go falhou (${err?.payload?.error ?? err?.message}), usando fallback Luna`);
+      if (!process.env.OPENAI_API_KEY) throw err;
+    }
+  }
+  const { result, raw } = await callOpenAI({ instructions, input, timeoutMs });
+  return { result, model: FALLBACK_MODEL, raw };
 }
 
 /**
@@ -318,7 +319,7 @@ export async function runVerify(input, opts = {}) {
 }
 
 async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
-  // OpenAI (Luna) é o primário; Go (Muse) é fallback. Pelo menos um precisa existir.
+  // Go (Muse) é o primário; OpenAI (Luna) é fallback. Pelo menos um precisa existir.
   if (!apiKey && !process.env.OPENAI_API_KEY) {
     fail(503, "missing_api_key", { message: "Nenhuma chave de IA configurada no servidor." });
   }
@@ -396,7 +397,7 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
     });
   }
   const judgeInput = buildUserContent(input, mediaContext);
-  const { result: first, model: firstModel, raw: firstRaw } = await phase("judge", () =>
+  let { result: first, model: firstModel, raw: firstRaw } = await phase("judge", () =>
     callModel({
       apiKey,
       instructions: SYSTEM_PROMPT_JUDGE,
@@ -404,6 +405,17 @@ async function runVerifyInner(input, { apiKey, timeoutMs = 120_000 } = {}) {
       timeoutMs,
     }),
   );
+  // Retry cruzado: Muse às vezes pede mídia para texto checável — Luna tenta antes de desistir.
+  if (first?.needs_media === true && !wantsMedia && firstModel === DEFAULT_MODEL && process.env.OPENAI_API_KEY) {
+    const retry = await phase("judge-retry", () =>
+      callOpenAI({ instructions: SYSTEM_PROMPT_JUDGE, input: judgeInput, timeoutMs }),
+    ).catch(() => null);
+    if (retry && retry.result?.needs_media !== true) {
+      first = retry.result;
+      firstModel = FALLBACK_MODEL;
+      firstRaw = retry.raw;
+    }
+  }
 
   // Passo 2 — a IA pediu mais? Baixa áudio + transcreve + rejulga.
   // Vídeo com URL sempre passa pelo passo 2 (transcrição é obrigatória).

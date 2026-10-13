@@ -864,6 +864,7 @@ main {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .admin-meta {
@@ -874,6 +875,15 @@ main {
 
 .admin-detail {
   margin-top: 16px;
+}
+
+.admin-detail .hd {
+  flex-wrap: wrap;
+}
+
+.admin-detail .hd h3 {
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .admin-dl {
@@ -1394,6 +1404,12 @@ textarea.input-plain {
   max-width: 40ch;
 }
 
+.result-empty .chip {
+  white-space: normal;
+  text-align: center;
+  max-width: 100%;
+}
+
 /* result */
 
 .result-head {
@@ -1444,6 +1460,12 @@ textarea.input-plain {
   font: 400 var(--t-read) / 1.6 var(--sans);
   color: var(--fg-2);
   margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+
+.claim-body,
+.result-empty p {
+  overflow-wrap: anywhere;
 }
 
 .score-legend {
@@ -1645,6 +1667,12 @@ textarea.input-plain {
   display: flex;
 }
 
+.source-list a > span,
+.source-list .source-static > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .claim-sources {
   margin: 0;
 }
@@ -1806,6 +1834,8 @@ textarea.input-plain {
   font: 500 var(--t-label) / 1.4 var(--sans);
   color: var(--fg-3);
   font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .results-meta button {
@@ -1815,6 +1845,7 @@ textarea.input-plain {
   color: var(--fg-2);
   border-bottom: 1px solid var(--line-3);
   padding: 4px 0;
+  flex: none;
 }
 
 .results-meta button:hover {
@@ -2157,6 +2188,25 @@ dialog::backdrop {
     height: 54px;
   }
 
+  .verify-result-mode .origin-card img,
+  .verify-result-mode .origin-play {
+    width: 72px;
+    height: 54px;
+  }
+
+  .verify-result-mode .origin-card {
+    padding: 10px 12px;
+    gap: 12px;
+  }
+
+  .input-box input,
+  .input-box textarea,
+  textarea.input-plain,
+  .search-box input,
+  .quick-input {
+    font-size: 16px;
+  }
+
   .claim > summary {
     flex-direction: column;
     align-items: stretch;
@@ -2181,7 +2231,9 @@ dialog::backdrop {
   .brand {
     font-size: 19px;
   }
+}
 
+@media (width <= 719px) {
   .site-nav,
   .header-actions .btn {
     display: none;
@@ -2196,12 +2248,11 @@ dialog::backdrop {
     justify-content: center;
     align-items: center;
     gap: 4px;
-    width: 40px;
-    height: 36px;
+    width: 44px;
+    height: 44px;
     padding: 0;
     display: inline-flex;
   }
-
   .nav-toggle:hover {
     background: #f2ecdc1f;
   }
@@ -2240,6 +2291,17 @@ dialog::backdrop {
   .mobile-nav a:hover {
     color: var(--bg);
     background: #f2ecdc1a;
+  }
+}
+
+@media (width <= 599px) {
+  .verify-result-mode .result-pane {
+    padding: 20px 16px;
+  }
+
+  .tabs button,
+  .filters button {
+    min-height: 44px;
   }
 
   .steps {

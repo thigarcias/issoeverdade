@@ -48,6 +48,8 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
   const runId = useRef(0);
   const fileInput = useRef(null);
   const pendingQuick = useRef(null);
+  const resultPane = useRef(null);
+  const lastPhase = useRef("idle");
 
   // Checagem rápida do topo: detecta link × texto e dispara sozinha.
   useEffect(() => {
@@ -124,13 +126,25 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
   }
 
   // Dispara a checagem rápida assim que aba + texto assentam.
+  // (Scroll acontece no effect abaixo, após o layout assentar.)
   useEffect(() => {
     const q = pendingQuick.current;
     if (!q || text !== q.text || tab !== q.tab) return;
     pendingQuick.current = null;
-    document.getElementById("verificar")?.scrollIntoView({ behavior: "smooth", block: "start" });
     handleSubmit();
   });
+
+  // Rola para o processamento/resultado APÓS o layout mudar — só nas transições.
+  // Delay de 650ms: espera o hero terminar de colapsar (transição de 500ms).
+  useEffect(() => {
+    const phase = result ? "done" : running ? "running" : "idle";
+    if (phase === lastPhase.current || phase === "idle") return;
+    lastPhase.current = phase;
+    const t = setTimeout(() => {
+      resultPane.current?.scrollIntoView({ behavior: "auto", block: "start" });
+    }, 650);
+    return () => clearTimeout(t);
+  }, [running, result]);
 
   function handleFiles(files) {
     const f = files?.[0];
@@ -385,7 +399,7 @@ export default function Verifier({ showToast, onChecked, quickInput }) {
           </div>
         </form>
 
-        <div className="card result-pane" aria-label="Resultado da checagem">
+        <div className="card result-pane" aria-label="Resultado da checagem" ref={resultPane}>
           <div className="hd">
             <h3>{result ? "Resultado" : running ? "Analisando…" : error ? "Algo deu errado" : "Seu resultado aparece aqui"}</h3>
             <span className="aside">{result ? `nota ${result.score}/100` : running ? "a IA está trabalhando" : "leva segundos"}</span>

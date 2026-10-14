@@ -281,8 +281,7 @@ for (const status of ["true", "false"]) {
     assert.equal(fixed.verdict, "unproven");
     assert.ok([35, 45].includes(fixed.score));
     assert.ok(fixed.summary.length > 0);
-    assert.match(fixed.summary, /recebeu o dinheiro/);
-    assert.match(fixed.summary, /pedido/);
+    assert.match(fixed.summary, /sem comprovação suficiente/);
     assert.ok(!fixed.summary.includes(claim.note));
   });
 }

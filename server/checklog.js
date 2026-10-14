@@ -52,7 +52,7 @@ export async function saveCheckLog(entry) {
     outcome: entry.outcome ?? (entry.error ? "error" : entry.verdict ? "checked" : "legacy"),
     verdict: entry.verdict ?? null,
     score: typeof entry.score === "number" ? entry.score : null,
-    summary: String(entry.summary ?? "").slice(0, 1000),
+    summary: String(entry.summary ?? ""),
     claims: Array.isArray(entry.claims) ? entry.claims.slice(0, 50) : [],
     notCheckedClaims: Array.isArray(entry.notCheckedClaims) ? entry.notCheckedClaims.slice(0, 50) : [],
     omittedClaimsCount: entry.omittedClaimsCount ?? 0,

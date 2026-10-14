@@ -98,22 +98,24 @@ function validEvidence(claim, relation, sourceCount, sourceIds) {
   );
 }
 
-/** Síntese baseada nas classificações vigentes, nunca nas conclusões anteriores. */
+/** Síntese determinística segura quando a síntese editorial não está disponível. */
 export function rebuildResultSummary(result) {
-  const claims = (Array.isArray(result?.claims) ? result.claims : []).filter((claim) => String(claim?.text ?? "").trim());
-  const labels = {
-    true: "Confirmado pelas fontes",
-    false: "As fontes contradizem a alegação",
-    context: "A alegação precisa de contexto",
-    unproven: "Não foi possível comprovar",
-  };
-  const parts = claims.slice(0, 3).map((claim) => {
-    const text = String(claim.text).trim().replace(/[.!?]+$/, "");
-    const note = String(claim.note ?? "").trim();
-    return `${labels[claim.status] ?? labels.unproven}: “${text}”.${note ? ` ${note}` : ""}`;
-  });
-  if (claims.length > 3) parts.push(`Outras ${claims.length - 3} alegações estão detalhadas na checagem.`);
-  return parts.join(" ");
+  const claims = Array.isArray(result?.claims) ? result.claims : [];
+  const counts = { true: 0, false: 0, context: 0, unproven: 0 };
+  for (const claim of claims) {
+    const status = Object.prototype.hasOwnProperty.call(counts, claim?.status) ? claim.status : "unproven";
+    counts[status]++;
+  }
+  const total = counts.true + counts.false + counts.context + counts.unproven;
+  if (total === 0) {
+    return "Nenhuma alegação factual verificável foi identificada. Consulte os cards para o detalhamento.";
+  }
+  const parts = [];
+  if (counts.true > 0) parts.push(`${counts.true} alegação(ões) confirmada(s)`);
+  if (counts.false > 0) parts.push(`${counts.false} alegação(ões) contradita(s)`);
+  if (counts.context > 0) parts.push(`${counts.context} alegação(ões) que precisam de contexto`);
+  if (counts.unproven > 0) parts.push(`${counts.unproven} alegação(ões) sem comprovação suficiente`);
+  return `Resultado factual: ${parts.join("; ")}. Consulte os cards para o detalhamento e as evidências.`;
 }
 
 /**
@@ -224,7 +226,7 @@ export function validateResult(raw) {
       claims,
       summary: claims.some((claim, index) => claim.status !== bounded[index]?.status) || !String(raw?.summary ?? "").trim()
         ? rebuildResultSummary({ claims })
-        : raw.summary,
+        : String(raw?.summary ?? "").trim(),
       notCheckedClaims: nonVerifiable,
       omittedClaimsCount,
       sources: Array.isArray(raw?.sources) ? raw.sources : [],
@@ -232,3 +234,5 @@ export function validateResult(raw) {
     corrections,
   };
 }
+
+export const EDITORIAL_SUMMARY_MAX = 1000;

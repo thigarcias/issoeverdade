@@ -84,7 +84,7 @@ function normalize(raw, input, origin) {
     author: origin?.author ?? "checagem por IA",
     publishedAt: new Date().toLocaleDateString("pt-BR"),
     checkedAt: "agora",
-    summary: String(raw?.summary ?? "Resultado gerado pela checagem.").slice(0, 1000),
+    summary: String(raw?.summary ?? "Resultado gerado pela checagem."),
     claims,
     notCheckedClaims: Array.isArray(raw?.notCheckedClaims) ? raw.notCheckedClaims.slice(0, 50) : [],
     omittedClaimsCount: Number(raw?.omittedClaimsCount) || 0,

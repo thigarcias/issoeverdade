@@ -71,9 +71,7 @@ test("síntese antiga não sobrevive a mudança de classificação por período"
   assert.equal(fixed.claims[0].status, "unproven");
   assert.ok(fixed.summary.length > 0);
   assert.ok(!fixed.summary.includes(raw.summary));
-  assert.match(fixed.summary, /A rejeição do candidato aumentou/);
-  assert.ok(fixed.summary.includes(currentPeriod.start));
-  assert.ok(fixed.summary.includes(currentPeriod.end));
+  assert.match(fixed.summary, /sem comprovação suficiente/);
 });
 
 test("ajuste só de nota e selo preserva síntese factual", () => {

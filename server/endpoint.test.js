@@ -262,7 +262,7 @@ test("síntese editorial inválida não elimina limites nem recupera conclusões
         assert.match(out.body.result.summary, /O artigo não pôde ser lido diretamente/);
         if (scenario.accepted) assert.ok(out.body.result.summary.endsWith(scenario.candidate));
         else {
-          assert.match(out.body.result.summary, /sem comprovação suficiente/);
+          assert.equal(out.body.result.summary, "O artigo não pôde ser lido diretamente; checagem baseada nas alegações identificadas pela pesquisa do URL/publicação.");
           assert.doesNotMatch(out.body.result.summary, /Confirmado|foi confirmada|<b>|\*\*/);
         }
         assert.equal(responses.length, 0);

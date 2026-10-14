@@ -107,7 +107,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
       <article aria-live="polite" className="result-anim">
         {origin?.title && <h3>{origin.title}</h3>}
         <span className="chip tint-info"><i /> {NO_VERDICT_LABEL[result.outcome] ?? "Sem veredito"}</span>
-        <p className="result-summary">{result.summary}</p>
+        {result.summary?.trim() && <p className="result-summary">{result.summary}</p>}
         <MediaCoverageNote result={result} />
         {result.notCheckedClaims?.length > 0 && (
           <ul>
@@ -204,7 +204,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
           : "Notas por afirmação com evidência adequada: verdade 95 · precisa de contexto 70 · falso 5. A nota não é probabilidade calibrada; registros históricos preservam a escala original."}
       </p>
 
-      <p className="result-summary">{result.summary}</p>
+      {result.summary?.trim() && <p className="result-summary">{result.summary}</p>}
       <MediaCoverageNote result={result} />
       <EvidenceNote result={result} />
 

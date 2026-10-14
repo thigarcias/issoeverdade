@@ -207,6 +207,7 @@ main {
 .icon-btn {
   all: unset;
   cursor: pointer;
+  flex: none;
   width: 34px;
   height: 34px;
   color: var(--fg-3);
@@ -1541,6 +1542,8 @@ textarea.input-plain {
 }
 
 .file-pill span {
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1785,6 +1788,13 @@ textarea.input-plain {
 }
 
 /* result */
+
+.result-anim,
+.result-title {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
 
 .result-head {
   display: flex;
@@ -2492,6 +2502,7 @@ dialog::backdrop {
 }
 
 .dialog-body {
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   padding: 20px 20px 24px;
   display: grid;
@@ -2535,7 +2546,7 @@ dialog::backdrop {
 
 @media (width <= 1023px) {
   .verify-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .steps {
@@ -2673,10 +2684,75 @@ dialog::backdrop {
     padding: 20px 16px;
   }
 
+  .btn {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    text-align: center;
+  }
+
+  .chip {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .chip i {
+    flex: none;
+  }
+
+  .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .card > .hd,
+  .section-head {
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+
+  .card > .hd .aside,
+  .section-count {
+    white-space: normal;
+  }
+
+  .dialog-bar > span,
+  .dialog-body > *,
+  .drop,
+  .file-pill {
+    min-width: 0;
+  }
+
+  .dialog-bar > span,
+  .processing-hero,
+  #toast {
+    overflow-wrap: anywhere;
+  }
+
+  .result-title {
+    width: 100%;
+  }
+
+  .feed-top,
+  .feed-bottom {
+    flex-wrap: wrap;
+  }
+
   .tabs button,
   .filters button,
   .admin-tabs button {
     min-height: 44px;
+    box-sizing: border-box;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+    padding-top: 8px;
+    padding-bottom: 8px;
   }
 
   .admin-stats {
@@ -2714,7 +2790,9 @@ dialog::backdrop {
     align-items: flex-start;
   }
 
-  dialog {
+  dialog,
+  .share-dialog,
+  .admin-dialog {
     border-radius: 20px 20px 0 0;
     align-self: end;
     width: 100%;
@@ -2928,10 +3006,23 @@ body:has(.admin-main) {
 }
 @media (max-width:700px) {
   .admin-wrap { padding-left:14px; padding-right:14px; }
-  .admin-shell-header { min-height:66px; align-items:flex-start; padding:14px 0; }
+  .admin-shell-header { min-height:66px; align-items:flex-start; flex-wrap:wrap; padding:14px 0; }
   .admin-shell-header .admin-actions { gap:2px; }
   .admin-actions .btn { min-height:36px; padding:0 8px; font-size:11px; }
+  .admin-nav { flex-wrap:wrap; overflow-x:visible; }
+  .admin-nav button { max-width:100%; white-space:normal; }
   .admin-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .admin-wrap { overflow-wrap:anywhere; }
+  .admin-sort { display:flex; flex-wrap:wrap; min-width:0; gap:6px; }
+  .admin-sort select { min-width:0; max-width:100%; }
+  .admin-ai-head, .admin-ai-actions, .admin-detail-head, .admin-pages,
+  .admin-error-state, .admin-recent .admin-section-heading, .admin-result-cell,
+  .admin-method-statuses li { flex-wrap:wrap; }
+  .admin-ai-actions > .btn { flex:1 1 160px; }
+  .admin-pages { justify-content:center; }
+  .admin-metric-table { table-layout:fixed; }
+  .admin-method-statuses code { overflow-wrap:anywhere; min-width:0; }
+  .admin-card-row > *, .admin-claim-cards li, .admin-source-cards li { min-width:0; }
   .admin-check-toolbar { flex-direction:column; align-items:stretch; }
   .admin-table { display:none; }
   .admin-cards { display:grid; gap:9px; }
@@ -3099,3 +3190,58 @@ body:has(.admin-main) {
   font-variant-numeric: tabular-nums;
 }
 .comparison-table th:first-child { width: 44%; }
+
+.comparison-cell-label,
+.admin-model-label {
+  display: none;
+}
+
+@media (width <= 599px) {
+  .comparison-table,
+  .comparison-table tbody,
+  .comparison-table tr,
+  .comparison-table td,
+  .admin-model-table,
+  .admin-model-table tbody,
+  .admin-model-table tr,
+  .admin-model-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .comparison-table thead,
+  .admin-model-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .comparison-table caption {
+    display: block;
+    text-align: left;
+    overflow-wrap: anywhere;
+    margin-bottom: 6px;
+  }
+
+  .comparison-table tr + tr,
+  .admin-model-table tr + tr {
+    margin-top: 8px;
+  }
+
+  .comparison-table td + td,
+  .admin-model-table td + td {
+    border-top: 0;
+  }
+
+  .comparison-cell-label,
+  .admin-model-label {
+    display: block;
+    color: var(--fg-3);
+    font-weight: 600;
+    margin-bottom: 3px;
+  }
+}

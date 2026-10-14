@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { rebuildResultSummary, validateResult, VERDICT_BANDS, verdictForScore } from "./scoring.js";
+import { validateResult, VERDICT_BANDS, verdictForScore } from "./scoring.js";
 
 const currentPeriod = { start: "2026-10-10", end: "2026-10-12" };
 const previousPeriod = { start: "2026-10-05", end: "2026-10-07" };
@@ -353,7 +353,6 @@ test("claims todos omitidos não se tornam no_verifiable_claims", () => {
   const { fixed } = validateResult({ outcome: "checked", claims: [], omittedClaimsCount: 2 });
   assert.equal(fixed.outcome, "partial_coverage");
   assertUnknown(fixed, { total: 2, assessed: 0, unproven: 0, omitted: 2 });
-  assert.equal(fixed.summary, rebuildResultSummary(fixed));
   assert.deepEqual(validateResult(fixed).fixed, fixed);
 });
 
@@ -384,13 +383,13 @@ test("síntese antiga não sobrevive a mudança de classificação ou cobertura 
   raw.summary = "O aumento da rejeição foi confirmado pela pesquisa atual.";
   const { fixed } = validateResult(raw);
   assert.notEqual(fixed.summary, raw.summary);
-  assert.equal(fixed.summary, rebuildResultSummary(fixed));
+  assert.equal(fixed.summary, "");
   const omitted = validateResult({ ...resultFor("true"), omittedClaimsCount: 2, summary: raw.summary }).fixed;
   assert.notEqual(omitted.summary, raw.summary);
-  assert.equal(omitted.summary, rebuildResultSummary(omitted));
+  assert.equal(omitted.summary, "");
   const unknown = validateResult({ ...resultFor("unproven", []), summary: raw.summary }).fixed;
   assert.notEqual(unknown.summary, raw.summary);
-  assert.equal(unknown.summary, rebuildResultSummary(unknown));
+  assert.equal(unknown.summary, "");
 });
 
 test("ajuste só de nota e selo preserva síntese factual", () => {

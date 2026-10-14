@@ -586,21 +586,21 @@ function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSa
           return <section key={id}>
             <h3>{provider.label ?? id}</h3>
             <p>{provider.hasKey ? "Credencial disponível" : "Sem credencial configurada"} · {discovery.stale ? "inventário desatualizado" : discovery.updatedAt ? "descoberta atualizada" : "sem descoberta confirmada"}{discovery.updatedAt ? ` · ${fmtFullTime(discovery.updatedAt)}` : ""}{discovery.error ? ` · falha na descoberta: ${discovery.error}` : ""}</p>
-            {!models.length ? <p>Nenhum modelo corresponde ao filtro.</p> : <div className="admin-table-wrap"><table className="admin-metric-table" aria-label={`Matriz de elegibilidade · ${provider.label ?? id}`}>
+            {!models.length ? <p>Nenhum modelo corresponde ao filtro.</p> : <div className="admin-table-wrap"><table className="admin-metric-table admin-model-table" aria-label={`Matriz de elegibilidade · ${provider.label ?? id}`}>
               <thead><tr><th scope="col">Modelo</th><th scope="col">Protocolo</th>{steps.map((step) => <th scope="col" key={step}>{STEP_LABEL[step] ?? step}</th>)}<th scope="col">Motivo</th></tr></thead>
               <tbody>{models.map((model) => {
                 const reasons = model.stepReasons ?? {};
                 const fallback = model.ineligibleReason ?? null;
                 const firstBlocked = steps.map((step) => reasons[step]).find((entry) => entry && entry.eligible === false) ?? null;
                 return <tr key={model.id}>
-                  <td><b>{model.label ?? model.id}</b> <code>{model.id}</code><br /><small className="admin-mut">{(model.capabilities ?? []).join(", ") || "capacidades não informadas"}</small></td>
-                  <td>{model.protocol ?? "Protocolo não informado"}</td>
+                  <td><span className="admin-model-label" aria-hidden="true">Modelo</span><b>{model.label ?? model.id}</b> <code>{model.id}</code><br /><small className="admin-mut">{(model.capabilities ?? []).join(", ") || "capacidades não informadas"}</small></td>
+                  <td><span className="admin-model-label" aria-hidden="true">Protocolo</span>{model.protocol ?? "Protocolo não informado"}</td>
                   {steps.map((step) => {
                     const entry = reasons[step];
                     const ok = entry ? entry.eligible : (model.eligibleSteps ?? []).includes(step);
-                    return <td key={step}>{ok ? "✓" : "—"}</td>;
+                    return <td key={step}><span className="admin-model-label" aria-hidden="true">{STEP_LABEL[step] ?? step}</span>{ok ? "✓" : "—"}</td>;
                   })}
-                  <td><small>{firstBlocked?.message ?? fallback ?? (!provider.hasKey ? "Provedor sem chave configurada — disponibilidade não confirmada." : "")}</small></td>
+                  <td><span className="admin-model-label" aria-hidden="true">Motivo</span><small>{firstBlocked?.message ?? fallback ?? (!provider.hasKey ? "Provedor sem chave configurada — disponibilidade não confirmada." : "")}</small></td>
                 </tr>;
               })}</tbody>
             </table></div>}

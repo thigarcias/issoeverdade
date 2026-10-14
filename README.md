@@ -158,7 +158,7 @@ do post e anexos são cobertos separadamente; metadados não são transcrição.
 trilhas, com transcrição/OCR parciais. Sem conteúdo lido, não há score/veredito.
 Links diretos são encaminhados por modalidade: PDF textual ao `unpdf`, JPEG/PNG/WebP
 à moderação e visão, áudio/vídeo ao processador audiovisual. A revisão de extração
-`article-content-v4` invalida cache anterior; as regras de perguntas e ações futuras introduzidas em `fact-check-5` permanecem em `fact-check-8`.
+`article-content-v4` invalida cache anterior; as regras de perguntas e ações futuras introduzidas em `fact-check-5` permanecem em `fact-check-9`.
 O cronômetro da interface mede a duração da checagem iniciada, não o tempo desde a época Unix.
 
 Links comuns de notícias passam por extração HTML pública com limites de rede,
@@ -178,7 +178,7 @@ captcha, streams protegidos e conteúdo removido continuam limitações externas
 
 ## Metodologia e avaliação
 
-As novas checagens usam `fact-check-8`: investigam alegações implícitas em perguntas
+As novas checagens usam `fact-check-9`: investigam alegações implícitas em perguntas
 e distinguem ações futuras de declarações ou medidas verificáveis. O fluxo mantém
 anotações e fontes estruturadas da busca, compartilha o dossiê entre julgamento/
 revisão, distingue períodos e paraleliza transcrição/visão. Depois da revisão
@@ -253,3 +253,21 @@ vazamento e `--require chave>=valor` para gates) e
 Creme `#F2ECDC`, tinta `#1A140C`, vermelho `#D9341F`, serifada Faustina + Geist,
 bordas duras e sombra offset. O shell administrativo reusa a identidade com
 tipografia sans para dados/controles e navegação lateral no desktop.
+
+No mobile, cabeçalhos, selos, controles e navegação administrativa quebram
+linha sem esconder conteúdo horizontalmente. URLs e autoria sem separadores
+podem quebrar dentro do resultado; nomes de uploads preservam o botão de
+remoção. Os diálogos usam a largura disponível, e tabelas de comparação e a
+matriz de modelos empilham os campos com rótulos visíveis, mantendo os cabeçalhos
+para leitores de tela. Resumos ausentes não geram um parágrafo vazio.
+
+Prova visual em Chromium/Vite realizada em **320, 375 e 390 px**: formulário
+com nome de arquivo longo, progresso, resultado com fontes/URLs/autoria longas,
+comparações, detalhe do histórico, compartilhamento com e sem Web Share e
+checagens/modelos/detalhes do Admin ficaram com `scrollWidth` igual à largura
+do viewport, sem controles horizontalmente cortados. Também foram exercitadas
+fontes maiores (rótulos de 20 px e texto de 22–26 px) e resumo vazio.
+Os dados representativos foram injetados somente no navegador para inspecionar
+os componentes reais; isso não comprova execução de IA, upload ao servidor ou
+envio pelo seletor nativo. Nenhum build, lint, teste ou formatador foi executado
+nessa verificação mobile.

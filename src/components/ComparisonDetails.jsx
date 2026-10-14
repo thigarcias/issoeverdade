@@ -9,18 +9,20 @@ const SCOPE_LABELS = {
 export default function ComparisonDetails({ comparison }) {
   if (!comparison || !["complete", "lower_bound", "partial", "invalid"].includes(comparison.status)) return null;
   const groups = comparison.status !== "invalid" && Array.isArray(comparison.groups) ? comparison.groups : [];
+  const totalLabel = `Total${comparison.unit ? ` (${comparison.unit})` : ""}`;
+  const valueLabel = `Valor${comparison.unit ? ` (${comparison.unit})` : ""}`;
   return (
     <section className="comparison-details" aria-label="Dados e cálculo da comparação">
       <p><b>{SCOPE_LABELS[comparison.scope] ?? "Limites da comparação"}</b></p>
       <p className="score-legend">{[comparison.metric, comparison.region, comparison.dataset].filter(Boolean).join(" · ")}</p>
       {groups.length > 0 && (
         <table className="comparison-table">
-          <thead><tr><th>Período</th><th>Total{comparison.unit ? ` (${comparison.unit})` : ""}</th><th>Anos com dados</th></tr></thead>
+          <thead><tr><th scope="col">Período</th><th scope="col">{totalLabel}</th><th scope="col">Anos com dados</th></tr></thead>
           <tbody>{groups.map((group, index) => (
             <tr key={index}>
-              <td>{group.label ?? `Período ${index + 1}`}<br /><small>{group.startYear}–{group.endYear}</small></td>
-              <td>{group.coverage?.available > 0 && typeof group.total === "number" && Number.isFinite(group.total) ? number.format(group.total) : "Indisponível"}</td>
-              <td>{group.coverage ? `${group.coverage.available}/${group.coverage.expected}` : "Indisponível"}{group.coverage?.complete === false ? " · parcial" : ""}</td>
+              <td><span className="comparison-cell-label" aria-hidden="true">Período</span>{group.label ?? `Período ${index + 1}`}<br /><small>{group.startYear}–{group.endYear}</small></td>
+              <td><span className="comparison-cell-label" aria-hidden="true">{totalLabel}</span>{group.coverage?.available > 0 && typeof group.total === "number" && Number.isFinite(group.total) ? number.format(group.total) : "Indisponível"}</td>
+              <td><span className="comparison-cell-label" aria-hidden="true">Anos com dados</span>{group.coverage ? `${group.coverage.available}/${group.coverage.expected}` : "Indisponível"}{group.coverage?.complete === false ? " · parcial" : ""}</td>
             </tr>
           ))}</tbody>
         </table>
@@ -29,12 +31,12 @@ export default function ComparisonDetails({ comparison }) {
         <div key={index}>
           <table className="comparison-table">
             <caption>Dados anuais · {group.label ?? `Período ${index + 1}`}</caption>
-            <thead><tr><th>Ano</th><th>Valor{comparison.unit ? ` (${comparison.unit})` : ""}</th><th>Cobertura</th></tr></thead>
+            <thead><tr><th scope="col">Ano</th><th scope="col">{valueLabel}</th><th scope="col">Cobertura</th></tr></thead>
             <tbody>{group.rows.map((row) => (
               <tr key={row.year}>
-                <td>{row.year}</td>
-                <td>{typeof row.value === "number" && Number.isFinite(row.value) ? number.format(row.value) : "Indisponível"}</td>
-                <td>{row.complete ? "Completa" : "Parcial"}</td>
+                <td><span className="comparison-cell-label" aria-hidden="true">Ano</span>{row.year}</td>
+                <td><span className="comparison-cell-label" aria-hidden="true">{valueLabel}</span>{typeof row.value === "number" && Number.isFinite(row.value) ? number.format(row.value) : "Indisponível"}</td>
+                <td><span className="comparison-cell-label" aria-hidden="true">Cobertura</span>{row.complete ? "Completa" : "Parcial"}</td>
               </tr>
             ))}</tbody>
           </table>

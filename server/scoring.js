@@ -32,7 +32,7 @@ export const SYSTEM_PROMPT_JUDGE = `Primeira avaliação. Determine se o materia
 
 export const SYSTEM_PROMPT_FINAL = `Revisão final do material e do dossiê da primeira avaliação. ${QUESTION_RULES} ${QUESTION_SCOPE_RULES} O dossiê é uma prévia, nunca autoridade: confira cada vínculo e preserve os claims e fontes elegíveis, sem omitir fatos já identificados. Não repita buscas resolvidas; pesquise somente lacunas e conflitos quando a ferramenta estiver disponível. Quando não houver busca, use apenas as fontes do dossiê. Metadados não substituem artigo/vídeo integral; transcrição não substitui texto na tela. Se faltar material e não houver hipótese factual identificável, use outcome "insufficient_input" ou "inaccessible_media", verdict null, score null. Se não houver afirmação factual verificável, use "no_verifiable_claims", verdict null, score null. Caso contrário outcome "checked"; mantenha claims sem comprovação como unproven, score null, e omissões como partial_coverage com omittedClaimsCount. Qualquer claim unproven ou omitido impede pontuação global e exige verdict unproven. Preserve limitações e claims não verificáveis sem pontuá-los como fatos. Responda apenas JSON no schema informado. ${TEMPORAL_RULES} ${BASE_RULES}\n${SCORE_RUBRIC}`;
 
-export const PROMPT_VERSION = "fact-check-8";
+export const PROMPT_VERSION = "fact-check-9";
 
 // --- Validação server-side: recalcula e corrige divergências ---
 
@@ -86,33 +86,6 @@ function validEvidence(evidence, sourceCount, sourceIds) {
     evidence.quote.trim().length >= 8;
 }
 
-/** Síntese determinística segura quando a síntese editorial não está disponível. */
-export function rebuildResultSummary(result) {
-  const claims = Array.isArray(result?.claims) ? result.claims : [];
-  const counts = { true: 0, false: 0, context: 0, unproven: 0 };
-  for (const claim of claims) {
-    const status = Object.prototype.hasOwnProperty.call(counts, claim?.status) ? claim.status : "unproven";
-    counts[status]++;
-  }
-  const omitted = Number.isSafeInteger(result?.omittedClaimsCount) && result.omittedClaimsCount > 0
-    ? result.omittedClaimsCount
-    : Number.isSafeInteger(result?.coverage?.omitted) && result.coverage.omitted > 0 ? result.coverage.omitted : 0;
-  const total = counts.true + counts.false + counts.context + counts.unproven;
-  if (total === 0 && omitted === 0 && result?.outcome !== "partial_coverage") {
-    return "Nenhuma alegação factual verificável foi identificada. Consulte os cards para o detalhamento.";
-  }
-  const parts = [];
-  if (counts.true > 0) parts.push(`${counts.true} alegação(ões) confirmada(s)`);
-  if (counts.false > 0) parts.push(`${counts.false} alegação(ões) contradita(s)`);
-  if (counts.context > 0) parts.push(`${counts.context} alegação(ões) que precisam de contexto`);
-  if (counts.unproven > 0) parts.push(`${counts.unproven} alegação(ões) sem comprovação suficiente`);
-  if (omitted > 0) parts.push(`${omitted} alegação(ões) omitida(s) da avaliação`);
-  const noScore = counts.unproven > 0 || omitted > 0 || result?.outcome === "partial_coverage"
-    ? " Não há pontuação global: ausência de comprovação não significa falsidade."
-    : "";
-  if (parts.length === 0) parts.push("cobertura parcial das alegações");
-  return `Resultado factual: ${parts.join("; ")}.${noScore} Consulte os cards para o detalhamento e as evidências.`;
-}
 
 /**
  * Enforces structural evidence links, coverage and deterministic score/verdict consistency.
@@ -271,7 +244,7 @@ export function validateResult(raw) {
       coverage,
       claims,
       summary: incomplete || claims.some((claim, index) => claim.status !== bounded[index]?.status) || !String(raw?.summary ?? "").trim()
-        ? rebuildResultSummary({ claims, coverage, outcome: finalOutcome })
+        ? ""
         : String(raw?.summary ?? "").trim(),
       notCheckedClaims: Array.isArray(raw?.notCheckedClaims) ? raw.notCheckedClaims.slice(0, CLAIM_LIMIT) : [],
       omittedClaimsCount,

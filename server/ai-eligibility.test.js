@@ -48,12 +48,31 @@ test("registro explícito: gpt-4o elegível para judge/final/vision; whisper-1 s
   }
 });
 
-test("grok sem imagem não ganha vision automaticamente", async () => {
+test("grok com visão sondada ganha vision; deepseek sem imagem não ganha", async () => {
   const { modelInfo } = await load();
   const grok = modelInfo("opencode", "grok-4.7");
   assert.ok(grok.eligibleSteps.includes("judge"));
-  assert.ok(!grok.eligibleSteps.includes("vision"));
-  assert.equal(grok.stepReasons.vision.reason, "unvalidated_capability");
+  assert.ok(grok.eligibleSteps.includes("vision"));
+  const deepseek = modelInfo("opencode", "deepseek-v4-flash");
+  assert.ok(deepseek.eligibleSteps.includes("judge"));
+  assert.ok(!deepseek.eligibleSteps.includes("vision"));
+  assert.equal(deepseek.stepReasons.vision.reason, "unvalidated_capability");
+  const visionExp = modelInfo("opencode", "deepseek-v4-flash-vision-exp");
+  assert.ok(visionExp.eligibleSteps.includes("vision"));
+});
+
+test("famílias sondadas: gpt-5/o3/o4-mini elegíveis; legados sem web_search fora", async () => {
+  const { modelInfo } = await load();
+  for (const id of ["gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-6-luna", "o3", "o4-mini"]) {
+    const info = modelInfo("openai", id);
+    assert.deepEqual([...info.eligibleSteps].sort(), ["final", "judge", "vision"]);
+    assert.ok(info.capabilities.includes("web-search"));
+  }
+  for (const id of ["gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "o1", "gpt-4o-search-preview"]) {
+    const info = modelInfo("openai", id);
+    assert.deepEqual(info.eligibleSteps, []);
+    assert.equal(info.protocol, "unknown");
+  }
 });
 
 test("precedência: credencial ausente supera inventário; inventário desatualizado distingue-se de ausente", async () => {

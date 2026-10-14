@@ -32,24 +32,87 @@ const FACTORY = {
   transcribe: { provider: "openai", model: "whisper-1" },
 };
 // Registro explícito de modelos com adapter implementado e capacidades
-// documentadas por provedor. Só IDs presentes aqui são elegíveis; qualquer
-// outro ID descoberto fica com protocolo "unknown", sem inferência por
-// semelhança de nome. `eligibleSteps` é derivado das capacidades.
+// comprovadas por provedor. Fontes por entrada: (D) página do modelo em
+// developers.openai.com com Responses+web_search, (S) sonda real de inferência
+// (Responses com web_search, e input_image para visão), (Z) tabela da OpenCode
+// (opencode.ai/docs/zen, coluna Endpoint). Só IDs presentes aqui são
+// elegíveis; qualquer outro ID descoberto fica com protocolo "unknown".
+// `eligibleSteps` é derivado das capacidades.
 const MODEL_REGISTRY = {
   opencode: {
+    // Responses+web_search sondados (S); visão sondada com imagem 64px (S).
     "muse-spark-1.3-contributor": { label: "Muse Spark 1.3 Contributor", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
     "muse-spark-1.2-contributor": { label: "Muse Spark 1.2 Contributor", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
     "gpt-6-luna": { label: "GPT-6 Luna", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
     "gpt-5.6-luna": { label: "GPT-5.6 Luna", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
-    "grok-4.7": { label: "Grok 4.7", protocol: "responses", capabilities: ["text-output", "web-search"] },
-    "grok-4.6": { label: "Grok 4.6", protocol: "responses", capabilities: ["text-output", "web-search"] },
+    "grok-4.7": { label: "Grok 4.7", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "grok-4.6": { label: "Grok 4.6", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    // Família deepseek responde no endpoint Go com web_search (S). A doc Zen
+    // lista chat/completions (Z), mas a sonda no endpoint Go retornou 200 com
+    // a tool — vale o comportamento observado. Visão: só a variante
+    // vision-exp aceitou input_image (S); as demais recusam imagem.
+    "deepseek-v4-flash": { label: "DeepSeek V4 Flash", protocol: "responses", capabilities: ["text-output", "web-search"] },
+    "deepseek-v4.1-flash": { label: "DeepSeek V4.1 Flash", protocol: "responses", capabilities: ["text-output", "web-search"] },
+    "deepseek-v4-pro": { label: "DeepSeek V4 Pro", protocol: "responses", capabilities: ["text-output", "web-search"] },
+    "deepseek-flash": { label: "DeepSeek Flash", protocol: "responses", capabilities: ["text-output", "web-search"] },
+    "deepseek-v4-flash-vision-exp": { label: "DeepSeek V4 Flash Vision (exp)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
   },
   openai: {
+    // Documentados com Responses+web_search+image (D) e sondados com a tool (S).
     "gpt-4o": { label: "GPT-4o", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
     "gpt-4o-mini": { label: "GPT-4o Mini", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-4o-2024-11-20": { label: "GPT-4o (2024-11-20)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-4o-2024-08-06": { label: "GPT-4o (2024-08-06)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-4o-2024-05-13": { label: "GPT-4o (2024-05-13)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-4o-mini-2024-07-18": { label: "GPT-4o Mini (2024-07-18)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
     "gpt-4.1": { label: "GPT-4.1", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
     "gpt-4.1-mini": { label: "GPT-4.1 Mini", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
-    "gpt-4.1-nano": { label: "GPT-4.1 Nano", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    // gpt-4.1-nano: doc lista Responses mas SEM web_search nas tools, e a sonda confirma 400 — fora.
+    "gpt-4.1-2025-04-14": { label: "GPT-4.1 (2025-04-14)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-4.1-mini-2025-04-14": { label: "GPT-4.1 Mini (2025-04-14)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5": { label: "GPT-5", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5-2025-08-07": { label: "GPT-5 (2025-08-07)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5-mini": { label: "GPT-5 Mini", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5-mini-2025-08-07": { label: "GPT-5 Mini (2025-08-07)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5-nano": { label: "GPT-5 Nano", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5-nano-2025-08-07": { label: "GPT-5 Nano (2025-08-07)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5-pro": { label: "GPT-5 Pro", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5-pro-2025-10-06": { label: "GPT-5 Pro (2025-10-06)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.1": { label: "GPT-5.1", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.1-2025-11-13": { label: "GPT-5.1 (2025-11-13)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.2": { label: "GPT-5.2", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.2-2025-12-11": { label: "GPT-5.2 (2025-12-11)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.2-pro": { label: "GPT-5.2 Pro", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.2-pro-2025-12-11": { label: "GPT-5.2 Pro (2025-12-11)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.3-codex": { label: "GPT-5.3 Codex", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.4": { label: "GPT-5.4", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.4-2026-03-05": { label: "GPT-5.4 (2026-03-05)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.4-mini": { label: "GPT-5.4 Mini", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.4-mini-2026-03-17": { label: "GPT-5.4 Mini (2026-03-17)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.4-nano": { label: "GPT-5.4 Nano", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.4-nano-2026-03-17": { label: "GPT-5.4 Nano (2026-03-17)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.4-pro": { label: "GPT-5.4 Pro", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.4-pro-2026-03-05": { label: "GPT-5.4 Pro (2026-03-05)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.5": { label: "GPT-5.5", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.5-2026-04-23": { label: "GPT-5.5 (2026-04-23)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.5-pro": { label: "GPT-5.5 Pro", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.5-pro-2026-04-23": { label: "GPT-5.5 Pro (2026-04-23)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.6-sol": { label: "GPT-5.6 Sol", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.6-luna": { label: "GPT-5.6 Luna", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.6-terra": { label: "GPT-5.6 Terra", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-6-luna": { label: "GPT-6 Luna", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-6-sol": { label: "GPT-6 Sol", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-6.1-sol": { label: "GPT-6.1 Sol", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-6-astra": { label: "GPT-6 Astra", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    // Raciocínio com Responses+web_search+imagem (D+S). o1/o1-pro/o3-mini
+    // recusam a tool (sonda 400) e ficam fora; codex/chat-latest 404 nesta
+    // chave (sem acesso) e também ficam fora.
+    "o3": { label: "o3", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "o3-2025-04-16": { label: "o3 (2025-04-16)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "o3-pro": { label: "o3 Pro", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "o4-mini": { label: "o4 Mini", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "o4-mini-2025-04-16": { label: "o4 Mini (2025-04-16)", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "chat-latest": { label: "Chat Latest", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
     "whisper-1": { label: "Whisper 1 (transcrição)", protocol: "audio-transcriptions", capabilities: ["audio-input", "transcription"] },
     "gpt-4o-transcribe": { label: "GPT-4o Transcribe", protocol: "audio-transcriptions", capabilities: ["audio-input", "transcription"] },
     "gpt-4o-mini-transcribe": { label: "GPT-4o Mini Transcribe", protocol: "audio-transcriptions", capabilities: ["audio-input", "transcription"] },

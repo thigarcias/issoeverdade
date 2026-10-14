@@ -5,7 +5,7 @@
 // Retorna `{ result }`. Detalhes do modelo ficam no servidor.
 // ---------------------------------------------------------------------------
 
-import { ERROR_MESSAGES, OUTCOME_LABEL, migrateVerdict } from "../data/constants.js";
+import { ERROR_MESSAGES, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, OUTCOME_LABEL, migrateVerdict } from "../data/constants.js";
 
 export const VERIFY_NDJSON_TYPE = "application/x-ndjson";
 
@@ -55,17 +55,22 @@ function normalize(raw, input, origin) {
         return {
           id: `c${index + 1}`,
           status: statuses.includes(claim?.status) ? claim.status : "unproven",
-          score: clamp(claim?.score, 35),
+          score: clamp(claim?.score, null),
+          evidenceSupport: Object.hasOwn(EVIDENCE_SUPPORT, claim?.evidenceSupport) ? claim.evidenceSupport : null,
           text: String(claim?.text ?? "Afirmação").slice(0, 600),
           note: String(claim?.note ?? "").slice(0, 800),
           referencePeriod: claim?.referencePeriod ?? null,
+          comparison: claim?.comparison ?? null,
+          evidenceReview: claim?.evidenceReview ?? null,
           sourceIds,
           evidence: Array.isArray(claim?.evidence)
             ? claim.evidence
                 .filter((item) => sourceIds.includes(item?.sourceId) && ["supports", "refutes", "context"].includes(item?.relation))
                 .map((item) => ({
                   sourceId: item.sourceId,
+                  evidenceId: typeof item?.evidenceId === "string" ? item.evidenceId : null,
                   relation: item.relation,
+                  verification: Object.hasOwn(EVIDENCE_VERIFICATION, item?.verification) ? item.verification : null,
                   quote: String(item.quote ?? "").slice(0, 600),
                   referencePeriod: item?.referencePeriod ?? null,
                 }))
@@ -88,6 +93,7 @@ function normalize(raw, input, origin) {
     claims,
     notCheckedClaims: Array.isArray(raw?.notCheckedClaims) ? raw.notCheckedClaims.slice(0, 50) : [],
     omittedClaimsCount: Number(raw?.omittedClaimsCount) || 0,
+    coverage: raw?.coverage ?? null,
     sources,
     origin: origin ?? null,
     cached: Boolean(raw?.cached),
@@ -133,17 +139,68 @@ async function throwAdmissionError(res) {
   throw friendlyError(code, serverMessage);
 }
 
+function notify(callback, value) {
+  try {
+    const pending = callback?.(value);
+    pending?.catch?.(() => {});
+  } catch { /* UI progress observers must not discard a valid result. */ }
+}
+
+function recoveredResult(data, input, checkId) {
+  if (!data || typeof data !== "object" || !data.result || typeof data.result !== "object" || Array.isArray(data.result)) {
+    throw friendlyError("upstream_error", "Resposta de checagem incompleta.");
+  }
+  const id = data.checkId ?? data.result.checkId ?? checkId;
+  const result = normalize({ ...data.result, checkId: id }, input, data.origin ?? null);
+  result.cached = Boolean(data.cached);
+  result.cachedFrom = data.cachedFrom ?? null;
+  return { result, checkId: id };
+}
+
+function withRecovery(error, recovery) {
+  error.recovery = recovery;
+  return error;
+}
+
+async function recover(input, capability, opts) {
+  try {
+    opts.signal?.throwIfAborted?.();
+    const res = await fetch(`/api/verify?checkId=${encodeURIComponent(capability.checkId)}`, {
+      method: "GET",
+      headers: { "X-Verify-Recovery": capability.recoveryToken },
+      signal: opts.signal,
+      cache: "no-store",
+    });
+    const payload = await res.json();
+    opts.signal?.throwIfAborted?.();
+    if (res.status === 202 && payload?.status === "pending") {
+      throw withRecovery(friendlyError("recovery_pending", "A checagem original ainda está em andamento. Aguarde e tente recuperar o resultado."), capability);
+    }
+    if (!res.ok) {
+      const transient = res.status === 429 || res.status >= 500;
+      throw withRecovery(friendlyError(payload?.error ?? "recovery_unavailable", payload?.message), transient ? capability : null);
+    }
+    if (payload?.status !== "completed") throw withRecovery(friendlyError("recovery_unavailable", "Resultado ainda indisponível."), capability);
+    const out = recoveredResult(payload.envelope, input, capability.checkId);
+    out.result.recovered = true;
+    return out;
+  } catch (error) {
+    if (error?.name === "AbortError" || opts.signal?.aborted) throw error;
+    if (Object.hasOwn(error, "recovery")) throw error;
+    throw withRecovery(friendlyError("recovery_unavailable", "Não foi possível recuperar o resultado. Tente de novo."), capability);
+  }
+}
+
 /**
- * @param {{ kind: "link"|"text"|"video"|"image", text: string, context?: string, fileName: string|null, file?: File }} input
- * @param {{ onContent?: (content: { modality: string, provisional: boolean, coverage: object }) => void, onActivity?: (activity: { id: string, parent: string|null, state: string, note?: string }) => void, onAccepted?: (accepted: { checkId: string, contract: string }) => void, signal?: AbortSignal }} opts
- * @returns {Promise<{ result: object, checkId: string }>}
- *
- * Consome o NDJSON incremental linha a linha (buffer split-chunk): cada chunk
- * decodificado é acumulado até `\n`; linhas completas viram eventos. Eventos de
- * execução obsoleta são ignorados pelo chamador via `runId`. Abort propaga ao
- * fetch e o servidor libera a vaga ao detectar a desconexão.
+ * POST streams accepted/content/activity/result/error. A supplied recovery
+ * capability performs GET only; pending recovery never launches another analysis.
+ * @param {object} input
+ * @param {{onContent?: Function, onActivity?: Function, onAccepted?: Function, recovery?: {checkId: string, recoveryToken: string}, signal?: AbortSignal}} opts
+ * @returns {Promise<{result: object, checkId: string}>}
  */
 export async function verify(input, opts = {}) {
+  opts.signal?.throwIfAborted?.();
+  if (opts.recovery) return recover(input, opts.recovery, opts);
   const body = {
     kind: input.kind,
     text: input.text,
@@ -159,67 +216,70 @@ export async function verify(input, opts = {}) {
     signal: opts.signal,
   });
   const contentType = String(res.headers?.get?.("content-type") ?? "");
-  if (!res.ok || !contentType.includes("x-ndjson")) {
-    await throwAdmissionError(res);
-  }
+  if (!res.ok || !contentType.includes("x-ndjson")) await throwAdmissionError(res);
   const reader = res.body?.getReader?.();
-  if (!reader) {
-    // Sem streaming legível, não há como acompanhar o progresso real.
-    throw friendlyError("upstream_error", "");
-  }
+  if (!reader) throw friendlyError("upstream_error", "");
   const decoder = new TextDecoder();
   let buffer = "";
   let checkId = null;
+  let capability = null;
   let terminal = null;
+  const consume = (line) => {
+    if (!line.trim() || terminal) return;
+    let event;
+    try { event = JSON.parse(line); } catch { return; }
+    if (event?.type === "accepted") {
+      checkId = event.checkId ?? checkId;
+      if (typeof checkId === "string" && typeof event.recoveryToken === "string") capability = { checkId, recoveryToken: event.recoveryToken };
+      notify(opts.onAccepted, { checkId, recoveryToken: event.recoveryToken ?? null, contract: event.contract ?? null });
+    } else if (event?.type === "content") {
+      notify(opts.onContent, { modality: event.modality ?? "unknown", provisional: Boolean(event.provisional), coverage: event.coverage ?? {} });
+    } else if (event?.type === "activity") {
+      notify(opts.onActivity, { id: event.id, parent: event.parent ?? null, state: event.state, note: event.note, seq: event.seq ?? null, at: event.at ?? null });
+    } else if (event?.type === "result" && event.envelope?.result && typeof event.envelope.result === "object" && !Array.isArray(event.envelope.result)) {
+      terminal = { kind: "result", envelope: event.envelope, checkId: event.checkId ?? checkId };
+    } else if (event?.type === "error") {
+      terminal = { kind: "error", code: event.code ?? "upstream_error", message: event.message ?? "" };
+    }
+  };
+  const finishBuffer = () => {
+    buffer += decoder.decode();
+    consume(buffer);
+    buffer = "";
+  };
   try {
     for (;;) {
+      opts.signal?.throwIfAborted?.();
       const { done, value } = await reader.read();
-      if (done) break;
+      opts.signal?.throwIfAborted?.();
+      if (done) {
+        finishBuffer();
+        break;
+      }
       buffer += decoder.decode(value, { stream: true });
       let newline = buffer.indexOf("\n");
-      while (newline >= 0) {
-        const line = buffer.slice(0, newline).trim();
+      while (newline >= 0 && !terminal) {
+        consume(buffer.slice(0, newline));
         buffer = buffer.slice(newline + 1);
-        if (line) {
-          let event = null;
-          try {
-            event = JSON.parse(line);
-          } catch { /* linha incompleta ou estranha: ignora sem quebrar o stream */ }
-          if (event?.type === "accepted") {
-            checkId = event.checkId ?? checkId;
-            opts.onAccepted?.({ checkId, contract: event.contract ?? null });
-          } else if (event?.type === "content") {
-            opts.onContent?.({ modality: event.modality ?? "unknown", provisional: Boolean(event.provisional), coverage: event.coverage ?? {} });
-          } else if (event?.type === "activity") {
-            opts.onActivity?.({ id: event.id, parent: event.parent ?? null, state: event.state, note: event.note, seq: event.seq ?? null, at: event.at ?? null });
-          } else if (event?.type === "result") {
-            terminal = { kind: "result", envelope: event.envelope, checkId: event.checkId ?? checkId };
-          } else if (event?.type === "error") {
-            terminal = { kind: "error", code: event.code ?? "upstream_error", message: event.message ?? "" };
-          }
-          if (terminal) {
-            try { await reader.cancel(); } catch { /* leitor já encerrado */ }
-            break;
-          }
-        }
         newline = buffer.indexOf("\n");
       }
-      if (terminal) break;
-      opts.signal?.throwIfAborted?.();
+      if (terminal) {
+        try { await reader.cancel(); } catch { /* already closed */ }
+        break;
+      }
     }
-  } catch (err) {
-    if (err?.name === "AbortError") throw err;
-    if (!terminal) throw friendlyError("upstream_error", "");
+  } catch (error) {
+    if (error?.name === "AbortError" || opts.signal?.aborted) throw error;
+    // A read may fail immediately after delivering a complete record without LF.
+    finishBuffer();
   } finally {
-    try { reader.releaseLock(); } catch { /* leitor já liberado */ }
+    try { reader.releaseLock(); } catch { /* already released */ }
   }
-  if (!terminal) throw friendlyError("upstream_error", "A conexão foi interrompida antes do resultado.");
-  if (terminal.kind === "error") throw friendlyError(terminal.code, terminal.message);
-  const data = terminal.envelope ?? {};
-  // O identificador da checagem vem no envelope (data.checkId), não no resultado
-  // validado: sem ele, o link de contestação não aponta para um registro real.
-  const result = normalize({ ...data.result, checkId: data.checkId ?? data.result?.checkId ?? checkId }, input, data.origin ?? null);
-  result.cached = Boolean(data.cached);
-  result.cachedFrom = data.cachedFrom ?? null;
-  return { result, checkId: data.checkId ?? checkId };
+  opts.signal?.throwIfAborted?.();
+  if (!terminal) {
+    if (capability) return recover(input, capability, opts);
+    throw withRecovery(friendlyError("upstream_error", "A conexão foi interrompida antes do resultado."), null);
+  }
+  if (terminal.kind === "error") throw withRecovery(friendlyError(terminal.code, terminal.message), null);
+  return recoveredResult(terminal.envelope, input, terminal.checkId);
 }

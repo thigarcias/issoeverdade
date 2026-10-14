@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CLAIM_STATUS, VERDICTS, migrateVerdict } from "../data/constants.js";
+import { CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, VERDICTS, migrateVerdict } from "../data/constants.js";
+import ComparisonDetails from "./ComparisonDetails.jsx";
 
 const SECRET_KEY = "iev-admin-secret";
 const PAGE_SIZE = 15;
@@ -207,7 +208,7 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
           <>
             <div className="admin-detail-head">
               <VerdictChip verdict={detail.verdict} error={detail.error} outcome={detail.outcome} />
-              {detail.score != null && <b className="admin-detail-score">{detail.score}/100</b>}
+              <b className="admin-detail-score">{detail.score == null ? "Nota indisponível" : `${detail.score}/100`}</b>
               <span className="admin-mut">
                 {OUTCOME_LABEL[detail.outcome] ?? "Registro legado"} · {KIND_LABEL[detail.kind] ?? detail.kind} · {fmtFullTime(detail.at)} · total {fmtMs(detail.totalMs)}
               </span>
@@ -258,6 +259,12 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
                   )}
                   <dt>Resumo</dt>
                   <dd>{detail.summary || "—"}</dd>
+                  {detail.coverage && (
+                    <>
+                      <dt>Cobertura das afirmações</dt>
+                      <dd>{detail.coverage.total} no total · {detail.coverage.assessed} avaliadas com evidência adequada · {detail.coverage.unproven} sem comprovação · {detail.coverage.omitted} sem análise</dd>
+                    </>
+                  )}
                   {detail.corrections?.length > 0 && (
                     <>
                       <dt>Correções</dt>
@@ -275,10 +282,13 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
                   return (
                     <li key={i}>
                       <span className={`chip ${st.tint}`}>
-                        <i /> {st.label} · {c.score}
+                        <i /> {st.label} · {c.score == null ? "sem nota" : `${c.score}/100`}
                       </span>
                       <p>{c.text}</p>
                       {c.note && <small>{c.note}</small>}
+                      {c.evidenceSupport && <small>Suporte da evidência: {EVIDENCE_SUPPORT[c.evidenceSupport] ?? c.evidenceSupport}.</small>}
+                      {c.evidenceReview && <small>Revisão do conjunto: {EVIDENCE_SUPPORT[c.evidenceReview.verdict] ?? "Inconclusiva"}{c.evidenceReview.incomplete ? " · cobertura incompleta" : ""}.</small>}
+                      <ComparisonDetails comparison={c.comparison} />
                       {Array.isArray(c.evidence) && c.evidence.length > 0 && <ul className="admin-claim-evidence">{c.evidence.map((evidence, index) => {
                         const source = detail.sources?.[evidence.sourceId];
                         const relation = { supports: "Apoia", refutes: "Contradiz", context: "Contextualiza" }[evidence.relation] ?? "Evidência";
@@ -286,6 +296,7 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
                           <li key={`${evidence.sourceId ?? "source"}-${index}`}>
                             <b>{relation}{source?.outlet ? ` · ${source.outlet}` : ""}</b>
                             {evidence.quote && <q>{evidence.quote}</q>}
+                            {evidence.verification && <small>{c.evidenceReview && evidence.verification === "verified" ? "Trecho do conjunto revisado" : EVIDENCE_VERIFICATION[evidence.verification] ?? evidence.verification}</small>}
                             {evidence.referencePeriod && <small>Período da evidência: {evidence.referencePeriod.start} a {evidence.referencePeriod.end}</small>}
                             {source?.url && <a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>}
                           </li>
@@ -1463,9 +1474,9 @@ export default function Admin({ showToast }) {
           {loading || !items ? <ul className="admin-skel" aria-label="Carregando checagens"><li /><li /><li /></ul>
             : filtered.length === 0 ? <div className="empty"><h3>{loadError ? "Lista indisponível" : items.length === 0 ? "Nenhum registro retido" : "Nenhuma checagem encontrada"}</h3><p>{loadError || (items.length === 0 ? "A API não disponibilizou checagens." : "Ajuste a busca ou os filtros.")}</p></div>
               : <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Resultado</th><th>Afirmação / entrada</th><th>Tipo</th><th>Data</th><th>Duração</th><th>Modelo</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id} tabIndex="0" onClick={() => openDetail(item.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(item.id); } }}>
-                <td><div className="admin-result-cell"><VerdictChip verdict={item.verdict} error={item.error} outcome={item.outcome} />{item.score != null && <b>{item.score}</b>}</div>{(item.outcome || item.resultStatus || item.error) && <small className="admin-op-status">{OUTCOME_LABEL[item.outcome ?? item.resultStatus] ?? (item.error ? "Erro registrado" : item.resultStatus)}</small>}</td><td className="admin-table-preview" title={item.inputPreview || item.id}>{item.inputPreview || "(sem texto)"}<small>{item.id}</small></td><td>{KIND_LABEL[item.kind] ?? item.kind ?? "—"}</td><td><time title={fmtFullTime(item.at)}>{fmtTime(item.at)}</time></td><td>{fmtMs(item.totalMs)}</td><td>{item.model ?? item.provider ?? "—"}</td>
+                <td><div className="admin-result-cell"><VerdictChip verdict={item.verdict} error={item.error} outcome={item.outcome} /><b>{item.score == null ? "sem nota" : item.score}</b></div>{(item.outcome || item.resultStatus || item.error) && <small className="admin-op-status">{OUTCOME_LABEL[item.outcome ?? item.resultStatus] ?? (item.error ? "Erro registrado" : item.resultStatus)}</small>}</td><td className="admin-table-preview" title={item.inputPreview || item.id}>{item.inputPreview || "(sem texto)"}<small>{item.id}</small></td><td>{KIND_LABEL[item.kind] ?? item.kind ?? "—"}</td><td><time title={fmtFullTime(item.at)}>{fmtTime(item.at)}</time></td><td>{fmtMs(item.totalMs)}</td><td>{item.model ?? item.provider ?? "—"}</td>
               </tr>)}</tbody></table>
-              <ul className="admin-cards">{visible.map((item) => <li key={item.id}><button type="button" className="admin-card-row" onClick={() => openDetail(item.id)}><span className="admin-result-cell"><VerdictChip verdict={item.verdict} error={item.error} outcome={item.outcome}/>{item.score != null && <b>{item.score}</b>}</span><strong>{item.inputPreview || "(sem texto)"}</strong><span>{KIND_LABEL[item.kind] ?? item.kind ?? "—"} · {fmtTime(item.at)}</span><span>{item.outcome ? OUTCOME_LABEL[item.outcome] ?? item.outcome : "Registro legado"} · {fmtMs(item.totalMs)} · {item.model ?? item.provider ?? "Modelo não registrado"}</span><small>{item.id}</small></button></li>)}</ul></div>}
+              <ul className="admin-cards">{visible.map((item) => <li key={item.id}><button type="button" className="admin-card-row" onClick={() => openDetail(item.id)}><span className="admin-result-cell"><VerdictChip verdict={item.verdict} error={item.error} outcome={item.outcome}/><b>{item.score == null ? "sem nota" : item.score}</b></span><strong>{item.inputPreview || "(sem texto)"}</strong><span>{KIND_LABEL[item.kind] ?? item.kind ?? "—"} · {fmtTime(item.at)}</span><span>{item.outcome ? OUTCOME_LABEL[item.outcome] ?? item.outcome : "Registro legado"} · {fmtMs(item.totalMs)} · {item.model ?? item.provider ?? "Modelo não registrado"}</span><small>{item.id}</small></button></li>)}</ul></div>}
           {pages > 1 && <nav className="admin-pages" aria-label="Paginação"><button className="btn ghost" type="button" disabled={!safePage} onClick={() => { const next = safePage - 1; setPage(next); updateAdminUrl({ page: next || null }); }}>← Anterior</button><span>Página {safePage + 1} de {pages}</span><button className="btn ghost" type="button" disabled={safePage >= pages - 1} onClick={() => { const next = safePage + 1; setPage(next); updateAdminUrl({ page: next }); }}>Próxima →</button></nav>}
         </section>}
         {section === "corrections" && <AdminCorrections

@@ -2,7 +2,7 @@
 // chaves server-side — mesmos handlers da Vercel.
 // /api/verify admite (JSON + status em caso de recusa) e transmite NDJSON.
 import { loadEnv } from "vite";
-import { admitVerifyRequest, executeVerifyStream, VERIFY_CONTRACT, VERIFY_NDJSON_TYPE } from "./server/endpoint.js";
+import { admitVerifyRequest, executeVerifyStream, handleVerifyRecovery, VERIFY_CONTRACT, VERIFY_NDJSON_TYPE } from "./server/endpoint.js";
 import { handleCorrectionsRequest } from "./server/corrections-endpoint.js";
 import { handleAdminRequest } from "./server/admin-endpoint.js";
 import { handleHealthRequest } from "./server/health-endpoint.js";
@@ -47,6 +47,11 @@ export function apiVerifyPlugin() {
           for (const [key, value] of Object.entries(headers)) res.setHeader(key, value);
           res.end(JSON.stringify(obj));
         };
+        if (req.method === "GET") {
+          const query = Object.fromEntries(new URL(req.url, "http://local").searchParams.entries());
+          const out = await handleVerifyRecovery({ method: req.method, headers: req.headers, query, socketAddress: req.socket?.remoteAddress });
+          return sendJson(out.status, out.body, out.headers);
+        }
         if (req.method !== "POST") return sendJson(405, { error: "method_not_allowed" });
         let body;
         try {

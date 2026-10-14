@@ -17,7 +17,7 @@ export default function ShareDialog({ result, onClose, showToast }) {
   const shareSupported = typeof navigator !== "undefined" && !!navigator.share;
   const content = result ? shareCardContent(result) : null;
   const verdictLabel = result?.score == null
-    ? "sem nota ou veredito factual"
+    ? `${VERDICTS[result?.verdict]?.label ?? "Sem veredito"}, sem nota global`
     : `${VERDICTS[result?.verdict]?.label ?? "Sem veredito"}, nota ${result.score} de 100`;
   const shareText = result
     ? buildShareText(result, typeof location !== "undefined" ? location : { origin: "", pathname: "/" })

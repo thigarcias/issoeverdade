@@ -6,12 +6,15 @@
 //   - mapeamento de erro para o contrato da interface.
 // Sem controles ativos em produção o endpoint RECUSA a checagem (fail-closed).
 import { activeGuard, blockedPayload, LimitsExceeded, LimitsUnavailable } from "./limits.js";
+import { randomUUID } from "node:crypto";
+import { startRecovery, completeRecovery, failRecovery, readRecovery, RecoveryUnavailable } from "./recovery.js";
 import { parseUrlStrict } from "./net.js";
 import { normalizeVerifyInput } from "./uploads.js";
 import { runVerify } from "./verify.js";
 
 export const MAX_REQUEST_BYTES = 4_300_000;
 const KINDS = new Set(["link", "text", "video", "image"]);
+const RECOVERY = { start: startRecovery, complete: completeRecovery, fail: failRecovery };
 
 /** IP do cliente conforme o proxy confiável da hospedagem. */
 export function clientIp(headers, socketAddress, env = process.env) {
@@ -128,54 +131,103 @@ export async function admitVerifyRequest({ method, headers = {}, body, socketAdd
  * `onEvent` recebe eventos NDJSON (`accepted`/`content`/`activity`/`result`/`error`);
  * exatamente um terminal (`result` ou `error`) é emitido, com `seq` crescente.
  */
-export async function executeVerifyStream({ input, slot, guard, checkId = null, onEvent } = {}) {
+export async function executeVerifyStream({ input, slot, guard, checkId = null, onEvent, recoveryStore = RECOVERY } = {}) {
   const emit = typeof onEvent === "function" ? onEvent : () => {};
   let seq = 0;
   let terminal = false;
+  let capability = null;
+  let tokens = 0;
   const send = (event) => {
     if (terminal) return;
-    seq += 1;
-    emit({ ...event, seq, at: new Date().toISOString() });
     if (event?.type === "result" || event?.type === "error") terminal = true;
+    // Delivery callbacks cannot turn a completed analysis into a failed one.
+    try { emit({ ...event, seq: ++seq, at: new Date().toISOString() }); } catch { /* disconnected consumer */ }
   };
-  const id = typeof checkId === "string" && checkId ? checkId : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  send({ type: "accepted", checkId: id, contract: VERIFY_CONTRACT });
+  const id = typeof checkId === "string" && checkId ? checkId : randomUUID();
   try {
+    capability = await recoveryStore.start(id);
+    send({ type: "accepted", ...capability, contract: VERIFY_CONTRACT });
     const out = await runVerify(input, {
+      checkId: id,
       onProgress: (event) => {
         if (event?.type !== "content" && event?.type !== "activity") return;
         send(event);
       },
     });
-    const tokens = out?.tokenUsage?.total ?? 0;
-    if (tokens) await guard.reconcileTokens(tokens).catch(() => null);
-    send({ type: "result", checkId: out?.checkId ?? id, envelope: out });
-  } catch (err) {
-    if (err instanceof LimitsUnavailable) {
-      send({ type: "error", code: "limits_unavailable", message: blockedPayload(guard)?.message ?? "Controles de uso indisponíveis." });
-    } else {
-      const status = err?.status ?? 502;
-      const code = publicErrorCode(err);
-      const message = err?.payload?.message ?? publicErrorMessage(status, code) ?? "Não consegui checar agora. Tente de novo.";
-      send({ type: "error", code, message: String(message).slice(0, 500) });
+    tokens = out?.cached ? 0 : out?.tokenUsage?.total ?? 0;
+    let recoveryAvailable = true;
+    try {
+      await recoveryStore.complete(capability, out);
+    } catch {
+      recoveryAvailable = false;
+      try {
+        await recoveryStore.fail(capability, {
+          code: "recovery_unavailable",
+          message: "A análise concluiu, mas não foi possível guardar uma cópia recuperável.",
+        });
+      } catch { /* The valid result is still delivered; recovery is not promised. */ }
     }
+    send({ type: "result", checkId: id, recoveryAvailable, envelope: out });
+  } catch (err) {
+    let code = publicErrorCode(err);
+    let message = err?.payload?.message ?? publicErrorMessage(err?.status ?? 502, code) ?? "Não consegui checar agora. Tente de novo.";
+    if (err instanceof LimitsUnavailable) {
+      code = "limits_unavailable";
+      message = blockedPayload(guard)?.message ?? "Controles de uso indisponíveis.";
+    } else if (err instanceof RecoveryUnavailable) {
+      code = "recovery_unavailable";
+      message = "Não foi possível guardar o resultado para recuperação.";
+    }
+    if (capability) {
+      try { await recoveryStore.fail(capability, { code, message }); }
+      catch {
+        code = "recovery_unavailable";
+        message = "O armazenamento da checagem está indisponível.";
+      }
+    }
+    send({ type: "error", checkId: id, code, message: String(message).slice(0, 500) });
   } finally {
-    await slot?.release?.().catch(() => {});
+    // Keep the execution alive until settlement, without delaying result delivery.
+    try {
+      if (tokens) await guard.reconcileTokens(tokens).catch(() => null);
+    } finally {
+      await slot?.release?.().catch(() => {});
+    }
   }
   return { checkId: id };
+}
+
+/** GET is capability-only and never reserves a slot, charges usage or runs AI. */
+export async function handleVerifyRecovery({ method = "GET", headers = {}, query = {}, socketAddress, guard = activeGuard(), env = process.env } = {}) {
+  const responseHeaders = { "Cache-Control": "no-store", Vary: "X-Verify-Recovery" };
+  if (method !== "GET") return jsonError(405, { error: "method_not_allowed" }, responseHeaders);
+  try {
+    const rate = await guard.rateLimit(clientIp(headers, socketAddress, env), { bucket: "verify-recovery" });
+    if (!rate.allowed) return jsonError(429, { error: "rate_limited", message: "Muitas consultas em pouco tempo. Aguarde alguns minutos." }, { ...responseHeaders, "Retry-After": String(rate.retryAfterSec ?? guard.config.windowSec) });
+    const recoveryToken = headers["x-verify-recovery"];
+    const state = await readRecovery(query.checkId, recoveryToken);
+    if (!state) return jsonError(404, { error: "recovery_not_found", message: "Resultado indisponível ou recuperação expirada." }, responseHeaders);
+    if (state.status === "pending") return jsonError(202, state, responseHeaders);
+    if (state.status === "failed") return jsonError(409, { status: "failed", error: state.error.code, message: state.error.message }, responseHeaders);
+    return jsonError(200, state, responseHeaders);
+  } catch (err) {
+    if (err instanceof LimitsUnavailable || err instanceof RecoveryUnavailable) return jsonError(503, { error: "recovery_unavailable", message: "Recuperação temporariamente indisponível." }, responseHeaders);
+    throw err;
+  }
 }
 
 /**
  * Executa o ciclo completo da requisição de checagem.
  * @returns {Promise<{status:number, body:object, headers?:object}>}
  */
-export async function handleVerifyRequest({ method, headers = {}, body, socketAddress, guard = activeGuard(), env = process.env } = {}) {
+export async function handleVerifyRequest({ method, headers = {}, query = {}, body, socketAddress, guard = activeGuard(), env = process.env } = {}) {
+  if (method === "GET") return handleVerifyRecovery({ method, headers, query, socketAddress, guard, env });
   const admitted = await admitVerifyRequest({ method, headers, body, socketAddress, guard, env });
   if (admitted.status) return admitted;
   const { input, slot } = admitted;
   try {
     const out = await runVerify(input);
-    const tokens = out?.tokenUsage?.total ?? 0;
+    const tokens = out?.cached ? 0 : out?.tokenUsage?.total ?? 0;
     if (tokens) await guard.reconcileTokens(tokens).catch(() => null);
     return { status: 200, body: out };
   } catch (err) {

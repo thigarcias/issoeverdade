@@ -24,7 +24,7 @@ test("produção sem backend compartilhado recusa a checagem (fail-closed)", asy
 
 test("endpoint recusa método, tipo, entrada vazia e URL interna", async () => {
   const guard = guardWith();
-  assert.equal((await handleVerifyRequest({ method: "GET", guard })).status, 405);
+  assert.equal((await handleVerifyRequest({ method: "PUT", guard })).status, 405);
   assert.equal((await handleVerifyRequest(post({ kind: "pdf" }, { guard }))).status, 400);
   assert.equal((await handleVerifyRequest(post({ kind: "text", text: "" }, { guard }))).status, 400);
   const interna = await handleVerifyRequest(post({ kind: "link", text: "http://169.254.169.254/latest/meta-data/" }, { guard }));

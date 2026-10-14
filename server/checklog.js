@@ -56,6 +56,7 @@ export async function saveCheckLog(entry) {
     claims: Array.isArray(entry.claims) ? entry.claims.slice(0, 50) : [],
     notCheckedClaims: Array.isArray(entry.notCheckedClaims) ? entry.notCheckedClaims.slice(0, 50) : [],
     omittedClaimsCount: entry.omittedClaimsCount ?? 0,
+    coverage: entry.coverage ?? null,
     sources: Array.isArray(entry.sources) ? entry.sources.slice(0, 30) : [],
     researchCitations: Array.isArray(entry.researchCitations) ? entry.researchCitations.slice(0, 50) : [],
     researchQueries: Array.isArray(entry.researchQueries) ? entry.researchQueries.slice(0, 20) : [],

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { CLAIM_STATUS, VERDICTS } from "../data/constants.js";
+import { CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, VERDICTS } from "../data/constants.js";
 import ScoreRing from "./ScoreRing.jsx";
 import { copyText } from "../lib/hooks.js";
 import { buildShareText } from "../lib/shareCard.js";
+import ComparisonDetails from "./ComparisonDetails.jsx";
 
 function SourceRow({ source }) {
   const body = (
@@ -101,7 +102,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
   const shareText = buildShareText(result, typeof location !== "undefined" ? location : { origin: "", pathname: "/" });
   const reportUrl = `/correcoes.html?source=${encodeURIComponent(reportSource)}${result.id ? `&checkId=${encodeURIComponent(result.id)}` : ""}`;
 
-  if (!verdict || result.score == null) {
+  if (!verdict || (result.score == null && !result.claims?.length)) {
     return (
       <article aria-live="polite" className="result-anim">
         {origin?.title && <h3>{origin.title}</h3>}
@@ -174,7 +175,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
       )}
 
       <div className="result-head">
-        <AnimatedScore score={result.score} color={verdict.color} />
+        {result.score != null && <AnimatedScore score={result.score} color={verdict.color} />}
         <div className="result-title">
           <span className="verdict-row">
             <span className={`chip ${verdict.tint}`}>
@@ -198,9 +199,9 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
         </div>
       </div>
       <p className="score-legend">
-        Escala 0–100: <b>0–14</b> falso · <b>15–34</b> enganoso · <b>35–54</b>{" "}
-        sem comprovação · <b>55–64</b> distorcido · <b>65–74</b> parcialmente verdadeiro ·{" "}
-        <b>75–89</b> maioria verdadeira · <b>90–100</b> verdadeiro
+        {result.score == null
+          ? "Nota indisponível: há afirmações sem comprovação ou sem análise. Falta de evidência não significa falsidade."
+          : "Notas por afirmação com evidência adequada: verdade 95 · precisa de contexto 70 · falso 5. A nota não é probabilidade calibrada; registros históricos preservam a escala original."}
       </p>
 
       <p className="result-summary">{result.summary}</p>
@@ -209,7 +210,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
 
       <ol className="claims">
         {result.claims.map((claim, i) => {
-          const st = CLAIM_STATUS[claim.status];
+          const st = CLAIM_STATUS[claim.status] ?? CLAIM_STATUS.unproven;
           const linked = (claim.sourceIds ?? [])
             .map((idx) => result.sources[idx])
             .filter(Boolean);
@@ -218,7 +219,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
               <details className="claim" open={i === 0}>
                 <summary>
                   <span className={`chip ${st.tint} claim-badge`}>
-                    <i /> {st.label} · {claim.score}/100
+                    <i /> {st.label} · {claim.score == null ? "sem nota" : `${claim.score}/100`}
                   </span>
                   <span className="claim-text">
                     {claim.text}
@@ -231,6 +232,9 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
                 </summary>
                 <div className="claim-body">
                   <p>{claim.note}</p>
+                  {claim.evidenceSupport && <p className="score-legend">Suporte da evidência: {EVIDENCE_SUPPORT[claim.evidenceSupport] ?? claim.evidenceSupport}.</p>}
+                  {claim.evidenceReview && <p className="score-legend">Revisão do conjunto: {EVIDENCE_SUPPORT[claim.evidenceReview.verdict] ?? "Inconclusiva"}{claim.evidenceReview.incomplete ? " · cobertura incompleta" : ""}.</p>}
+                  <ComparisonDetails comparison={claim.comparison} />
                   {claim.evidence?.length > 0 && (
                     <ul className="claim-evidence">
                       {claim.evidence.map((item, evidenceIndex) => {
@@ -240,6 +244,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
                         return (
                           <li key={`${item.sourceId}-${evidenceIndex}`}>
                             <span>{relation} · {source.outlet}</span>
+                            {item.verification && <span>{claim.evidenceReview && item.verification === "verified" ? "Trecho do conjunto revisado" : EVIDENCE_VERIFICATION[item.verification] ?? item.verification}</span>}
                             <blockquote>“{item.quote}”</blockquote>
                           </li>
                         );
@@ -261,10 +266,13 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
           );
         })}
       </ol>
-      {(result.outcome === "partial_coverage" || result.omittedClaimsCount > 0) && (
+      {(result.coverage || result.outcome === "partial_coverage" || result.omittedClaimsCount > 0) && (
         <div className="coverage-warning" role="note">
-          <b>Cobertura parcial.</b> Foram analisadas {result.claims.length} afirmações;{" "}
-          {result.omittedClaimsCount} ficaram sem análise.
+          {result.coverage ? (
+            <><b>Cobertura das afirmações:</b> {result.coverage.total} no total; {result.coverage.assessed} avaliadas com evidência adequada; {result.coverage.unproven} sem comprovação; {result.coverage.omitted} sem análise.</>
+          ) : (
+            <><b>Cobertura parcial.</b> Foram analisadas {result.claims.length} afirmações; {result.omittedClaimsCount} ficaram sem análise.</>
+          )}
           {result.notCheckedClaims?.length > 0 && (
             <ul>
               {result.notCheckedClaims.map((claim, index) => (

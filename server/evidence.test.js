@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { clip, decodeEntities, locateQuote } from "./text.js";
-import { rebuildResultSummary, validateResult } from "./scoring.js";
+import { validateResult } from "./scoring.js";
 
 const MINIMAL_PDF = (text) => {
   const content = `BT /F1 12 Tf 20 100 Td (${text}) Tj ET`;
@@ -216,87 +216,75 @@ test("dossiê respeita teto de documentos e orçamento de bytes", async () => {
   assert.equal(dossier.documents.length, 2);
 });
 
-test("revisão de fidelidade rebaixa citação não confirmada e preserva confirmada", () => {
-  const claims = [
-    { status: "true", evidence: [{ sourceId: 0, relation: "supports", quote: "trecho do documento sobre a pesquisa" }] },
-    { status: "false", evidence: [{ sourceId: 1, relation: "refutes", quote: "trecho do documento sobre o outro número" }] },
-    { status: "true", evidence: [{ sourceId: 2, relation: "supports", quote: "trecho do terceiro documento" }] },
-  ];
-  const citations = [
-    { claimIndex: 0, evidenceIndex: 0, sourceId: 0, relation: "supports", quote: "trecho do documento sobre a pesquisa", excerpt: "trecho do documento sobre a pesquisa" },
-    { claimIndex: 1, evidenceIndex: 0, sourceId: 1, relation: "refutes", quote: "trecho do documento sobre o outro número", excerpt: "trecho do documento sobre o outro número" },
-    { claimIndex: 2, evidenceIndex: 0, sourceId: 2, relation: "supports", quote: "trecho do terceiro documento", excerpt: "trecho do terceiro documento" },
-  ];
-  const applied = evidence.applyReview({
-    claims,
-    citations,
-    review: { items: [{ id: 1, verdict: "supports" }, { id: 2, verdict: "unclear" }, { id: 3, verdict: "contradicts" }] },
-    config: evidence.evidenceConfig(),
-  });
+test("conjunto de dois operandos sustenta claim sem atribuir conclusão a cada trecho", () => {
+  const quotes = ["O grupo A registrou 20 hectares em 2020.", "O grupo B registrou 10 hectares em 2021."];
+  const claim = { text: "A teve mais área queimada que B.", status: "true", sourceIds: [0, 1],
+    evidence: quotes.map((quote, sourceId) => ({ sourceId, evidenceId: `e${sourceId + 1}`, relation: "supports", quote })) };
+  const citations = quotes.map((quote, evidenceIndex) => ({ claimIndex: 0, evidenceIndex, quote, excerpt: quote, locator: { found: true } }));
+  const applied = evidence.applyReview({ claims: [claim], citations, review: { claims: [{ claimIndex: 0, verdict: "supports" }] } });
   assert.equal(applied.claims[0].status, "true");
-  assert.equal(applied.claims[1].status, "unproven");
-  assert.equal(applied.claims[2].status, "unproven");
-  assert.match(applied.claims[2].note, /diz algo diferente/);
-  assert.equal(applied.downgraded.length, 2);
-  assert.ok(applied.corrections.some((message) => /revisão de fidelidade/.test(message)));
-  assert.match(evidence.evidenceNote({ enabled: true, citations: 3, located: 2, missing: 1, blocked: 1 }), /2\/3 trecho/);
-  assert.equal(evidence.evidenceNote({ enabled: true, citations: 0 }), "");
-});
-
-test("prompt de revisão só inclui citações com trecho localizado", () => {
-  const input = evidence.buildReviewInput({
-    claims: [{ text: "afirmação" }],
-    citations: [
-      { claimIndex: 0, evidenceIndex: 0, quote: "citação localizada", excerpt: "trecho localizado no documento" },
-      { claimIndex: 0, evidenceIndex: 1, quote: "citação ausente", excerpt: null },
-    ],
-  });
-  assert.match(input, /citação localizada/);
-  assert.doesNotMatch(input, /citação ausente/);
-  assert.equal(evidence.buildReviewInput({ claims: [], citations: [] }), null);
+  assert.equal(applied.claims[0].text, claim.text);
+  assert.equal(applied.claims[0].evidenceReview.verdict, "supports");
+  assert.deepEqual(applied.claims[0].evidence.map((item) => item.relation), ["context", "context"]);
+  assert.deepEqual(applied.claims[0].evidence.map((item) => item.verification), ["verified", "verified"]);
+  const { fixed } = validateResult({ outcome: "checked", claims: applied.claims, sources: [{}, {}] });
+  assert.equal(fixed.claims[0].status, "true");
+  assert.equal(fixed.claims[0].evidenceSupport, "supports");
+  assert.equal(fixed.score, 95);
 });
 
 for (const status of ["true", "false"]) {
-  test(`contexto não mantém classificação decisiva ${status}`, () => {
-    const relation = status === "true" ? "supports" : "refutes";
+  test(`contexto agrupado não mantém classificação decisiva ${status}`, () => {
     const quote = "A pessoa pediu apoio financeiro; a notícia não documenta pagamento.";
-    const claim = {
-      text: "A pessoa recebeu o dinheiro.", status, score: status === "true" ? 95 : 5,
-      sourceIds: [0], note: "O recebimento foi confirmado.", evidence: [{ sourceId: 0, relation, quote }],
-    };
+    const claim = { text: "A pessoa recebeu o dinheiro.", status, sourceIds: [0], evidence: [{ sourceId: 0, relation: "supports", quote }] };
     const applied = evidence.applyReview({
       claims: [claim],
-      citations: [{ claimIndex: 0, evidenceIndex: 0, quote, excerpt: quote }],
-      review: { items: [{ id: 1, verdict: "context", note: "A notícia descreve um pedido, mas não documenta recebimento ou transferência." }] },
+      citations: [{ claimIndex: 0, evidenceIndex: 0, quote, excerpt: quote, locator: { found: true } }],
+      review: { claims: [{ claimIndex: 0, verdict: "context", note: "O pedido não documenta recebimento." }] },
     });
     assert.equal(applied.claims[0].status, "unproven");
-    assert.equal(applied.claims[0].evidence[0].relation, "context");
-    assert.match(applied.claims[0].note, /pedido/);
-    assert.ok(!applied.claims[0].note.includes(claim.note));
-    const raw = {
-      outcome: "checked", claims: applied.claims, sources: [{ outlet: "Notícia", url: "https://example.com/noticia" }],
-      summary: rebuildResultSummary({ claims: applied.claims }),
-    };
-    const { fixed } = validateResult(raw);
-    assert.equal(fixed.verdict, "unproven");
-    assert.ok([35, 45].includes(fixed.score));
-    assert.ok(fixed.summary.length > 0);
-    assert.match(fixed.summary, /sem comprovação suficiente/);
-    assert.ok(!fixed.summary.includes(claim.note));
+    assert.equal(applied.claims[0].evidenceReview.verdict, "context");
+    const { fixed } = validateResult({ outcome: "checked", claims: applied.claims, sources: [{}] });
+    assert.equal(fixed.score, null);
   });
 }
 
-test("revisão preserva suporte confirmado e retira suporte de trecho inconclusivo", () => {
-  const quote = "Documento sobre o mesmo evento público.";
-  const applied = evidence.applyReview({
-    claims: [{ status: "true", evidence: [
-      { sourceId: 0, relation: "supports", quote },
-      { sourceId: 1, relation: "supports", quote },
-    ] }],
-    citations: [0, 1].map((evidenceIndex) => ({ claimIndex: 0, evidenceIndex, quote, excerpt: quote })),
-    review: { items: [{ id: 1, verdict: "supports" }, { id: 2, verdict: "unclear" }] },
-  });
-  assert.equal(applied.claims[0].status, "true");
-  assert.deepEqual(applied.claims[0].evidence.map((item) => item.relation), ["supports", "context"]);
-  assert.deepEqual(applied.downgraded, []);
+test("nenhum excerpt não localizado participa como prova, mesmo com resultado supports", () => {
+  const quote = "Trecho atribuído a uma página que recusou acesso.";
+  for (const locator of [{ found: false }, undefined]) {
+    const applied = evidence.applyReview({
+      claims: [{ text: "A afirmação foi comprovada.", status: "true", sourceIds: [0], evidence: [{ sourceId: 0, relation: "supports", quote }] }],
+      citations: [{ claimIndex: 0, evidenceIndex: 0, quote, excerpt: quote, locator }],
+      review: { claims: [{ claimIndex: 0, verdict: "supports" }] },
+    });
+    assert.equal(applied.claims[0].status, "unproven");
+    assert.equal(applied.claims[0].evidence[0].verification, "unavailable");
+    const { fixed } = validateResult({ outcome: "checked", claims: applied.claims, sources: [{}] });
+    assert.equal(fixed.claims[0].evidenceSupport, "insufficient");
+  }
+});
+
+test("limite da revisão marca grupo incompleto e não sustenta claim", () => {
+  const quote = "Trecho documental com dados anuais.";
+  const citations = [0, 1].map((evidenceIndex) => ({ claimIndex: 0, evidenceIndex, quote, excerpt: quote, locator: { found: true } }));
+  const claims = [{ text: "A supera B", status: "true", evidence: [{ quote }, { quote }] }];
+  const config = { ...evidence.evidenceConfig(), maxReviewItems: 1 };
+  const groups = evidence.buildReviewGroups({ claims, citations, config });
+  assert.equal(groups[0].incomplete, true);
+  assert.equal(groups[0].locatedCount, 2);
+  const applied = evidence.applyReview({ claims, citations, config, review: { claims: [{ claimIndex: 0, verdict: "supports" }] } });
+  assert.equal(applied.claims[0].status, "unproven");
+  assert.equal(applied.claims[0].evidenceReview.incomplete, true);
+});
+
+test("revisão por claim é independente, duplicatas e falhas não confirmam", () => {
+  const quote = "Uma estimativa foi apresentada em audiência pública.";
+  const claims = [0, 1].map((sourceId) => ({ text: "A estimativa ocorreu.", status: "true", sourceIds: [sourceId], evidence: [{ sourceId, relation: "supports", quote }] }));
+  const citations = [0, 1].map((claimIndex) => ({ claimIndex, evidenceIndex: 0, quote, excerpt: quote, locator: { found: true } }));
+  const applied = evidence.applyReview({ claims, citations, review: { claims: [{ claimIndex: 0, verdict: "supports" }, { claimIndex: 1, verdict: "context" }] } });
+  assert.deepEqual(applied.claims.map((claim) => claim.status), ["true", "unproven"]);
+  for (const review of [null, { claims: [{ claimIndex: 0, verdict: "supports" }, { claimIndex: 0, verdict: "refutes" }] }]) {
+    const failed = evidence.applyReview({ claims, citations, review });
+    assert.equal(failed.claims[0].status, "unproven");
+  }
 });

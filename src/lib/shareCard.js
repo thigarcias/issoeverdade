@@ -4,7 +4,7 @@
 // de veredito e anel de nota iguais aos do ResultCard.
 // Zero dependências — roda 100% no browser.
 
-import { CLAIM_STATUS, VERDICTS } from "../data/constants.js";
+import { CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, VERDICTS } from "../data/constants.js";
 
 const W = 1080;
 const H = 1350;
@@ -91,11 +91,15 @@ export function shareCardContent(result) {
 export function buildShareText(result, { origin, pathname = "/" }) {
   const content = shareCardContent(result);
   const label = VERDICTS[result?.verdict]?.label ?? "Sem veredito";
-  const verdict = result?.score == null ? "Sem nota ou veredito factual" : `${label} · nota ${result.score}/100`;
+  const verdict = result?.score == null ? `${label} · nota indisponível` : `${label} · nota ${result.score}/100`;
+  const coverage = result?.coverage;
+  const coverageText = coverage
+    ? `\nCobertura: ${coverage.total} no total; ${coverage.assessed} avaliadas com evidência adequada; ${coverage.unproven} sem comprovação; ${coverage.omitted} sem análise.`
+    : "";
   const correction = result?.id
     ? `Checagem automática ${result.id}. Confira correções em ${origin}/correcoes.html?checkId=${encodeURIComponent(result.id)}`
     : "Checagem automática.";
-  return `${content.title}\n${verdict}${content.summary ? `\n\n${content.summary}` : ""}\n\n${correction}\nConfira você também em ${origin}${pathname}`;
+  return `${content.title}\n${verdict}${coverageText}${content.summary ? `\n\n${content.summary}` : ""}\n\n${correction}\nConfira você também em ${origin}${pathname}`;
 }
 
 function sourceHost(source) {
@@ -217,8 +221,10 @@ export async function renderShareCard(result) {
     ctx.font = `400 30px ${SANS}`;
     const textFull = claims.length === 1 ? [] : wrap(ctx, text, W - 220);
     ctx.font = `400 25px ${SANS}`;
-    const noteFull = c.note ? wrap(ctx, String(c.note), W - 220) : [];
-    const expected = c.status === "true" ? "supports" : c.status === "false" ? "refutes" : "context";
+    const support = EVIDENCE_SUPPORT[c.evidenceSupport];
+    const note = [support ? `Suporte da evidência: ${support}.` : "", c.note].filter(Boolean).join(" ");
+    const noteFull = note ? wrap(ctx, note, W - 220) : [];
+    const expected = c.evidenceSupport ?? (c.status === "true" ? "supports" : c.status === "false" ? "refutes" : "context");
     const ev = (c.evidence ?? []).find((e) => e?.relation === expected && String(e.quote ?? "").trim())
       ?? (c.evidence ?? []).find((e) => String(e?.quote ?? "").trim());
     let evFull = [];
@@ -226,7 +232,8 @@ export async function renderShareCard(result) {
       const source = result.sources?.[ev.sourceId];
       const rel = c.status === "unproven" ? "Contexto, não comprovação" : RELATION_LABEL[ev.relation] ?? "Evidência";
       ctx.font = `400 24px ${SANS}`;
-      evFull = wrap(ctx, `${rel} · ${sourceHost(source)} · trecho original: “${String(ev.quote).trim()}”`, W - 236);
+      const verification = EVIDENCE_VERIFICATION[ev.verification];
+      evFull = wrap(ctx, `${rel} · ${sourceHost(source)}${verification ? ` · ${verification}` : ""} · trecho original: “${String(ev.quote).trim()}”`, W - 236);
     }
     const first = idx === 0;
     return {
@@ -325,16 +332,18 @@ export async function renderShareCard(result) {
   const ringX = cx0 + 170;
   const ringY = 360;
   const R = 105;
-  ctx.lineWidth = 22;
-  ctx.lineCap = "round";
-  ctx.strokeStyle = "#EFE7D3";
-  ctx.beginPath();
-  ctx.arc(ringX, ringY, R, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.strokeStyle = verdict.color;
-  ctx.beginPath();
-  if (result.score != null) ctx.arc(ringX, ringY, R, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * result.score) / 100);
-  ctx.stroke();
+  if (result.score != null) {
+    ctx.lineWidth = 22;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#EFE7D3";
+    ctx.beginPath();
+    ctx.arc(ringX, ringY, R, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = verdict.color;
+    ctx.beginPath();
+    ctx.arc(ringX, ringY, R, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * result.score) / 100);
+    ctx.stroke();
+  }
   ctx.fillStyle = INK;
   ctx.font = `600 96px ${SERIF}`;
   ctx.textAlign = "center";
@@ -346,7 +355,7 @@ export async function renderShareCard(result) {
   // Chip veredito (igual .chip do site)
   ctx.textAlign = "left";
   ctx.font = `600 30px ${SANS}`;
-  const chipLabel = result.score == null ? "SEM VEREDITO" : verdict.label.toUpperCase();
+  const chipLabel = result.verdict ? verdict.label.toUpperCase() : "SEM VEREDITO";
   const chipW = ctx.measureText(chipLabel).width + 96;
   const chipX = cx0 + 330;
   const chipY = 330;
@@ -382,7 +391,7 @@ export async function renderShareCard(result) {
   const roomFor = (h) => y + h <= FOOTER_TOP - sourcesH();
   for (const { c, clines, nlines, elines, h } of claimBlocks) {
     const st = CLAIM_STATUS[c.status] ?? CLAIM_STATUS.unproven;
-    const badge = `${CLAIM_ICON[c.status] ?? "?"}  ${st.label.toUpperCase()} · ${c.score}`;
+    const badge = `${CLAIM_ICON[c.status] ?? "?"}  ${st.label.toUpperCase()} · ${c.score == null ? "SEM NOTA" : c.score}`;
     if (!roomFor(h)) break;
     ctx.fillStyle = st.color;
     ctx.font = `600 26px ${SANS}`;
@@ -442,14 +451,17 @@ export async function renderShareCard(result) {
   ctx.textAlign = "center";
   ctx.fillStyle = FG3;
   ctx.font = `400 22px ${SANS}`;
-  const meta = [result.kind, result.publishedAt ? `checada em ${result.publishedAt}` : ""].filter(Boolean).join("  ·  ");
+  const coverage = result.coverage;
+  const meta = coverage
+    ? `Cobertura: ${coverage.assessed}/${coverage.total} avaliadas · ${coverage.unproven} sem comprovação · ${coverage.omitted} sem análise`
+    : [result.kind, result.publishedAt ? `checada em ${result.publishedAt}` : ""].filter(Boolean).join("  ·  ");
   if (meta) ctx.fillText(meta, W / 2, H - 214);
   // Análise automatizada, identificador e caminho para conferir correções:
   // o card pode circular fora do site, então precisa apontar para a versão vigente.
   ctx.fillStyle = FG2;
   ctx.font = `400 22px ${SANS}`;
   const aviso = result.score == null
-    ? "Checagem automática · sem nota ou veredito factual"
+    ? "Checagem automática · nota indisponível não significa falsidade"
     : "Checagem automática · a nota não é probabilidade calibrada";
   ctx.fillText(aviso, W / 2, H - 176);
   if (result.id) {

@@ -1,12 +1,18 @@
-// Serverless Vercel: POST /api/verify (mesma lógica do dev local).
+// Serverless Vercel: POST /api/verify e GET de recuperação por capacidade.
 // Limites de taxa, vagas de concorrência, orçamento diário, política de URL e
 // moderação ficam em server/endpoint.js — este arquivo é só o adaptador HTTP.
 // Admissão recusada = JSON + status; execução admitida = NDJSON incremental.
-import { admitVerifyRequest, executeVerifyStream, MAX_REQUEST_BYTES, VERIFY_CONTRACT, VERIFY_NDJSON_TYPE } from "../server/endpoint.js";
+import { admitVerifyRequest, executeVerifyStream, handleVerifyRecovery, MAX_REQUEST_BYTES, VERIFY_CONTRACT, VERIFY_NDJSON_TYPE } from "../server/endpoint.js";
 
 export const config = { maxDuration: 300 };
 
 export default async function handler(req, res) {
+  if (req.method === "GET") {
+    const query = req.query ?? Object.fromEntries(new URL(req.url, "http://local").searchParams.entries());
+    const out = await handleVerifyRecovery({ method: req.method, headers: req.headers, query, socketAddress: req.socket?.remoteAddress });
+    for (const [key, value] of Object.entries(out.headers ?? {})) res.setHeader(key, value);
+    return res.status(out.status).json(out.body);
+  }
   if (req.method !== "POST") {
     return res.status(405).json({ error: "method_not_allowed" });
   }

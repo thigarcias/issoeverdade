@@ -28,6 +28,21 @@ export const CLAIM_STATUS = {
   context: { label: "Precisa de contexto", tint: "tint-info", color: "#33608f" },
 };
 
+/** Relação da evidência com a afirmação; não mede cobertura ou confiança. */
+export const EVIDENCE_SUPPORT = {
+  supports: "Sustenta",
+  refutes: "Refuta",
+  context: "Contextualiza",
+  insufficient: "Evidência insuficiente",
+};
+
+/** Estado da revisão do trecho, separado da relação e da cobertura. */
+export const EVIDENCE_VERIFICATION = {
+  verified: "Relação verificada",
+  unavailable: "Verificação indisponível",
+  unclear: "Verificação inconclusiva",
+};
+
 /** Rótulos dos desfechos do servidor, incluindo recusas de política. */
 export const OUTCOME_LABEL = {
   checked: "Checagem executada",

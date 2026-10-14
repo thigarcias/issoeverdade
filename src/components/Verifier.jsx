@@ -65,6 +65,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
   const [expanded, setExpanded] = useState(false);
   const [checkedInput, setCheckedInput] = useState(null);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [recoveryAvailable, setRecoveryAvailable] = useState(false);
   const startRef = useRef(0);
   const aborter = useRef(null);
   const runId = useRef(0);
@@ -72,6 +73,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
   const pendingQuick = useRef(null);
   const resultPane = useRef(null);
   const lastPhase = useRef("idle");
+  const recoveryRef = useRef(null);
 
   // Checagem rápida do topo: detecta link × texto e dispara sozinha.
   useEffect(() => {
@@ -106,7 +108,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
   useEffect(() => {
     if (!running) return;
     const clock = setInterval(() => {
-      setElapsedMs(Date.now() - startRef.current);
+      setElapsedMs(performance.now() - startRef.current);
     }, 500);
     return () => clearInterval(clock);
   }, [running]);
@@ -117,10 +119,21 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     setRunning(false);
   }
 
+  function clearRecovery() {
+    recoveryRef.current = null;
+    setRecoveryAvailable(false);
+  }
+
+  function changeText(value) {
+    if (value !== text) clearRecovery();
+    setText(value);
+  }
+
   function switchTab(next) {
     if (next === tab) return;
     aborter.current?.abort();
     runId.current += 1;
+    clearRecovery();
     setTab(next);
     setText("");
     setImageContext("");
@@ -136,7 +149,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     aborter.current?.abort();
     aborter.current = new AbortController();
     const mine = ++runId.current;
-    startRef.current = Date.now();
+    startRef.current = performance.now();
     setElapsedMs(0);
     setResult(null);
     setError(null);
@@ -144,19 +157,30 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     setActivities(new Map());
     setContent(null);
     setRunning(true);
+    const uploadFile = file;
+    const snapshot = {
+      kind: tab,
+      text: tab === "image" ? "" : text.trim(),
+      context: tab === "image" ? imageContext.trim() : "",
+      fileName: uploadFile?.name ?? null,
+      fileMime: uploadFile?.type ?? "",
+      file: uploadFile ?? undefined,
+      fileFingerprint: fileFingerprint(uploadFile),
+    };
+    const previous = recoveryRef.current;
+    const unchanged = previous && previous.snapshot.kind === snapshot.kind &&
+      previous.snapshot.text === snapshot.text && previous.snapshot.context === snapshot.context &&
+      previous.snapshot.file === snapshot.file;
+    if (!unchanged) clearRecovery();
     try {
-      const uploadFile = file;
-      const snapshot = {
-        kind: tab,
-        text: tab === "image" ? "" : text.trim(),
-        context: tab === "image" ? imageContext.trim() : "",
-        fileName: uploadFile?.name ?? null,
-        fileMime: uploadFile?.type ?? "",
-        file: uploadFile ?? undefined,
-        fileFingerprint: fileFingerprint(uploadFile),
-      };
       const { result: r } = await verify(snapshot, {
         signal: aborter.current.signal,
+        recovery: unchanged ? previous.capability : null,
+        onAccepted: ({ checkId, recoveryToken }) => {
+          if (runId.current !== mine || !recoveryToken) return;
+          recoveryRef.current = { snapshot, capability: { checkId, recoveryToken } };
+          setRecoveryAvailable(true);
+        },
         onContent: (next) => {
           if (runId.current !== mine) return;
           setContent(next);
@@ -171,7 +195,8 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
         },
       });
       if (runId.current !== mine) return; // execução obsoleta
-      r.elapsedMs = Date.now() - startRef.current;
+      r.elapsedMs = performance.now() - startRef.current;
+      clearRecovery();
       setResult(r);
       setCheckedInput({ kind: snapshot.kind, text: snapshot.text, context: snapshot.context, fileName: snapshot.fileName, fileFingerprint: snapshot.fileFingerprint });
       onChecked?.(r);
@@ -181,6 +206,12 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
       if (err?.name === "AbortError") {
         resetProgress();
         return;
+      }
+      if (err && Object.hasOwn(err, "recovery")) {
+        if (err.recovery) {
+          recoveryRef.current = { snapshot, capability: err.recovery };
+          setRecoveryAvailable(true);
+        } else clearRecovery();
       }
       setError(err?.message ?? "Não consegui checar agora. Tente de novo.");
       setRunning(false);
@@ -212,6 +243,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     const f = files?.[0];
     if (fileInput.current) fileInput.current.value = "";
     if (!f) return;
+    clearRecovery();
     const videoTypes = new Set(["video/mp4", "video/quicktime", "video/webm", "audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav", "audio/webm", "audio/ogg"]);
     const validType = tab === "video" ? videoTypes.has(f.type) : ["image/jpeg", "image/png", "image/webp"].includes(f.type);
     if (!validType) {
@@ -229,6 +261,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
   function reset() {
     aborter.current?.abort();
     runId.current += 1;
+    clearRecovery();
     setText("");
     setImageContext("");
     setFile(null);
@@ -244,7 +277,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
         <form className={`card${result && !running && !expanded ? " form-collapsed" : ""}${running && !result ? " form-hidden" : ""}`} onSubmit={handleSubmit} aria-label="Enviar conteúdo para checagem">
           <div className="hd">
             <h3>{result && !running ? "Checagem concluída" : "O que você quer checar?"}</h3>
-            <span className="aside">{result && !running ? (result.score != null ? `nota ${result.score}/100` : "sem veredito") : "link · texto · vídeo · foto"}</span>
+            <span className="aside">{result && !running ? (result.score != null ? `nota ${result.score}/100` : result.verdict ? "sem nota global" : "sem veredito") : "link · texto · vídeo · foto"}</span>
           </div>
 
           <div className="tabs" role="tablist" aria-label="Tipo de conteúdo">
@@ -289,7 +322,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                     inputMode="url"
                     placeholder={PLACEHOLDERS.link}
                     value={text}
-                    onChange={(e) => setText(e.target.value)}
+                    onChange={(e) => changeText(e.target.value)}
                     autoComplete="off"
                     aria-invalid={!linkOk}
                     aria-describedby={linkOk ? undefined : "verify-link-error"}
@@ -314,7 +347,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                   placeholder={PLACEHOLDERS.text}
                   value={text}
                   maxLength={limits.maxTextChars}
-                  onChange={(e) => setText(e.target.value)}
+                  onChange={(e) => changeText(e.target.value)}
                 />
                 {text.length > limits.maxTextChars * 0.9 && (
                   <p className="field-help" role="note">
@@ -341,7 +374,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                         inputMode="url"
                         placeholder={PLACEHOLDERS.video}
                         value={text}
-                        onChange={(e) => setText(e.target.value)}
+                        onChange={(e) => changeText(e.target.value)}
                         autoComplete="off"
                         aria-invalid={!linkOk}
                       />
@@ -391,6 +424,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                           onClick={(e) => {
                             e.stopPropagation();
                             setFile(null);
+                            clearRecovery();
                           }}
                         >
                           ✕
@@ -426,7 +460,10 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                       placeholder="Qual afirmação você quer checar? Se souber, conte onde a imagem circulou e a data alegada…"
                       value={imageContext}
                       maxLength={limits.maxTextChars}
-                      onChange={(e) => setImageContext(e.target.value)}
+                      onChange={(e) => {
+                        if (e.target.value !== imageContext) clearRecovery();
+                        setImageContext(e.target.value);
+                      }}
                       aria-describedby="verify-image-context-help"
                     />
                     <p className="field-help" id="verify-image-context-help">
@@ -474,7 +511,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
         <div className="card result-pane" aria-label="Resultado da checagem" ref={resultPane}>
           <div className="hd">
             <h3>{result ? "Resultado" : running ? "Analisando…" : error ? "Algo deu errado" : "Seu resultado aparece aqui"}</h3>
-            <span className="aside">{result ? (result.score == null ? "sem veredito" : `nota ${result.score}/100`) : running ? "a IA está trabalhando" : "leva segundos"}</span>
+            <span className="aside">{result ? (result.score == null ? (result.verdict ? "sem nota global" : "sem veredito") : `nota ${result.score}/100`) : running ? "a IA está trabalhando" : "leva segundos"}</span>
           </div>
           {result && !running && expanded && checkedInput &&
             ((tab === "image" ? "" : text.trim()) !== checkedInput.text || (tab === "image" ? imageContext.trim() : "") !== checkedInput.context || tab !== checkedInput.kind || fileFingerprint(file) !== checkedInput.fileFingerprint) && (
@@ -540,10 +577,10 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
 
           {error && !running && !result && (
             <div className="result-empty" role="alert">
-              <h3>Não consegui checar</h3>
+              <h3>{recoveryAvailable ? "Resultado ainda indisponível" : "Não consegui checar"}</h3>
               <p>{error}</p>
               <button className="btn" type="button" onClick={handleSubmit} disabled={!canSubmit}>
-                Tentar de novo
+                {recoveryAvailable ? "Recuperar resultado" : "Tentar de novo"}
               </button>
             </div>
           )}
@@ -559,11 +596,12 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
       </div>
 
       {result && (
-        <p className="verify-hint" style={{ marginTop: 10 }}>
+        <p className="verify-hint" role="status" style={{ marginTop: 10 }}>
+          {result.recovered && <>Resultado recuperado da análise anterior, sem nova checagem. </>}
           {result.verdict && VERDICTS[result.verdict] ? <>Veredito: <b>{VERDICTS[result.verdict].label}</b></> : "Sem veredito factual"}
           {result.score != null && <> · nota {result.score}/100</>}
           {" "}· {result.claims.length} {result.claims.length === 1 ? "afirmação" : "afirmações"} · {result.sources.length} {result.sources.length === 1 ? "fonte" : "fontes"}
-          {typeof result.elapsedMs === "number" && <> · checada em {formatDuration(result.elapsedMs)}</>}.
+          {typeof result.elapsedMs === "number" && <> · {result.recovered ? "recuperada" : "checada"} em {formatDuration(result.elapsedMs)}</>}.
         </p>
       )}
     </div>

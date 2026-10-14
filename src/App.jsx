@@ -55,8 +55,8 @@ export default function App() {
   function handleChecked(result) {
     setHistory((h) => [result, ...h.filter((r) => r.id !== result.id)].slice(0, 20));
     const verdict = VERDICTS[result.verdict];
-    show(verdict && result.score != null
-      ? `Checagem concluída: ${verdict.label} · ${result.score}/100.`
+    show(verdict
+      ? `Checagem concluída: ${verdict.label} · ${result.score == null ? "sem nota global" : `${result.score}/100`}.`
       : "Checagem concluída sem veredito factual.");
   }
 

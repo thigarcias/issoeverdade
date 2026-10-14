@@ -18,6 +18,8 @@ import {
   evidenceNote,
   reviewableCitations,
 } from "./evidence.js";
+import { reviewWithJev } from "./jev.js";
+import { applyComparisons } from "./comparison.js";
 import { recordCheck } from "./metrics.js";
 import { getAiConfigState, providerKey, providerUrl } from "./ai-config.js";
 import {
@@ -262,7 +264,6 @@ function sanitizeSources(sources, claims = [], citations = []) {
     if (normalized) citationByUrl.set(normalized.href, citation);
   }
   const indexed = [];
-  const seenUrls = new Set();
   for (const [index, source] of (Array.isArray(sources) ? sources : []).entries()) {
     const parsed = normalizedUrl(source?.url);
     const citation = parsed ? citationByUrl.get(parsed.href) : null;
@@ -279,8 +280,6 @@ function sanitizeSources(sources, claims = [], citations = []) {
       dropped.push(`${outlet} (URL não confirmada nas citações da busca)`);
       continue;
     }
-    if (seenUrls.has(parsed.href)) continue;
-    seenUrls.add(parsed.href);
     indexed.push({
       originalIndex: index,
       url: parsed.href,
@@ -291,13 +290,16 @@ function sanitizeSources(sources, claims = [], citations = []) {
   }
 
   const evidenceByClaim = claims.map((claim) => {
+    delete claim.evidenceReview;
     const evidences = [];
-    for (const evidence of Array.isArray(claim?.evidence) ? claim.evidence : []) {
+    for (const [evidenceIndex, evidence] of (Array.isArray(claim?.evidence) ? claim.evidence : []).entries()) {
       const originalIndex = Number(evidence?.source) - 1;
       const source = indexed.find((candidate) => candidate.originalIndex === originalIndex);
       if (!source) continue;
       evidences.push({
         originalIndex,
+        evidenceId: typeof evidence?.evidenceId === "string" && evidence.evidenceId.trim() && evidence.evidenceId.length <= 64
+          ? evidence.evidenceId.trim() : `e${evidenceIndex + 1}`,
         relation: ["supports", "refutes", "context"].includes(evidence?.relation) ? evidence.relation : "context",
         quote: String(evidence?.quote ?? "").trim().slice(0, 600),
         referencePeriod: evidence?.referencePeriod ?? null,
@@ -316,22 +318,50 @@ function sanitizeSources(sources, claims = [], citations = []) {
   for (const source of indexed) {
     if (!used.has(source.originalIndex)) dropped.push(`${source.outlet} (sem vínculo a claim)`);
   }
-  const finalSources = indexed
-    .filter((source) => used.has(source.originalIndex))
-    .map((source) => ({ url: source.url, outlet: source.outlet, detail: source.detail, citationTitle: source.citationTitle }));
+  const finalSources = [];
   const sourceIdByOriginal = new Map();
+  const sourceIdByUrl = new Map();
   for (const source of indexed) {
-    if (used.has(source.originalIndex)) sourceIdByOriginal.set(source.originalIndex, sourceIdByOriginal.size);
+    if (!used.has(source.originalIndex)) continue;
+    if (!sourceIdByUrl.has(source.url)) {
+      sourceIdByUrl.set(source.url, finalSources.length);
+      finalSources.push({ url: source.url, outlet: source.outlet, detail: source.detail, citationTitle: source.citationTitle });
+    }
+    sourceIdByOriginal.set(source.originalIndex, sourceIdByUrl.get(source.url));
   }
   for (const [index, claim] of claims.entries()) {
     const evidence = evidenceByClaim[index]
       .filter((item) => sourceIdByOriginal.has(item.originalIndex))
-      .map((item) => ({ sourceId: sourceIdByOriginal.get(item.originalIndex), relation: item.relation, quote: item.quote, referencePeriod: item.referencePeriod ?? null }));
+      .map((item) => ({ evidenceId: item.evidenceId, sourceId: sourceIdByOriginal.get(item.originalIndex), relation: item.relation, quote: item.quote, referencePeriod: item.referencePeriod ?? null }));
     claim.evidence = evidence;
     claim.sourceIds = [...new Set(evidence.map((item) => item.sourceId))];
     delete claim.sources;
   }
   return { sources: finalSources, dropped };
+}
+
+function preserveReviewedClaims(original, reviewed) {
+  if (!original.length) return reviewed;
+  const incoming = Array.isArray(reviewed?.claims) ? reviewed.claims : [];
+  return {
+    ...reviewed,
+    outcome: "checked",
+    claims: original.map((claim, index) => {
+      const claimId = `claim-${index + 1}`;
+      const candidate = incoming.find((item) => item.claimId === claimId) ??
+        incoming.find((item) => String(item.text ?? "").trim() === String(claim.text ?? "").trim());
+      if (candidate && String(candidate.text ?? "").trim() === String(claim.text ?? "").trim()) {
+        return { ...candidate, claimId, text: claim.text, referencePeriod: claim.referencePeriod ?? null };
+      }
+      return {
+        claimId, text: claim.text, referencePeriod: claim.referencePeriod ?? null,
+        status: "unproven", score: null, evidence: [], sourceIds: [],
+        note: candidate
+          ? "A revisão alterou a afirmação original; a avaliação reformulada não foi usada como evidência desta alegação."
+          : "Esta afirmação não foi avaliada na revisão; não foi atribuída uma conclusão factual.",
+      };
+    }),
+  };
 }
 
 /** Executes only the configured vision model; the admin can inspect failures. */
@@ -620,7 +650,7 @@ export async function runVerify(input, opts = {}) {
   const normalizedInput = normalizeVerifyInput(input);
   const startedAt = Date.now();
   const trace = { phases: [] };
-  const id = makeId();
+  const id = typeof opts.checkId === "string" && opts.checkId ? opts.checkId : makeId();
   try {
     return await runVerifyInner(normalizedInput, { ...opts, trace, id, startedAt });
   } catch (err) {
@@ -667,7 +697,8 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   trace.configRevision = configState.revision;
   trace.configSource = configState.source;
   trace.methodologyVersion = PROMPT_VERSION;
-  const cacheNamespace = `${PROMPT_VERSION}:media-context-v5:${configState.revision}`;
+  const evCfg = evidenceConfig();
+  const cacheNamespace = `${PROMPT_VERSION}:media-context-v5:${configState.revision}:${evCfg.enabled}:${evCfg.reviewEnabled}:${evCfg.reviewProvider}:${evCfg.reviewModel}`;
   const t0 = startedAt ?? Date.now();
   const hit = await getCached(input, cacheNamespace).catch(() => null);
   if (hit) {
@@ -691,6 +722,9 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       summary: hit.result?.summary ?? "",
       claims: hit.result?.claims ?? [],
       sources: hit.result?.sources ?? [],
+      coverage: hit.result?.coverage ?? null,
+      omittedClaimsCount: hit.result?.omittedClaimsCount ?? 0,
+      notCheckedClaims: hit.result?.notCheckedClaims ?? [],
       researchCitations: hit.researchCitations ?? [],
       researchQueries: hit.researchQueries ?? [],
       researchDiagnostics: hit.researchDiagnostics ?? [],
@@ -1157,29 +1191,32 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   if (!blockedResult && (mediaTarget || imageTarget)) {
     const reviewClaims = structuredClone(first?.claims ?? []);
     const reviewSources = sanitizeSources(first?.sources, reviewClaims, firstCitations);
-    const review = validateResult({ ...first, claims: reviewClaims, sources: reviewSources.sources }).fixed;
+    const preliminaryClaims = reviewClaims.map(({ comparison: _comparison, ...claim }) => claim);
+    const review = validateResult({ ...first, claims: preliminaryClaims, sources: reviewSources.sources }).fixed;
     const needsResearch = review.claims.some((claim) => claim.status === "unproven");
     const dossier = {
       ...review,
-      claims: review.claims.map((claim) => ({
+      claims: review.claims.map((claim, index) => ({
+        claimId: `claim-${index + 1}`,
         text: claim.text,
         status: claim.status,
         score: claim.score,
         note: claim.note,
         referencePeriod: claim.referencePeriod,
+        comparison: reviewClaims[index]?.comparison ?? null,
         evidence: claim.evidence.map(({ sourceId, ...item }) => ({ ...item, source: sourceId + 1 })),
       })),
       retrievedUrls: firstCitations,
       queries: researchQueries,
     };
-    finalInput = `${judgeInput}\n\n${UNTRUSTED_BEGIN}\nDOSSIÊ DA PRIMEIRA AVALIAÇÃO (prévia, não é prova por si só):\n${JSON.stringify(dossier)}\n${UNTRUSTED_END}\nRevise os claims e preserve suas fontes elegíveis. ${needsResearch ? "Busque somente lacunas e conflitos, priorizando a publicação primária e a rodada/data correta." : "A busca está desabilitada: revise as evidências fornecidas sem reiniciar a pesquisa."}`;
+    finalInput = `${judgeInput}\n\n${UNTRUSTED_BEGIN}\nDOSSIÊ DA PRIMEIRA AVALIAÇÃO (prévia, não é prova por si só):\n${JSON.stringify(dossier)}\n${UNTRUSTED_END}\nRevise os claims sem alterar seu texto ou período. Devolva o claimId de cada afirmação; não substitua fato por declaração ou estimativa, nem o inverso. Preserve suas fontes elegíveis. ${needsResearch ? "Busque somente lacunas e conflitos, priorizando a publicação primária e a rodada/data correta." : "A busca está desabilitada: revise as evidências fornecidas sem reiniciar a pesquisa."}`;
     const final = await phase("final", () =>
       callModel({
         aiCfg, step: "final", instructions: SYSTEM_PROMPT_FINAL,
         input: finalInput, timeoutMs, sessionId: id, webSearch: needsResearch,
       }),
     );
-    finalResult = final.result;
+    finalResult = preserveReviewedClaims(first?.claims ?? [], final.result);
     model = final.model;
     provider = final.provider;
     resultCitations = [...new Map([...firstCitations, ...(final.citations ?? [])].map((citation) => [citation.url, citation])).values()];
@@ -1214,37 +1251,43 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
 
   // Dossiê de evidências: obtém os documentos vinculados, localiza os trechos e
   // revisa a fidelidade antes de fixar score/veredito.
-  const evCfg = evidenceConfig();
   let evidenceDossier = null;
   const evidenceCorrections = [];
   if (!blockedResult && evCfg.enabled) progress.activity("evidence", "pending", null);
-  if (!blockedResult && ["checked", "partial_coverage"].includes(finalResult?.outcome) && claims.length > 0 && evCfg.enabled) {
+  const needsEvidence = !blockedResult && ["checked", "partial_coverage"].includes(finalResult?.outcome) && claims.length > 0 && evCfg.enabled;
+  if (needsEvidence) {
     evidenceDossier = await phase("evidence", () =>
       collectEvidence({ sources: finalResult.sources, claims: finalResult.claims, config: evCfg }),
     ).catch(() => null);
-    if (evidenceDossier?.documents?.length) {
-      const reviewable = reviewableCitations(evidenceDossier.citations, evCfg);
-      if (evCfg.reviewEnabled && reviewable.length > 0) {
-        const reviewInput = buildReviewInput({ claims: finalResult.claims, citations: evidenceDossier.citations, config: evCfg });
-        if (reviewInput) {
-          const review = await phase("evidence-review", () =>
-            callModel({
-              aiCfg, step: "judge", instructions: EVIDENCE_REVIEW_INSTRUCTIONS,
-              input: reviewInput, timeoutMs, sessionId: id, webSearch: false,
-            }),
-          ).catch(() => null);
-          if (review) {
-            addUsage(review);
-            recordModel("evidence-review", review);
-            const applied = applyReview({ claims: finalResult.claims, citations: evidenceDossier.citations, review: review.result, config: evCfg });
-            finalResult = { ...finalResult, claims: applied.claims };
-            if (applied.downgraded.length > 0) synthesisNeeded = true;
-            evidenceCorrections.push(...applied.corrections);
-            evidenceDossier.verification = applied.summary;
-          }
-        }
+  }
+  const citations = evidenceDossier?.citations ?? [];
+  finalResult = { ...finalResult, claims: applyComparisons({ claims: finalResult.claims, citations }) };
+  if (needsEvidence) {
+    const reviewable = reviewableCitations(citations, evCfg);
+    const originalStatuses = finalResult.claims.map((claim) => claim.status);
+    let review = null;
+    if (evCfg.reviewEnabled && reviewable.length > 0) {
+      review = await phase("evidence-review", () =>
+        evCfg.reviewProvider === "jev"
+          ? reviewWithJev({ claims: finalResult.claims, citations, config: evCfg })
+          : callModel({
+            aiCfg, step: "judge", instructions: EVIDENCE_REVIEW_INSTRUCTIONS,
+            input: buildReviewInput({ claims: finalResult.claims, citations, config: evCfg }),
+            timeoutMs, sessionId: id, webSearch: false,
+          }),
+      ).catch(() => null);
+      if (review) {
+        addUsage(review);
+        recordModel("evidence-review", review);
+      } else {
+        evidenceCorrections.push("revisão de evidências indisponível; nenhum outro modelo foi usado como substituto");
       }
     }
+    const applied = applyReview({ claims: finalResult.claims, citations, review: review?.result, config: evCfg });
+    finalResult = { ...finalResult, claims: applied.claims };
+    if (applied.claims.some((claim, index) => claim.status !== originalStatuses[index])) synthesisNeeded = true;
+    evidenceCorrections.push(...applied.corrections);
+    if (evidenceDossier) evidenceDossier.verification = applied.summary;
   }
 
   const totalMs = Date.now() - t0;
@@ -1383,6 +1426,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     claims: fixed.claims,
     notCheckedClaims: fixed.notCheckedClaims,
     omittedClaimsCount: fixed.omittedClaimsCount,
+    coverage: fixed.coverage,
     sources: fixed.sources,
     researchCitations: resultCitations,
     researchQueries,

@@ -3078,3 +3078,24 @@ body:has(.admin-main) {
   color: var(--fg-3);
   overflow-wrap: anywhere;
 }
+
+.comparison-details {
+  margin: 12px 0;
+  min-width: 0;
+}
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: var(--t-label);
+}
+.comparison-table th,
+.comparison-table td {
+  padding: 8px 6px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.comparison-table th:first-child { width: 44%; }

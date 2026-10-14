@@ -114,6 +114,24 @@ serverless sem worker declara indisponibilidade. Worker configurado não tem
 fallback silencioso se falhar. O navegador guarda até 20 resultados em
 `localStorage`; logs/cache no servidor dependem do Blob privado ([privacidade](docs/privacidade-dados-ia.md)).
 
+O POST de checagem transmite NDJSON: `accepted` entrega o mesmo `checkId`
+usado no registro/resultado e uma capacidade secreta `recoveryToken`.
+O cliente aceita o evento terminal mesmo sem quebra de linha no EOF e preserva
+UTF-8 dividido entre chunks. Se a conexão acabar sem terminal, tenta uma única
+consulta `GET /api/verify?checkId=...`, com o segredo apenas no cabeçalho
+`X-Verify-Recovery`, nunca na URL, no histórico ou no armazenamento do navegador.
+Não há polling nem repetição automática da inferência. `pending` (202) ou falha
+transitória permite nova consulta explícita; falha definitiva/expiração descarta
+a capacidade, e só uma próxima ação explícita pode iniciar outro POST.
+Ela permanece apenas em memória para a mesma entrada/contexto e identidade de
+arquivo. A recuperação expira logicamente 30 minutos após aceitação; pendência
+sem conclusão após 5 minutos retorna falha. O envelope fica em Blob privado ou
+memória limitada a 200 registros, sem garantia de exclusão física pelo TTL.
+GET não executa IA, admissão de POST, reserva de orçamento ou conciliação de
+tokens. Um POST que acerta cache ainda passa pela admissão existente, mas não
+recontabiliza o consumo antigo de IA. Se a cópia recuperável falhar ao persistir,
+o resultado válido ainda é entregue com `recoveryAvailable: false`.
+
 Na entrada rápida, digite ou cole **texto ou link**: o teclado é de texto e a
 interface identifica links HTTP/HTTPS automaticamente. No verificador completo,
 a aba **Imagem** aceita um **contexto opcional**, separado dos campos de texto e
@@ -130,7 +148,8 @@ nele); não há envio automático nem garantia de que o WhatsApp será escolhido
 Sem suporte a arquivos, o diálogo oferece **Baixar imagem**, **Copiar texto** e
 **Abrir WhatsApp com texto**, avisando que a imagem deve ser anexada
 manualmente. Resultados sem veredito mantêm essa limitação na mensagem e na
-imagem, sem nota/selo factual.
+imagem, sem nota/selo factual. Resultados “sem comprovação” preservam afirmações,
+fontes e o selo de limitação, mas exibem nota indisponível, nunca zero.
 
 Links sociais usam texto disponível em oEmbed, worker, yt-dlp ou OpenGraph e
 seguem até três links documentais presentes nesse texto, dentro de limites. Texto
@@ -139,7 +158,7 @@ do post e anexos são cobertos separadamente; metadados não são transcrição.
 trilhas, com transcrição/OCR parciais. Sem conteúdo lido, não há score/veredito.
 Links diretos são encaminhados por modalidade: PDF textual ao `unpdf`, JPEG/PNG/WebP
 à moderação e visão, áudio/vídeo ao processador audiovisual. A revisão de extração
-`article-content-v4` invalida cache anterior sem alterar `fact-check-5`.
+`article-content-v4` invalida cache anterior; as regras de perguntas e ações futuras introduzidas em `fact-check-5` permanecem em `fact-check-8`.
 O cronômetro da interface mede a duração da checagem iniciada, não o tempo desde a época Unix.
 
 Links comuns de notícias passam por extração HTML pública com limites de rede,
@@ -159,14 +178,53 @@ captcha, streams protegidos e conteúdo removido continuam limitações externas
 
 ## Metodologia e avaliação
 
-`fact-check-5` investiga alegações implícitas em perguntas e distingue ações futuras de declarações ou medidas verificáveis. Mantém a captura de anotações e fontes estruturadas da busca, compartilha o
-dossiê entre julgamento/revisão, distingue períodos de pesquisa e paraleliza
-transcrição/visão. Depois da revisão final, o servidor obtém os documentos das
-fontes vinculadas, localiza os trechos citados e revisa a fidelidade das
-citações: quando nenhuma citação sobrevive à revisão, o claim volta para
-`unproven` com justificativa própria. `/admin` exibe proveniência, dossiê,
-moderação e subetapas de mídia. Fontes somente escritas pelo modelo continuam
-sendo descartadas.
+As novas checagens usam `fact-check-8`: investigam alegações implícitas em perguntas
+e distinguem ações futuras de declarações ou medidas verificáveis. O fluxo mantém
+anotações e fontes estruturadas da busca, compartilha o dossiê entre julgamento/
+revisão, distingue períodos e paraleliza transcrição/visão. Depois da revisão
+final, obtém os documentos, localiza os trechos e revisa **o conjunto de evidências
+de cada claim**, sem exigir que uma citação isolada prove toda a comparação.
+Conjunto sem suporte adequado deixa o claim `unproven`; fontes somente escritas
+pelo modelo continuam descartadas. `/admin` exibe proveniência, dossiê, moderação
+e subetapas de mídia. Registros e smokes anteriores preservam sua versão histórica.
+
+Notas por afirmação com evidência adequada: `true=95`, `context=70`, `false=5`.
+`unproven` recebe `score=null`, não zero. Havendo qualquer afirmação sem
+comprovação ou omitida, a nota global também é `null` e o veredito `unproven`;
+a média só inclui resultados totalmente avaliados. `evidenceSupport`
+(`supports`, `refutes`, `context`, `insufficient`) descreve suporte factual;
+`coverage` (`total`, `assessed`, `unproven`, `omitted`) descreve alcance da
+avaliação. A interface, o detalhe e o compartilhamento preservam essa distinção.
+
+A revisão de evidências padrão usa JEV `jev-1.13-free` via OpenCode/SystemOne
+(`IEV_EVIDENCE_REVIEW_PROVIDER=jev|judge`), sem fallback automático.
+Uma resposta JEV só determina a relação do grupo com probabilidade máxima de
+classe ≥0,8 e margem ≥0,2; ambiguidade mantém abstenção. A resposta é
+`{claims:[{claimIndex,verdict,note}]}`; `claim.evidenceReview` registra
+`verdict`, `verification`, `incomplete` e `evidenceIndices`. Na revisão agrupada,
+cada trecho fica `relation: "context"`: sua `verification` é documental, não
+prova semântica independente. Esses limiares não são probabilidades calibradas.
+
+Comparações anuais usam `comparison` com `metric`, `region`, `unit`, `dataset`,
+`operator` e dois `groups` (`label`, `startYear`, `endYear`, `rows`). Cada linha
+contém `year`, `valueText`, `numberFormat: "pt-BR"|"en-US"`, `scale: 1|1000|1000000`,
+`evidenceId` e `complete`. Ano, valor literal, unidade e escala precisam estar
+no trecho localizado; não se usam operandos sem localização. Separadores
+ambíguos exigem o formato da fonte, não o idioma da resposta. Nomes de metadados
+não precisam aparecer literalmente: homogeneidade declarada é estrutural e
+a semântica é conferida no grupo. O servidor soma decimais exatamente e registra
+`status: complete|lower_bound|partial|invalid`, `eligible`, `relation`, `scope`,
+`reason`, totais, linhas e cobertura. Recortes menores não viram mandatos inteiros;
+dados parciais não autorizam extrapolação. Um limite inferior só estabelece a
+desigualdade quando um subtotal de área não negativa já supera o total completo
+do outro lado, nunca igualdade ou previsão. A conclusão ainda exige revisão
+documental compatível do conjunto. Detalhes em [Metodologia](docs/metodologia-factual.md).
+
+Na revisão final de mídia, `claimId` mantém a identidade de cada afirmação:
+reformulações e omissões não podem substituir o objeto da checagem. O suporte
+dos trechos é separado da classificação; contexto verificável não promove
+automaticamente uma alegação sem comprovação. A versão da metodologia e a
+configuração da revisão de evidências também separam as entradas do cache.
 
 Desfechos possíveis: `checked`, `partial_coverage`, `insufficient_input`,
 `inaccessible_media`, `no_verifiable_claims`, `content_refused` (política de

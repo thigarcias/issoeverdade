@@ -646,6 +646,8 @@ export async function runVerify(input, opts = {}) {
         claims: [],
         sources: [],
         mediaAttempts: trace.mediaDebug ?? [],
+        moderation: (trace.moderationReports ?? []).map(moderationSummary).filter(Boolean),
+        moderationReports: trace.moderationReports ?? [],
         corrections: [],
         error: String(code).slice(0, 200),
       }).catch(() => {}),
@@ -830,6 +832,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   // Triagem de propósito e cobertura de moderação antes de qualquer etapa paga.
   const modCfg = moderationConfig();
   const moderationReports = [];
+  trace.moderationReports = moderationReports;
   const purpose = purposeTriage(input);
   if (purpose.blocked) {
     blockedResult = {

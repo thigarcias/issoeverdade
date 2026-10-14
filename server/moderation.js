@@ -136,12 +136,22 @@ export async function moderateImages(images, opts = {}) {
   const list = (Array.isArray(images) ? images : []).filter((item) => typeof item?.data === "string" && item.data.length > 0).slice(0, config.maxFramesChecked);
   if (list.length === 0) return { allowed: true, refused: false, categories: [], report: { checked: false, what: "images", reason: "empty" } };
   if (config.mode === "off") return { allowed: true, refused: false, categories: [], report: { checked: false, what: "images", reason: "mode_off" } };
-  const input = list.map((item) => ({
-    type: "image_url",
-    image_url: { url: `data:${item.mime ?? "image/jpeg"};base64,${item.data}` },
-  }));
-  const result = await callModeration({ input }, { env, fetchImpl: opts.fetchImpl ?? fetch, config });
-  return outcomeFrom(result, config, `images:${list.length}`);
+  // O endpoint aceita uma imagem por requisição. Agrega sinais de todos os
+  // quadros sem diluir scores nem liberar uma falha em modo obrigatório.
+  const categories = {};
+  const scores = {};
+  for (const item of list) {
+    const input = [{ type: "image_url", image_url: { url: `data:${item.mime ?? "image/jpeg"};base64,${item.data}` } }];
+    const result = await callModeration({ input }, { env, fetchImpl: opts.fetchImpl ?? fetch, config });
+    if (!result.ok) return outcomeFrom(result, config, `images:${list.length}`);
+    for (const [category, flagged] of Object.entries(result.categories)) {
+      categories[category] = Boolean(categories[category] || flagged);
+    }
+    for (const [category, score] of Object.entries(result.scores)) {
+      scores[category] = Math.max(scores[category] ?? 0, score);
+    }
+  }
+  return outcomeFrom({ ok: true, categories, scores }, config, `images:${list.length}`);
 }
 
 /**

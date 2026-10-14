@@ -73,6 +73,9 @@ métricas (volume, latência, abstenção, alertas e estado dos controles).
   texto e de imagens/frames, recusa só de conteúdo que não pode ser processado
   (abuso sexual infantil, sexual explícito) e cobertura de vídeo declarada
   explicitamente (`MEDIA_VIDEO_MODERATION`).
+  Os quadros selecionados são moderados individualmente (uma imagem por
+  requisição), agregando categorias e o maior score observado. Falha mantém
+  bloqueio em modo obrigatório; os motivos ficam no registro de erro do Admin.
 - **Evidências** (`server/evidence.js`): obtém o documento de cada fonte
   vinculada (HTML/PDF), localiza o trecho citado, registra o que não foi
   localizado e revisa a fidelidade antes de fixar score/veredito. Ausência de

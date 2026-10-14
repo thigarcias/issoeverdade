@@ -77,7 +77,7 @@ test("imagens: frames amostrados são moderados e limitados por configuração",
   const env = { MODERATION_MODE: "required", OPENAI_API_KEY: "k", MODERATION_FRAME_SAMPLES: "2" };
   let enviados = 0;
   const fetchImpl = async (_url, options) => {
-    enviados = JSON.parse(options.body).input.length;
+    enviados += JSON.parse(options.body).input.length;
     return { ok: true, status: 200, json: async () => flagged({ violence: true }, { violence: 0.4 }) };
   };
   const resultado = await moderateImages(
@@ -88,6 +88,26 @@ test("imagens: frames amostrados são moderados e limitados por configuração",
   assert.equal(resultado.allowed, true);
   assert.deepEqual(resultado.sensitive, ["violence"]);
   assert.match(moderationSummary(resultado.report), /^images:2:checked:violence$/);
+});
+
+test("recusa em quadro posterior e falha parcial não liberam vídeo", async () => {
+  const env = { MODERATION_MODE: "required", OPENAI_API_KEY: "k" };
+  const images = [{ data: "YQ==" }, { data: "Yg==" }];
+  let index = 0;
+  const fetchImpl = async (_url, options) => {
+    assert.equal(JSON.parse(options.body).input.length, 1);
+    return { ok: true, json: async () => flagged(index++ ? { sexual: true } : {}, { sexual: 0.9 }) };
+  };
+  const refusal = await moderateImages(images, { env, fetchImpl });
+  assert.equal(refusal.allowed, false);
+  assert.equal(refusal.refused, true);
+  index = 0;
+  const failed = await moderateImages(images, { env, fetchImpl: async () => index++
+    ? { ok: false, status: 429 }
+    : { ok: true, json: async () => flagged({}) } });
+  assert.equal(failed.allowed, false);
+  assert.equal(failed.error, "moderation_unavailable");
+  assert.equal(failed.report.reason, "http_429");
 });
 
 test("cobertura de vídeo exige declaração explícita em produção", () => {

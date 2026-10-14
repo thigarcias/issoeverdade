@@ -4,8 +4,8 @@ const JEV_URL = "https://opencode.ai/inference/v1/systemone";
 const VERDICTS = ["supports", "refutes", "context", "unclear"];
 const INSTRUCTIONS = `${EVIDENCE_REVIEW_INSTRUCTIONS} As probabilidades classificam a relação documental do grupo, não são probabilidades de a alegação ser verdadeira.`;
 const CRITERIA = {
-  supports: "Os trechos do grupo, considerados em conjunto, sustentam a alegação inteira e exata. Em comparações, ambos os operandos, seus escopos e períodos precisam estar documentados; o cálculo fornecido deve ser eligible e relation supports. Um limite inferior só sustenta a desigualdade demonstrada, não uma previsão ou total completo. Grupo incomplete nunca sustenta a alegação integral.",
-  refutes: "Os trechos do grupo apresentam evidência explícita incompatível com a alegação inteira e exata no mesmo escopo. Comparação requer cálculo eligible e relation refutes. Ausência de dados nunca refuta, nem grupo incomplete.",
+  supports: "Os trechos do grupo, considerados em conjunto, sustentam a alegação inteira e exata. Comparações qualitativas de posições exigem documentação dos dois lados, mesmo objeto, alcance, condições e contexto temporal pertinente, sem cálculo obrigatório. Quando comparison estiver presente, o cálculo numérico deve ser eligible e relation supports, com operandos e escopos documentados. Um limite inferior não prova previsão ou total completo. Grupo incomplete nunca sustenta a alegação integral.",
+  refutes: "Os trechos apresentam evidência explícita incompatível com a alegação inteira e exata no mesmo escopo. Posições qualitativas devem ser comparadas no mesmo objeto, alcance e condições, sem exigir cálculo. Somente quando comparison estiver presente, exige-se cálculo eligible e relation refutes. Ausência de dados nunca refuta, nem grupo incomplete.",
   context: "O conjunto fornece contexto pertinente, mas não sustenta nem refuta a alegação integral, incluindo dados parciais, estimativas ou períodos/universos distintos.",
   unclear: "Dados insuficientes, não localizados, ambíguos, grupos incompletos ou escopos incompatíveis impedem concluir. Nunca transfira provas entre claims.",
 };

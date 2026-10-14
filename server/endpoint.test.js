@@ -253,8 +253,8 @@ test("síntese editorial inválida não elimina limites nem recupera conclusões
       await t.test(scenario.name, async () => {
         responses = [
           { outcome: "checked", summary: "A inauguração das sete escolas foi confirmada.", claims: [{ text: "A prefeitura inaugurou sete escolas.", status: "true", score: 95, note: "Não foi encontrada prova suficiente.", evidence: [] }], sources: [] },
-          { summary: scenario.candidate },
-          ...(scenario.review ? [scenario.review] : []),
+          { summary: scenario.candidate, claimNotes: [{ claimIndex: 0, note: "Não há prova suficiente da inauguração das sete escolas." }] },
+          ...(scenario.review ? [{ ...scenario.review, noteReviews: [{ claimIndex: 0, faithful: true }] }] : [{ faithful: false, unsupported: ["Formato inválido da síntese."], contradictions: [], noteReviews: [{ claimIndex: 0, faithful: true }] }]),
         ];
         const out = await handleVerifyRequest(post({ kind: "link", text: `http://127.0.0.1:${port}/noticia-escolas/${encodeURIComponent(scenario.name)}` }, { guard: guardWith() }));
         assert.equal(out.status, 200);

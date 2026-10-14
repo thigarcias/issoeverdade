@@ -62,10 +62,13 @@ async function comServidor(handler, fn) {
   const server = createServer(handler);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
+  const previousPorts = process.env.IEV_HTTP_PORTS;
   process.env.IEV_HTTP_PORTS = String(port);
   try {
     return await fn(port);
   } finally {
+    if (previousPorts === undefined) delete process.env.IEV_HTTP_PORTS;
+    else process.env.IEV_HTTP_PORTS = previousPorts;
     await new Promise((resolve) => server.close(resolve));
   }
 }
@@ -287,4 +290,71 @@ test("revisão por claim é independente, duplicatas e falhas não confirmam", (
     const failed = evidence.applyReview({ claims, citations, review });
     assert.equal(failed.claims[0].status, "unproven");
   }
+});
+
+test("dossiê localiza corpo e título JSON-LD, sem aceitar outros scripts como texto", async () => {
+  const title = "Senadora promete apoiar a proposta na votação";
+  const quote = "A senadora declarou que apoiará a proposta de jornada nesta votação.";
+  const html = `<html><head><script type="application/ld+json">${JSON.stringify({ "@type": "NewsArticle", headline: title, datePublished: "2026-10-10", articleBody: quote })}</script><script>prova inventada em script</script></head></html>`;
+  const document = await evidence.extractDocumentText(htmlResponse(html));
+  assert.equal(document.ok, true);
+  assert.ok(locateQuote(document.text, title).found);
+  assert.ok(locateQuote(document.text, quote).found);
+  assert.match(document.text, /2026-10-10/);
+  assert.doesNotMatch(document.text, /prova inventada/);
+});
+
+test("páginas de vídeo sem transcrição preservam impossibilidade e não participam da revisão", async () => {
+  const url = "https://www.youtube.com/shorts/fixture";
+  const claims = [{ text: "A senadora anunciou a revisão.", status: "true", sourceIds: [0],
+    evidence: [{ sourceId: 0, quote: "A senadora anunciou a revisão da proposta.", relation: "supports" }] }];
+  const dossier = await evidence.collectEvidence({ sources: [{ url, outlet: "Vídeo" }], claims });
+  assert.equal(dossier.documents[0].ok, false);
+  assert.equal(dossier.documents[0].reason, "media-transcript-unavailable");
+  assert.equal(dossier.summary.located, 0);
+  assert.equal(evidence.buildReviewInput({ claims, citations: dossier.citations }), null);
+  const research = evidence.buildResearchEvidence(dossier, claims);
+  assert.deepEqual(research.gaps[0].reasons, ["media-transcript-unavailable"]);
+  const applied = evidence.applyReview({ claims, citations: dossier.citations });
+  assert.equal(applied.claims[0].status, "unproven");
+  assert.match(applied.claims[0].note, /não forneceram transcrição/);
+  assert.equal(applied.claims[0].evidence[0].verification, "unavailable");
+  assert.equal(validateResult({ outcome: "checked", claims: applied.claims, sources: [{ url }] }).fixed.score, null);
+});
+
+test("prévia e dossiê final compartilham documentos, teto e orçamento de bytes", async () => {
+  const calls = [];
+  const config = { ...evidence.evidenceConfig(), maxDocuments: 2, maxTotalBytes: 1000 };
+  const fetchDocument = evidence.createEvidenceFetcher(config, async (url, { budget }) => {
+    calls.push({ url, budget });
+    return { ok: true, url, kind: "html", text: "Texto documental disponível para localização literal." };
+  });
+  const first = await Promise.all([fetchDocument("https://example.com/a"), fetchDocument("https://example.com/a")]);
+  assert.strictEqual(first[0], first[1]);
+  await fetchDocument("https://example.com/b");
+  assert.equal((await fetchDocument("https://example.com/c")).reason, "document-limit");
+  assert.deepEqual(calls.map((item) => item.url), ["https://example.com/a", "https://example.com/b"]);
+  assert.strictEqual(calls[0].budget, calls[1].budget);
+});
+
+test("comparação qualitativa recebe os dois lados sem exigir cálculo anual", () => {
+  const quotes = ["A senadora apoiou a votação da proposta.", "A senadora anunciou que proporá revisar o texto no ano seguinte."];
+  const claims = [{ text: "As duas posições da senadora são incompatíveis.", status: "unproven", comparison: null,
+    evidence: quotes.map((quote, sourceId) => ({ sourceId, quote, relation: "context" })) }];
+  const citations = quotes.map((quote, evidenceIndex) => ({ claimIndex: 0, evidenceIndex, sourceId: evidenceIndex, quote, excerpt: quote, locator: { found: true } }));
+  const groups = evidence.buildReviewGroups({ claims, citations });
+  assert.equal(groups[0].snippets.length, 2);
+  assert.equal(groups[0].comparison, null);
+  const applied = evidence.applyReview({ claims, citations, review: { claims: [{ claimIndex: 0, verdict: "context", note: "Votação atual e revisão futura são ações diferentes." }] } });
+  assert.equal(applied.claims[0].evidenceReview.verification, "verified");
+  assert.equal(applied.claims[0].status, "unproven");
+  assert.equal(validateResult({ outcome: "checked", claims: applied.claims, sources: [{}, {}] }).fixed.score, null);
+});
+
+test("metadados estruturados sem articleBody documentam apenas título e data", async () => {
+  const title = "Jornal publica entrevista sobre proposta de jornada e votação";
+  const result = await evidence.extractDocumentText(htmlResponse(`<html><script type="application/ld+json">${JSON.stringify({ "@type": "NewsArticle", headline: title, datePublished: "2026-10-12" })}</script></html>`));
+  assert.equal(result.ok, true);
+  assert.ok(locateQuote(result.text, title).found);
+  assert.equal(locateQuote(result.text, "A entrevistada confirmou a promessa de votar favoravelmente.").found, false);
 });

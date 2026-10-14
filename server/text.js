@@ -55,6 +55,27 @@ export function stripHtml(html) {
   return textFromHtml(html).replace(/\s+/g, " ").trim();
 }
 
+/** Recupera artigo estruturado, priorizando o maior corpo; metadados não provam conteúdo ausente. */
+export function structuredArticle(html) {
+  let best = null;
+  const visit = (node, depth = 0) => {
+    if (!node || typeof node !== "object" || depth > 6) return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child, depth + 1);
+      return;
+    }
+    const types = Array.isArray(node["@type"]) ? node["@type"] : [node["@type"]];
+    if (types.some((type) => /(?:^|\/)(?:NewsArticle|Article|ReportageNewsArticle|AnalysisNewsArticle|BlogPosting)$/i.test(String(type))) &&
+        (typeof node.articleBody === "string" || typeof node.headline === "string") &&
+        (!best || (typeof node.articleBody === "string" ? node.articleBody.length : 0) > (typeof best.articleBody === "string" ? best.articleBody.length : 0))) best = node;
+    for (const child of Object.values(node)) if (child && typeof child === "object") visit(child, depth + 1);
+  };
+  for (const script of html.matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script\s*>/gi)) {
+    try { visit(JSON.parse(script[1])); } catch {}
+  }
+  return best;
+}
+
 const QUOTE_MAP = new Map([
   ["\u2018", "'"], ["\u2019", "'"], ["\u201c", '"'], ["\u201d", '"'], ["\u00ab", '"'], ["\u00bb", '"'],
   ["\u2013", "-"], ["\u2014", "-"], ["\u2212", "-"], ["\u00ad", ""], ["\u200b", ""], ["\u2060", ""],

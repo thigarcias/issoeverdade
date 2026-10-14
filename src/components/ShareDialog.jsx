@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { buildShareText, renderShareCard, shareCardContent } from "../lib/shareCard.js";
-import { VERDICTS } from "../data/constants.js";
+import { buildShareText, renderShareCard } from "../lib/shareCard.js";
 import { copyText } from "../lib/hooks.js";
 
 export default function ShareDialog({ result, onClose, showToast }) {
@@ -10,15 +9,12 @@ export default function ShareDialog({ result, onClose, showToast }) {
   const [imgUrl, setImgUrl] = useState(null);
   const [blob, setBlob] = useState(null);
   const [status, setStatus] = useState("idle");
+  const [imageError, setImageError] = useState(null);
   const [shareError, setShareError] = useState(null);
   const [sharing, setSharing] = useState(false);
   const [retry, setRetry] = useState(0);
 
   const shareSupported = typeof navigator !== "undefined" && !!navigator.share;
-  const content = result ? shareCardContent(result) : null;
-  const verdictLabel = result?.score == null
-    ? `${VERDICTS[result?.verdict]?.label ?? "Sem veredito"}, sem nota global`
-    : `${VERDICTS[result?.verdict]?.label ?? "Sem veredito"}, nota ${result.score} de 100`;
   const shareText = result
     ? buildShareText(result, typeof location !== "undefined" ? location : { origin: "", pathname: "/" })
     : "";
@@ -66,6 +62,7 @@ export default function ShareDialog({ result, onClose, showToast }) {
       setImgUrl(null);
       setBlob(null);
       setStatus("idle");
+      setImageError(null);
       setShareError(null);
       return;
     }
@@ -73,6 +70,7 @@ export default function ShareDialog({ result, onClose, showToast }) {
     const myGen = ++genRef.current;
     setStatus("generating");
     setShareError(null);
+    setImageError(null);
     setBlob(null);
     setImgUrl(null);
     renderShareCard(result)
@@ -84,8 +82,9 @@ export default function ShareDialog({ result, onClose, showToast }) {
         setImgUrl(url);
         setStatus("ready");
       })
-      .catch(() => {
+      .catch((error) => {
         if (cancelled || myGen !== genRef.current) return;
+        setImageError(error?.message || "Não consegui gerar a imagem completa. Copie o texto da checagem.");
         setStatus("gen-error");
       });
     return () => {
@@ -160,7 +159,7 @@ export default function ShareDialog({ result, onClose, showToast }) {
         {generating && <p className="verify-hint">Gerando seu card…</p>}
         {status === "gen-error" && (
           <>
-            <p className="verify-hint" role="alert">Não consegui gerar a imagem do card.</p>
+            <p className="verify-hint" role="alert">{imageError}</p>
             <div className="result-actions">
               <button className="btn primary" onClick={() => setRetry((n) => n + 1)}>
                 Tentar de novo
@@ -171,7 +170,8 @@ export default function ShareDialog({ result, onClose, showToast }) {
             </div>
           </>
         )}
-        {imgUrl && <img src={imgUrl} alt={`${content?.title ?? "Checagem"} — ${verdictLabel}. ${content?.summary ?? ""}`} className="share-preview" />}
+        {imgUrl && <img src={imgUrl} alt={shareText} className="share-preview" />}
+        {imgUrl && <p className="verify-hint">PNG único com altura ajustada ao conteúdo, sem cortar afirmações, motivos ou limites. Baixe a imagem para ler em tamanho original.</p>}
         {ready && shareSupported && filesShareable && (
           <>
             <p className="verify-hint">Escolha WhatsApp no seletor do aparelho.</p>

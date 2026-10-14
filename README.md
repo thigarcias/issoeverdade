@@ -142,7 +142,16 @@ não confiável e não comprova autenticidade. Trocar de aba ou limpar descarta 
 conteúdo anterior, evitando reutilizar texto/contexto em outra entrada.
 
 O card do resultado abre o diálogo de compartilhamento com prévia PNG gerada
-localmente. Onde o aparelho aceita arquivos via Web Share, o botão
+localmente: um arquivo de 1080 px de largura, com altura medida antes do desenho.
+A síntese representa o conjunto, e o card preserva todas as afirmações, textos,
+justificativas, trechos de evidência, pontos não checados com seus motivos,
+cobertura e limites disponíveis no resultado. Não há corte de linhas nem teto
+de três afirmações/fontes; as fontes têm número, identificação e URL completos.
+O texto copiado ou compartilhado também inclui esses pontos. Resultados extensos
+geram uma imagem mais alta, legível em tamanho original; se excederem os limites
+de dimensão/memória do Canvas, a geração falha explicitamente e o texto completo
+continua disponível, sem produzir uma imagem parcial.
+Onde o aparelho aceita arquivos via Web Share, o botão
 **Compartilhar imagem e texto** abre o seletor do sistema (escolha WhatsApp
 nele); não há envio automático nem garantia de que o WhatsApp será escolhido.
 Sem suporte a arquivos, o diálogo oferece **Baixar imagem**, **Copiar texto** e
@@ -158,7 +167,7 @@ do post e anexos são cobertos separadamente; metadados não são transcrição.
 trilhas, com transcrição/OCR parciais. Sem conteúdo lido, não há score/veredito.
 Links diretos são encaminhados por modalidade: PDF textual ao `unpdf`, JPEG/PNG/WebP
 à moderação e visão, áudio/vídeo ao processador audiovisual. A revisão de extração
-`article-content-v4` invalida cache anterior; as regras de perguntas e ações futuras introduzidas em `fact-check-5` permanecem em `fact-check-9`.
+`article-content-v4` invalida cache anterior; as regras de perguntas e ações futuras introduzidas em `fact-check-5` permanecem em `fact-check-10`.
 O cronômetro da interface mede a duração da checagem iniciada, não o tempo desde a época Unix.
 
 Links comuns de notícias passam por extração HTML pública com limites de rede,
@@ -178,15 +187,20 @@ captcha, streams protegidos e conteúdo removido continuam limitações externas
 
 ## Metodologia e avaliação
 
-As novas checagens usam `fact-check-9`: investigam alegações implícitas em perguntas
-e distinguem ações futuras de declarações ou medidas verificáveis. O fluxo mantém
-anotações e fontes estruturadas da busca, compartilha o dossiê entre julgamento/
-revisão, distingue períodos e paraleliza transcrição/visão. Depois da revisão
-final, obtém os documentos, localiza os trechos e revisa **o conjunto de evidências
-de cada claim**, sem exigir que uma citação isolada prove toda a comparação.
-Conjunto sem suporte adequado deixa o claim `unproven`; fontes somente escritas
-pelo modelo continuam descartadas. `/admin` exibe proveniência, dossiê, moderação
-e subetapas de mídia. Registros e smokes anteriores preservam sua versão histórica.
+As novas checagens usam `fact-check-10`: investigam alegações implícitas em
+perguntas e justaposições, distinguindo comparação factual, motivação atribuída
+e juízo de valor. Recortes de manchetes também exigem pesquisa da publicação
+original, fidelidade e datas, sem autenticação por OCR/logotipo. Para imagens/
+vídeos, a revisão recebe uma prévia dos documentos e das citações localizadas:
+falhas documentais reabrem a pesquisa, mesmo se o modelo inicial marcou `true`.
+HTML de reprodução de vídeo sem transcrição fica indisponível como prova de
+fala; a pesquisa prioriza reportagens textuais, documentos e transcrições.
+O coletor reutiliza corpos estruturados de artigos e compartilha documentos/
+tetos entre prévia e resultado final. A revisão avalia **o conjunto de evidências
+de cada claim**; comparações qualitativas não exigem cálculo anual. Sem suporte
+adequado, o claim fica `unproven`; fontes somente escritas pelo modelo continuam
+descartadas. `/admin` exibe proveniência, dossiê, moderação e subetapas de mídia.
+Registros e smokes anteriores preservam sua versão histórica.
 
 Notas por afirmação com evidência adequada: `true=95`, `context=70`, `false=5`.
 `unproven` recebe `score=null`, não zero. Havendo qualquer afirmação sem

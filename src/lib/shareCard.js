@@ -1,13 +1,15 @@
-// Gera card PNG de compartilhamento (1080×1350) via Canvas 2D.
-// Espelha a identidade do site: fundo creme + textura, header tinta,
-// serifada Faustina nos títulos, Geist nos selos, sombra dura, chip
-// de veredito e anel de nota iguais aos do ResultCard.
+// Gera um único PNG de 1080 px de largura e altura medida via Canvas 2D.
+// Preserva a identidade do site e todo o conteúdo; nunca corta pontos para caber.
 // Zero dependências — roda 100% no browser.
 
-import { CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, VERDICTS } from "../data/constants.js";
+import { CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, OUTCOME_LABEL, VERDICTS } from "../data/constants.js";
 
 const W = 1080;
-const H = 1350;
+const MIN_H = 1350;
+// Evita dimensões inválidas e alocações excessivas. Acima disso, falha explicitamente,
+// mantendo o texto completo disponível no diálogo em vez de produzir um PNG parcial.
+const MAX_DIMENSION = 32767;
+const MAX_PIXELS = 32 * 1024 * 1024;
 const BG = "#F2ECDC";
 const PANEL = "#FBF7EB";
 const INK = "#1A140C";
@@ -17,6 +19,17 @@ const FG3 = "#5F5849";
 const LINE = "#1A140C2E";
 const SERIF = "Faustina, Georgia, serif";
 const SANS = "Geist, 'Helvetica Neue', Arial, sans-serif";
+const CLAIM_ICON = { true: "✓", false: "✕", unproven: "?", context: "◐" };
+const RELATION_LABEL = { supports: "Sustenta", refutes: "Contradiz", context: "Contextualiza" };
+const SCOPE_LABEL = {
+  whole_period: "Dados dos períodos completos",
+  shorter_recorte: "Dados de um recorte mais curto",
+  lower_bound: "Totais parciais usados como limite inferior",
+  partial: "Dados parciais: a comparação completa não foi estabelecida",
+};
+const number = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 6 });
+const text = (value) => String(value ?? "").trim();
+const list = (value) => Array.isArray(value) ? value : [];
 
 function rr(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -29,7 +42,6 @@ function rr(ctx, x, y, w, h, r) {
 }
 
 function breakWord(ctx, word, maxW) {
-  // Quebra palavra longa (URL sem espaços) em pedaços que cabem.
   const parts = [];
   let part = "";
   for (const ch of word) {
@@ -44,98 +56,168 @@ function breakWord(ctx, word, maxW) {
   return parts;
 }
 
-function wrap(ctx, text, maxW) {
-  const words = String(text).split(/\s+/);
+function wrap(ctx, value, maxW) {
   const lines = [];
-  let line = "";
-  function push(word) {
-    const t = line ? `${line} ${word}` : word;
-    if (ctx.measureText(t).width > maxW && line) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = t;
-    }
-  }
-  for (const w of words) {
-    if (ctx.measureText(w).width > maxW) {
-      if (line) {
-        lines.push(line);
-        line = "";
+  for (const paragraph of text(value).split(/\r?\n/)) {
+    let line = "";
+    for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+      const parts = ctx.measureText(word).width > maxW ? breakWord(ctx, word, maxW) : [word];
+      for (const part of parts) {
+        const candidate = line ? `${line} ${part}` : part;
+        if (line && ctx.measureText(candidate).width > maxW) {
+          lines.push(line);
+          line = part;
+        } else {
+          line = candidate;
+        }
       }
-      for (const part of breakWord(ctx, w, maxW)) {
-        lines.push(part);
-      }
-    } else {
-      push(w);
     }
+    lines.push(line);
   }
-  if (line) lines.push(line);
-  return lines;
-}
-
-const CLAIM_ICON = { true: "✓", false: "✕", unproven: "?", context: "◐" };
-const RELATION_LABEL = { supports: "Sustenta", refutes: "Contradiz", context: "Contextualiza" };
-
-/** Usa a alegação efetivamente checada, não a pergunta ou o nome do upload. */
-export function shareCardContent(result) {
-  const claims = (Array.isArray(result?.claims) ? result.claims : []).filter((claim) => String(claim?.text ?? "").trim());
-  const first = claims[0];
-  const title = first
-    ? `Alegação: ${String(first.text).trim()}`
-    : String(result?.title ?? "Checagem sem alegação verificável");
-  const summary = String(result?.summary ?? "").trim() || String(first?.note ?? "").trim();
-  return { title, summary, claims };
-}
-
-export function buildShareText(result, { origin, pathname = "/" }) {
-  const content = shareCardContent(result);
-  const label = VERDICTS[result?.verdict]?.label ?? "Sem veredito";
-  const verdict = result?.score == null ? `${label} · nota indisponível` : `${label} · nota ${result.score}/100`;
-  const coverage = result?.coverage;
-  const coverageText = coverage
-    ? `\nCobertura: ${coverage.total} no total; ${coverage.assessed} avaliadas com evidência adequada; ${coverage.unproven} sem comprovação; ${coverage.omitted} sem análise.`
-    : "";
-  const correction = result?.id
-    ? `Checagem automática ${result.id}. Confira correções em ${origin}/correcoes.html?checkId=${encodeURIComponent(result.id)}`
-    : "Checagem automática.";
-  return `${content.title}\n${verdict}${coverageText}${content.summary ? `\n\n${content.summary}` : ""}\n\n${correction}\nConfira você também em ${origin}${pathname}`;
+  return text(value) ? lines : [];
 }
 
 function sourceHost(source) {
   try {
     return new URL(source?.url).hostname.replace(/^www\./, "");
   } catch {
-    return String(source?.outlet ?? "Fonte");
+    return text(source?.outlet) || "Fonte";
   }
 }
 
-/** Fatia linhas com "…" na última quando corta conteúdo. Usa a fonte atual do ctx. */
-function sliceLines(ctx, lines, max, maxW) {
-  const out = lines.slice(0, max);
-  if (lines.length > max && out.length > 0) {
-    let last = out[out.length - 1];
-    while (last.length > 1 && ctx.measureText(`${last}…`).width > maxW) last = last.slice(0, -1);
-    out[out.length - 1] = `${last}…`;
+function sourceText(source, index) {
+  return [`[${index + 1}] ${text(source?.outlet) || sourceHost(source)}`, text(source?.citationTitle), text(source?.detail), text(source?.url)].filter(Boolean).join(" · ");
+}
+
+function periodText(period) {
+  if (!period) return "";
+  if (typeof period === "string") return text(period);
+  return [period.start, period.end].filter((value) => value != null && value !== "").join(" a ");
+}
+
+function comparisonDetails(comparison) {
+  if (!comparison || !["complete", "lower_bound", "partial", "invalid"].includes(comparison.status)) return [];
+  const details = [
+    `Comparação: ${SCOPE_LABEL[comparison.scope] ?? "Limites da comparação"} · ${comparison.status}.`,
+    [comparison.metric, comparison.region, comparison.dataset].filter(Boolean).join(" · "),
+  ];
+  for (const [index, group] of list(comparison.groups).entries()) {
+    const label = text(group.label) || `Período ${index + 1}`;
+    const total = group.coverage?.available > 0 && Number.isFinite(group.total) ? number.format(group.total) : "Indisponível";
+    const coverage = group.coverage ? `${group.coverage.available}/${group.coverage.expected}${group.coverage.complete === false ? " · parcial" : ""}` : "Indisponível";
+    details.push(`${label} (${group.startYear}–${group.endYear}): total${comparison.unit ? ` (${comparison.unit})` : ""} ${total}; anos com dados: ${coverage}.`);
+    for (const row of list(group.rows)) {
+      details.push(`${label} · ${row.year}: ${Number.isFinite(row.value) ? number.format(row.value) : "Indisponível"}${comparison.unit ? ` ${comparison.unit}` : ""} · cobertura ${row.complete ? "completa" : "parcial"}.`);
+    }
+    if (list(group.coverage?.missingYears).length) details.push(`Anos ausentes ou incompletos: ${group.coverage.missingYears.join(", ")}.`);
   }
-  return out;
+  details.push(text(comparison.reason), "Soma calculada a partir dos trechos localizados. A revisão verifica se métrica, região e períodos permitem a conclusão.");
+  return details.filter(Boolean);
+}
+
+function claimDetails(claim, sources) {
+  const details = [];
+  if (text(claim.note)) details.push(text(claim.note));
+  if (claim.evidenceSupport) details.push(`Suporte da evidência: ${EVIDENCE_SUPPORT[claim.evidenceSupport] ?? claim.evidenceSupport}.`);
+  if (claim.evidenceReview) {
+    const review = claim.evidenceReview;
+    details.push(`Revisão do conjunto: ${EVIDENCE_SUPPORT[review.verdict] ?? "Inconclusiva"}${review.verification ? ` · ${EVIDENCE_VERIFICATION[review.verification] ?? review.verification}` : ""}${review.incomplete ? " · cobertura incompleta" : ""}.${text(review.note) ? ` ${text(review.note)}` : ""}`);
+  }
+  if (periodText(claim.referencePeriod)) details.push(`Período da afirmação: ${periodText(claim.referencePeriod)}.`);
+  details.push(...comparisonDetails(claim.comparison));
+  const sourceIds = list(claim.sourceIds);
+  if (sourceIds.length) details.push(`Fontes vinculadas: ${sourceIds.map((id) => `[${id + 1}]`).join(", ")}.`);
+  for (const evidence of list(claim.evidence)) {
+    const source = sources[evidence.sourceId];
+    const relation = RELATION_LABEL[evidence.relation] ?? "Evidência";
+    const verification = claim.evidenceReview && evidence.verification === "verified"
+      ? "Trecho do conjunto revisado"
+      : EVIDENCE_VERIFICATION[evidence.verification] ?? text(evidence.verification);
+    const label = [relation, Number.isInteger(evidence.sourceId) ? `[${evidence.sourceId + 1}] ${sourceHost(source)}` : "Fonte não identificada", verification].filter(Boolean).join(" · ");
+    details.push(`${label}${text(evidence.quote) ? ` · trecho original: “${text(evidence.quote)}”` : " · trecho não informado"}${periodText(evidence.referencePeriod) ? ` · período: ${periodText(evidence.referencePeriod)}` : ""}`);
+  }
+  return details;
+}
+
+function resultLimits(result) {
+  const limits = [];
+  const coverage = result?.coverage;
+  if (coverage) limits.push(`Cobertura: ${coverage.total} no total; ${coverage.assessed} avaliadas com evidência adequada; ${coverage.unproven} sem comprovação; ${coverage.omitted} sem análise.`);
+  else if (result?.omittedClaimsCount > 0 || result?.outcome === "partial_coverage") limits.push(`Cobertura parcial: ${list(result?.claims).length} afirmações analisadas; ${result?.omittedClaimsCount ?? 0} ficaram sem análise.`);
+  if (result?.outcome && result.outcome !== "checked" && result.outcome !== "legacy") limits.push(`Desfecho: ${result.outcomeLabel ?? OUTCOME_LABEL[result.outcome] ?? result.outcome}.`);
+  const media = result?.mediaCoverage;
+  const kind = text(result?.kind);
+  if (kind.startsWith("Imagem") || media?.image) {
+    limits.push(`Limite da imagem: ${media?.image === "described" || media?.image === "examined" ? "OCR/descrição visual foi processado, mas não autentica autoria, data ou contexto." : "a imagem não pôde ser analisada."}`);
+  }
+  if (kind.startsWith("Vídeo") || list(result?.media).some((attempt) => /^(audio|frames|transcribe|vision):/.test(attempt))) {
+    const audio = media?.transcript === "timestamped" ? "áudio transcrito com segmentos" : media?.transcript === "text-only" ? "áudio transcrito sem timestamps" : "áudio não transcrito";
+    const count = Number(media?.sampledFrameCount) || 0;
+    const visuals = count > 0 ? `${count} quadros amostrados${media?.frames === "sampled-and-described" ? " e descritos" : "; descrição visual indisponível"}` : "nenhum quadro visual analisado";
+    limits.push(`Cobertura parcial da mídia: ${audio}; ${visuals}. Vídeos usam até 10 quadros dos primeiros 5 minutos; isso não representa cobertura integral nem verifica autenticidade.`);
+  }
+  const summary = result?.evidence?.summary;
+  if (summary?.enabled && summary.citations) {
+    limits.push(`Verificação de trechos: ${summary.located} de ${summary.citations} citação(ões) localizadas nos documentos obtidos${summary.missing > 0 ? `; ${summary.missing} não localizada(s) — isso não prova que a fonte esteja errada` : ""}${summary.blocked > 0 ? `; ${summary.blocked} fonte(s) recusadas pela política de rede` : ""}.`);
+  } else if (summary?.enabled === false) limits.push("Verificação documental de trechos desativada.");
+  for (const doc of list(result?.evidence?.documents)) {
+    limits.push(`${doc.outlet ?? doc.url ?? "Documento"}: ${doc.ok ? `documento obtido (${doc.kind ?? "texto"})` : `não obtido (${doc.reason ?? "falha"})`}${doc.truncated ? " · conteúdo obtido parcialmente" : ""}${doc.url ? ` · ${doc.url}` : ""}.`);
+  }
+  for (const limitation of list(result?.limitations)) {
+    const value = typeof limitation === "string" ? limitation : [limitation?.text, limitation?.reason].filter(Boolean).join(" — ");
+    if (text(value)) limits.push(text(value));
+  }
+  if (typeof result?.limitations === "string" && text(result.limitations)) limits.push(text(result.limitations));
+  return [...new Set(limits)];
+}
+
+/** A síntese representa o conjunto; o texto integral de cada ponto vem abaixo. */
+export function shareCardContent(result) {
+  const claims = list(result?.claims).filter(Boolean);
+  const notCheckedClaims = list(result?.notCheckedClaims).filter(Boolean);
+  const total = claims.length + notCheckedClaims.length;
+  const title = total === 1 && claims.length === 1
+    ? `Alegação: ${text(claims[0].text) || "Afirmação sem texto"}`
+    : total > 0 ? `Checagem de ${total} ${total === 1 ? "ponto" : "pontos"}` : "Checagem sem alegação verificável";
+  return { title, summary: text(result?.summary), claims, notCheckedClaims, sources: list(result?.sources), limits: resultLimits(result) };
+}
+
+function claimLabel(claim, index) {
+  const status = CLAIM_STATUS[claim.status] ?? CLAIM_STATUS.unproven;
+  return `${index + 1}. ${CLAIM_ICON[claim.status] ?? "?"} ${status.label.toUpperCase()} · ${claim.score == null ? "SEM NOTA" : `${claim.score}/100`}`;
+}
+
+export function buildShareText(result, { origin, pathname = "/" }) {
+  const content = shareCardContent(result);
+  const label = VERDICTS[result?.verdict]?.label ?? "Sem veredito";
+  const sections = [content.title, result?.score == null ? `${label} · nota indisponível` : `${label} · nota ${result.score}/100`];
+  if (content.summary) sections.push(content.summary);
+  for (const [index, claim] of content.claims.entries()) {
+    sections.push([claimLabel(claim, index), text(claim.text) || "Afirmação sem texto", ...claimDetails(claim, content.sources)].join("\n"));
+  }
+  if (content.notCheckedClaims.length) sections.push(["PONTOS NÃO CHECADOS", ...content.notCheckedClaims.map((claim, index) => `${index + 1}. ${text(claim.text) || "Ponto sem texto"}\nMotivo: ${text(claim.reason) || "Não informado no resultado."}`)].join("\n"));
+  if (content.limits.length) sections.push(["COBERTURA E LIMITES", ...content.limits].join("\n"));
+  sections.push(content.sources.length ? ["FONTES CONSULTADAS (não são comprovação por si só)", ...content.sources.map(sourceText)].join("\n") : "Nenhuma fonte documental disponível no resultado.");
+  sections.push(result?.score == null ? "Checagem automática · nota indisponível não significa falsidade." : "Checagem automática · a nota não é probabilidade calibrada.");
+  if (result?.id) sections.push(`ID ${result.id} · confira correções em ${origin}/correcoes.html?checkId=${encodeURIComponent(result.id)}`);
+  sections.push(`Confira você também em ${origin}${pathname}`);
+  return sections.join("\n\n");
 }
 
 async function ensureFonts() {
   try {
     await Promise.all([
       document.fonts.load('600 100px Faustina'),
-      document.fonts.load('400 40px Faustina'),
-      document.fonts.load('600 40px Geist'),
-      document.fonts.load('500 32px Geist'),
+      document.fonts.load('400 42px Faustina'),
+      document.fonts.load('600 30px Geist'),
       document.fonts.load('400 30px Geist'),
+      document.fonts.load('400 25px Geist'),
     ]);
     await document.fonts.ready;
   } catch { /* fallback serif/sans */ }
 }
 
-/** Ruído sutil igual ao body::before do site. */
-function grain(ctx) {
+function grain(ctx, height) {
   ctx.save();
   ctx.globalAlpha = 0.05;
   let seed = 42;
@@ -144,52 +226,109 @@ function grain(ctx) {
     return seed / 0x7fffffff;
   };
   ctx.fillStyle = INK;
-  for (let i = 0; i < 2600; i++) {
-    ctx.fillRect(rand() * W, rand() * H, 2, 2);
-  }
+  for (let i = 0; i < Math.ceil(2600 * height / MIN_H); i++) ctx.fillRect(rand() * W, rand() * height, 2, 2);
   ctx.restore();
 }
 
-/** Sombra dura do site: offset sólido sem blur. */
-function hardShadow(ctx, x, y, w, h, r, color = "#1A140C2E") {
+function hardShadow(ctx, x, y, w, h, r) {
   ctx.save();
-  ctx.fillStyle = color;
+  ctx.fillStyle = "#1A140C2E";
   rr(ctx, x + 10, y + 10, w, h, r);
   ctx.fill();
   ctx.restore();
 }
 
-/**
- * @param {object} result resultado normalizado (api.js)
- * @returns {Promise<Blob>} PNG
- */
+/** @returns {Promise<Blob>} PNG completo ou erro explícito, nunca imagem parcial. */
 export async function renderShareCard(result) {
   await ensureFonts();
-
   const canvas = document.createElement("canvas");
-  canvas.width = W;
-  canvas.height = H;
   const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("O navegador não oferece Canvas 2D. Copie o texto completo da checagem.");
   const content = shareCardContent(result);
-  const verdict = VERDICTS[result.verdict] ?? VERDICTS.unproven;
-  const claims = content.claims.slice(0, 3);
-  const sources = (result.sources ?? []).filter((s) => s.url && s.url !== "#").slice(0, 3);
+  const verdict = VERDICTS[result?.verdict];
+  const color = verdict?.color ?? FG3;
+  const commands = [];
+  let y = result?.score == null ? 460 : 500;
 
-  // Fundo creme + textura
+  // Primeiro mede e posiciona todas as linhas, inclusive fontes/limites/rodapé.
+  // O desenho usa exatamente o mesmo plano, sem outro ajuste ou corte.
+  function paragraph(value, { size = 25, lineHeight = 34, weight = 400, family = SANS, color: fill = FG2, x = 110, width = W - 220, align = "left", gap = 10 } = {}) {
+    const font = `${weight} ${size}px ${family}`;
+    ctx.font = font;
+    const lines = wrap(ctx, value, width);
+    if (!lines.length) return;
+    commands.push({ type: "text", lines, font, color: fill, x: align === "center" ? W / 2 : x, y, lineHeight, align });
+    y += lines.length * lineHeight + gap;
+  }
+  function section(label) {
+    y += 12;
+    commands.push({ type: "line", y });
+    y += 24;
+    paragraph(label, { size: 22, lineHeight: 30, weight: 600, color: FG3, gap: 18 });
+  }
+
+  paragraph(content.title, { size: 42, lineHeight: 54, family: SERIF, color: INK, x: 130, width: W - 260, align: "center", gap: 16 });
+  paragraph(content.summary, { size: 26, lineHeight: 36, x: 130, width: W - 260, align: "center", gap: 0 });
+  const cardBottom = y + 30;
+  y = cardBottom + 42;
+  if (content.claims.length) {
+    section(`AFIRMAÇÕES ANALISADAS · ${content.claims.length}`);
+    for (const [index, claim] of content.claims.entries()) {
+      paragraph(claimLabel(claim, index), { size: 26, lineHeight: 36, weight: 600, color: CLAIM_STATUS[claim.status]?.color ?? CLAIM_STATUS.unproven.color });
+      paragraph(text(claim.text) || "Afirmação sem texto", { size: 30, lineHeight: 40 });
+      for (const detail of claimDetails(claim, content.sources)) paragraph(detail);
+      y += 18;
+    }
+  }
+  if (content.notCheckedClaims.length) {
+    section(`PONTOS NÃO CHECADOS · ${content.notCheckedClaims.length}`);
+    for (const [index, claim] of content.notCheckedClaims.entries()) {
+      paragraph(`${index + 1}. ${text(claim.text) || "Ponto sem texto"}`, { size: 30, lineHeight: 40 });
+      paragraph(`Motivo: ${text(claim.reason) || "Não informado no resultado."}`, { color: FG3 });
+      y += 18;
+    }
+  }
+  if (content.limits.length) {
+    section("COBERTURA E LIMITES");
+    for (const limit of content.limits) paragraph(limit);
+  }
+  section(`FONTES CONSULTADAS · ${content.sources.length}`);
+  paragraph("Fontes encontradas não são comprovação por si só; confira a relação e os limites de cada trecho.", { color: FG3 });
+  if (content.sources.length) {
+    for (const [index, source] of content.sources.entries()) paragraph(sourceText(source, index));
+  } else paragraph("Nenhuma fonte documental disponível no resultado.");
+
+  y += 30;
+  const footerStart = y;
+  const host = location.host;
+  paragraph([result?.kind, result?.publishedAt ? `checada em ${result.publishedAt}` : ""].filter(Boolean).join(" · "), { size: 22, lineHeight: 30, color: FG3, align: "center" });
+  paragraph(result?.score == null ? "Checagem automática · nota indisponível não significa falsidade" : "Checagem automática · a nota não é probabilidade calibrada", { size: 22, lineHeight: 30, align: "center" });
+  if (result?.id) paragraph(`ID ${result.id} · confira correções em ${host}/correcoes.html?checkId=${encodeURIComponent(result.id)}`, { size: 22, lineHeight: 30, color: FG3, align: "center" });
+  paragraph("Viu algo suspeito? Confira você também em", { size: 26, lineHeight: 36, align: "center" });
+  paragraph(host, { size: 40, lineHeight: 50, weight: 600, color: ACCENT, align: "center", gap: 0 });
+  const height = Math.max(MIN_H, Math.ceil(y + 52));
+  if (!Number.isSafeInteger(height) || height > MAX_DIMENSION || W * height > MAX_PIXELS) {
+    throw new Error("O resultado completo excede o tamanho de PNG suportado. Copie o texto completo da checagem; nenhum ponto foi cortado.");
+  }
+  // O mínimo de altura mantém a composição dos cards curtos sem esticar conteúdo.
+  const footerShift = height - Math.ceil(y + 52);
+  for (const command of commands) if (command.y >= footerStart) command.y += footerShift;
+  canvas.width = W;
+  canvas.height = height;
+  if (canvas.width !== W || canvas.height !== height) throw new Error("O navegador não suporta o tamanho do card completo. Copie o texto completo da checagem.");
+
   ctx.fillStyle = BG;
-  ctx.fillRect(0, 0, W, H);
-  grain(ctx);
-
-  // Header tinta (igual .header do site)
+  ctx.fillRect(0, 0, W, height);
+  grain(ctx, height);
   ctx.fillStyle = INK;
   ctx.fillRect(0, 0, W, 150);
   ctx.fillStyle = "#0D0A06";
   ctx.fillRect(0, 146, W, 4);
+  ctx.textBaseline = "alphabetic";
   ctx.textAlign = "center";
   ctx.fillStyle = BG;
   ctx.font = `400 52px ${SERIF}`;
-  const brand = "isso é verdade?";
-  const brandW = ctx.measureText(brand).width;
+  const brandW = ctx.measureText("isso é verdade?").width;
   ctx.fillText("isso é verdade", W / 2 - 14, 88);
   ctx.fillStyle = ACCENT;
   ctx.fillText("?", W / 2 + brandW / 2 - 14, 88);
@@ -197,298 +336,63 @@ export async function renderShareCard(result) {
   ctx.font = `600 22px ${SANS}`;
   ctx.fillText("ELEIÇÕES 2026  ·  SEGUNDO TURNO", W / 2, 126);
 
-  // Card principal (igual .card: painel + borda tinta + sombra dura).
-  // Título calculado ANTES para a altura do card abraçar o conteúdo.
-  const cx0 = 70;
-  const cw = W - 140;
-  const cardTop = 200;
-  ctx.font = `400 42px ${SERIF}`;
-  let cleanTitle = content.title;
-  const urlMatch = cleanTitle.match(/https?:\/\/[^\s]+/);
-  if (urlMatch) {
-    try {
-      const host = new URL(urlMatch[0]).hostname.replace(/^www\./, "");
-      cleanTitle = cleanTitle.replace(urlMatch[0], host).trim();
-    } catch { /* mantém original, wrap quebra */ }
-  }
-  ctx.font = `400 42px ${SERIF}`;
-  const titleFull = wrap(ctx, cleanTitle, cw - 120);
-  // Layout em 2 passes: mede tudo primeiro; o ajuste (fit) garante pelo menos
-  // 1 claim com "porquê" (justificativa + trecho de evidência) e encolhe o resto
-  // (resumo → extras → título → texto → nota → evidência → fontes) até caber.
-  const prepared = claims.map((c, idx) => {
-    const text = String(c.text ?? "").replace(/^["“]|["”]$/g, "");
-    ctx.font = `400 30px ${SANS}`;
-    const textFull = claims.length === 1 ? [] : wrap(ctx, text, W - 220);
-    ctx.font = `400 25px ${SANS}`;
-    const support = EVIDENCE_SUPPORT[c.evidenceSupport];
-    const note = [support ? `Suporte da evidência: ${support}.` : "", c.note].filter(Boolean).join(" ");
-    const noteFull = note ? wrap(ctx, note, W - 220) : [];
-    const expected = c.evidenceSupport ?? (c.status === "true" ? "supports" : c.status === "false" ? "refutes" : "context");
-    const ev = (c.evidence ?? []).find((e) => e?.relation === expected && String(e.quote ?? "").trim())
-      ?? (c.evidence ?? []).find((e) => String(e?.quote ?? "").trim());
-    let evFull = [];
-    if (ev) {
-      const source = result.sources?.[ev.sourceId];
-      const rel = c.status === "unproven" ? "Contexto, não comprovação" : RELATION_LABEL[ev.relation] ?? "Evidência";
-      ctx.font = `400 24px ${SANS}`;
-      const verification = EVIDENCE_VERIFICATION[ev.verification];
-      evFull = wrap(ctx, `${rel} · ${sourceHost(source)}${verification ? ` · ${verification}` : ""} · trecho original: “${String(ev.quote).trim()}”`, W - 236);
-    }
-    const first = idx === 0;
-    return {
-      c,
-      textFull,
-      noteFull,
-      evFull,
-      alloc: {
-        t: Math.min(2, textFull.length),
-        // Teto generoso no 1º claim: o fit corta até caber, então ocupa o espaço livre com "porquê".
-        n: Math.min(first ? 6 : 2, noteFull.length),
-        e: Math.min(first ? 4 : 1, evFull.length),
-      },
-    };
-  });
-  ctx.font = `400 27px ${SANS}`;
-  const sourceFull = sources.map((s) => {
-    const label = `•  ${s.outlet || sourceHost(s)} · ${sourceHost(s)}`;
-    return wrap(ctx, label, W - 220);
-  });
-  let titleN = Math.min(3, titleFull.length);
-  let summaryN = 0;
-  let visible = prepared.length;
-  let visibleSources = sourceFull.length;
-  // Orçamento: header(200) + anel/título(530→) + claims + fontes + rodapé(228).
-  const TITLE_Y = 530;
-  const FOOTER_TOP = H - 228;
-  const claimH = (p) => 38 + p.alloc.t * 38 + p.alloc.n * 31 + (p.alloc.e > 0 ? 6 + p.alloc.e * 30 : 0) + 14;
-  const sourcesH = () => visibleSources > 0
-    ? 30 + 30 + sourceFull.slice(0, visibleSources).reduce((a, b) => a + Math.min(2, b.length) * 34, 0)
-    : 0;
-  const totalH = () => {
-    const bottom = TITLE_Y + titleN * 52 + 10 + summaryN * 32 + 26;
-    const claimsH = prepared.slice(0, visible).reduce((a, p) => a + claimH(p), 0);
-    return bottom + 48 + claimsH + sourcesH();
-  };
-  const fitsAll = () => totalH() <= FOOTER_TOP;
-  // Resumo: alvo de 2 linhas; mantém pelo menos 1 para contextualizar o veredito.
-  ctx.font = `400 26px ${SANS}`;
-  const fullSummary = wrap(ctx, content.summary, cw - 120);
-  summaryN = Math.min(2, fullSummary.length);
-  const minSummary = fullSummary.length > 0 ? 1 : 0;
-  while (summaryN > minSummary && !fitsAll()) summaryN -= 1;
-  // Claims extras: cortam evidência/nota antes de sumir.
-  for (let i = visible - 1; i >= 1 && !fitsAll(); i--) {
-    while (prepared[i].alloc.e > 0 && !fitsAll()) prepared[i].alloc.e -= 1;
-    const minN = prepared[i].noteFull.length > 0 ? 1 : 0;
-    while (prepared[i].alloc.n > minN && !fitsAll()) prepared[i].alloc.n -= 1;
-  }
-  while (visible > 1 && !fitsAll()) visible -= 1;
-  // Título, texto do 1º claim, 1ª nota e fontes entram no ajuste para o 1º claim
-  // sempre caber (mínimo: badge + 1 linha de texto + 1 de porquê + 1 fonte).
-  while (titleN > 2 && !fitsAll()) titleN -= 1;
-  if (visible > 0) {
-    const p0 = prepared[0];
-    while (p0.alloc.t > 1 && !fitsAll()) p0.alloc.t -= 1;
-    while (p0.alloc.n > 2 && !fitsAll()) p0.alloc.n -= 1;
-    const detailMin = p0.noteFull.length > 0 ? 0 : (p0.evFull.length > 0 ? 1 : 0);
-    while (p0.alloc.e > detailMin && !fitsAll()) p0.alloc.e -= 1;
-    while (summaryN > 0 && !fitsAll()) summaryN -= 1;
-    while (titleN > 1 && !fitsAll()) titleN -= 1;
-    const noteMin = p0.noteFull.length > 0 ? 1 : 0;
-    const evMin = noteMin === 0 && p0.evFull.length > 0 ? 1 : 0;
-    while (p0.alloc.n > noteMin && !fitsAll()) p0.alloc.n -= 1;
-    while (p0.alloc.e > evMin && !fitsAll()) p0.alloc.e -= 1;
-    while (visibleSources > 1 && !fitsAll()) visibleSources -= 1;
-    if (!fitsAll() && sources.length > 0) visibleSources = 0;
-  } else {
-    while (titleN > 1 && !fitsAll()) titleN -= 1;
-    while (summaryN > 0 && !fitsAll()) summaryN -= 1;
-    while (visibleSources > 1 && !fitsAll()) visibleSources -= 1;
-  }
-  ctx.font = `400 42px ${SERIF}`;
-  const titleLines = sliceLines(ctx, titleFull, titleN, cw - 120);
-  ctx.font = `400 26px ${SANS}`;
-  const summaryLines = sliceLines(ctx, fullSummary, summaryN, cw - 120);
-  const claimBlocks = prepared.slice(0, visible).map((p) => {
-    ctx.font = `400 30px ${SANS}`;
-    const clines = sliceLines(ctx, p.textFull, p.alloc.t, W - 220);
-    ctx.font = `400 25px ${SANS}`;
-    const nlines = sliceLines(ctx, p.noteFull, p.alloc.n, W - 220);
-    ctx.font = `400 24px ${SANS}`;
-    const elines = sliceLines(ctx, p.evFull, p.alloc.e, W - 236);
-    return { c: p.c, clines, nlines, elines, h: 38 + clines.length * 38 + nlines.length * 31 + (elines.length > 0 ? 6 + elines.length * 30 : 0) + 14 };
-  });
-  ctx.font = `400 27px ${SANS}`;
-  const sourceBlocks = sourceFull.slice(0, visibleSources).map((lines) => sliceLines(ctx, lines, 2, W - 220));
-  const cardBottom = TITLE_Y + titleLines.length * 52 + 10 + summaryLines.length * 32 + 26;
-  hardShadow(ctx, cx0, cardTop, cw, cardBottom - cardTop, 28);
+  hardShadow(ctx, 70, 200, W - 140, cardBottom - 200, 28);
   ctx.fillStyle = PANEL;
   ctx.strokeStyle = INK;
   ctx.lineWidth = 3;
-  rr(ctx, cx0, cardTop, cw, cardBottom - cardTop, 28);
+  rr(ctx, 70, 200, W - 140, cardBottom - 200, 28);
   ctx.fill();
   ctx.stroke();
-  const ringX = cx0 + 170;
-  const ringY = 360;
-  const R = 105;
-  if (result.score != null) {
+  if (result?.score != null) {
     ctx.lineWidth = 22;
     ctx.lineCap = "round";
     ctx.strokeStyle = "#EFE7D3";
     ctx.beginPath();
-    ctx.arc(ringX, ringY, R, 0, Math.PI * 2);
+    ctx.arc(240, 360, 105, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.strokeStyle = verdict.color;
+    ctx.strokeStyle = color;
     ctx.beginPath();
-    ctx.arc(ringX, ringY, R, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * result.score) / 100);
+    ctx.arc(240, 360, 105, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * result.score / 100);
     ctx.stroke();
   }
   ctx.fillStyle = INK;
   ctx.font = `600 96px ${SERIF}`;
-  ctx.textAlign = "center";
-  ctx.fillText(result.score == null ? "—" : String(result.score), ringX, ringY + 34);
+  ctx.fillText(result?.score == null ? "—" : String(result.score), 240, 394);
   ctx.fillStyle = FG3;
   ctx.font = `500 22px ${SANS}`;
-  ctx.fillText(result.score == null ? "sem nota" : "/ 100", ringX, ringY + 66);
+  ctx.fillText(result?.score == null ? "sem nota" : "/ 100", 240, 426);
 
-  // Chip veredito (igual .chip do site)
-  ctx.textAlign = "left";
   ctx.font = `600 30px ${SANS}`;
-  const chipLabel = result.verdict ? verdict.label.toUpperCase() : "SEM VEREDITO";
-  const chipW = ctx.measureText(chipLabel).width + 96;
-  const chipX = cx0 + 330;
-  const chipY = 330;
-  ctx.fillStyle = `${verdict.color}1F`;
-  rr(ctx, chipX, chipY, chipW, 62, 14);
+  const chipLines = wrap(ctx, (verdict?.label ?? "Sem veredito").toUpperCase(), 470);
+  const chipWidth = Math.max(...chipLines.map((line) => ctx.measureText(line).width)) + 76;
+  const chipHeight = chipLines.length * 38 + 24;
+  ctx.fillStyle = verdict ? `${color}1F` : "#1A140C12";
+  rr(ctx, 400, 330, chipWidth, chipHeight, 14);
   ctx.fill();
-  ctx.fillStyle = verdict.color;
+  ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.arc(chipX + 32, chipY + 31, 8, 0, Math.PI * 2);
+  ctx.arc(424, 330 + chipHeight / 2, 8, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillText(chipLabel, chipX + 52, chipY + 41);
-
-  // Título serifado centralizado (largura total = URLs cabem sem vazar).
-  ctx.fillStyle = INK;
-  ctx.font = `400 42px ${SERIF}`;
-  ctx.textAlign = "center";
-  let ty = TITLE_Y;
-  for (const line of titleLines) {
-    ctx.fillText(line, W / 2, ty);
-    ty += 52;
-  }
-  ty += 10;
-  ctx.fillStyle = FG2;
-  ctx.font = `400 26px ${SANS}`;
-  for (const line of summaryLines) {
-    ctx.fillText(line, W / 2, ty);
-    ty += 32;
-  }
-
-  // Claims como linhas do site (badge + texto + justificativa + trecho de evidência). Para antes do rodapé.
   ctx.textAlign = "left";
-  let y = cardBottom + 48;
-  const roomFor = (h) => y + h <= FOOTER_TOP - sourcesH();
-  for (const { c, clines, nlines, elines, h } of claimBlocks) {
-    const st = CLAIM_STATUS[c.status] ?? CLAIM_STATUS.unproven;
-    const badge = `${CLAIM_ICON[c.status] ?? "?"}  ${st.label.toUpperCase()} · ${c.score == null ? "SEM NOTA" : c.score}`;
-    if (!roomFor(h)) break;
-    ctx.fillStyle = st.color;
-    ctx.font = `600 26px ${SANS}`;
-    ctx.fillText(badge, 110, y);
-    y += 38;
-    ctx.fillStyle = FG2;
-    ctx.font = `400 30px ${SANS}`;
-    for (const line of clines) {
-      ctx.fillText(line, 110, y);
-      y += 38;
-    }
-    ctx.fillStyle = FG3;
-    ctx.font = `400 25px ${SANS}`;
-    for (const line of nlines) {
-      ctx.fillText(line, 110, y);
-      y += 31;
-    }
-    if (elines.length > 0) {
-      y += 6;
-      ctx.fillStyle = st.color;
-      ctx.fillRect(110, y - 22, 4, elines.length * 30 - 4);
-      ctx.fillStyle = FG2;
-      ctx.font = `400 24px ${SANS}`;
-      for (const line of elines) {
-        ctx.fillText(line, 126, y);
-        y += 30;
-      }
-    }
-    y += 14;
-  }
+  ctx.textBaseline = "top";
+  for (const [index, line] of chipLines.entries()) ctx.fillText(line, 446, 342 + index * 38);
 
-  // Divisória + fontes (com detalhe tipo · data quando houver)
-  if (sourceBlocks.length > 0) {
-    ctx.strokeStyle = LINE;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(110, y);
-    ctx.lineTo(W - 110, y);
-    ctx.stroke();
-    y += 30;
-    ctx.fillStyle = FG3;
-    ctx.font = `600 22px ${SANS}`;
-    const hidden = sources.length - sourceBlocks.length;
-    ctx.fillText(`FONTES CONSULTADAS · ${result.sources.length}${hidden > 0 ? ` (mostrando ${sourceBlocks.length})` : ""}`, 110, y);
-    y += 30;
-    ctx.font = `400 27px ${SANS}`;
-    ctx.fillStyle = FG2;
-    for (const lines of sourceBlocks) {
-      for (const line of lines) {
-        ctx.fillText(line, 110, y);
-        y += 34;
-      }
+  for (const command of commands) {
+    if (command.type === "line") {
+      ctx.strokeStyle = LINE;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(110, command.y);
+      ctx.lineTo(W - 110, command.y);
+      ctx.stroke();
+    } else {
+      ctx.font = command.font;
+      ctx.fillStyle = command.color;
+      ctx.textAlign = command.align;
+      for (const [index, line] of command.lines.entries()) ctx.fillText(line, command.x, command.y + index * command.lineHeight);
     }
   }
-
-  // Rodapé: meta da checagem + ID verificável + CTA de divulgação
-  ctx.textAlign = "center";
-  ctx.fillStyle = FG3;
-  ctx.font = `400 22px ${SANS}`;
-  const coverage = result.coverage;
-  const meta = coverage
-    ? `Cobertura: ${coverage.assessed}/${coverage.total} avaliadas · ${coverage.unproven} sem comprovação · ${coverage.omitted} sem análise`
-    : [result.kind, result.publishedAt ? `checada em ${result.publishedAt}` : ""].filter(Boolean).join("  ·  ");
-  if (meta) ctx.fillText(meta, W / 2, H - 214);
-  // Análise automatizada, identificador e caminho para conferir correções:
-  // o card pode circular fora do site, então precisa apontar para a versão vigente.
-  ctx.fillStyle = FG2;
-  ctx.font = `400 22px ${SANS}`;
-  const aviso = result.score == null
-    ? "Checagem automática · nota indisponível não significa falsidade"
-    : "Checagem automática · a nota não é probabilidade calibrada";
-  ctx.fillText(aviso, W / 2, H - 176);
-  if (result.id) {
-    ctx.fillStyle = FG3;
-    ctx.font = `400 22px ${SANS}`;
-    const host = location.host;
-    const id = result.id;
-    // URL de correções pode vazar da largura; encurta até caber.
-    const candidates = [
-      `ID ${id} · confira correções em ${host}/correcoes.html?checkId=${id}`,
-      `ID ${id} · ${host}/correcoes.html?checkId=${id}`,
-      `ID ${id} · ${host}/correcoes.html`,
-      `ID ${id}`,
-    ];
-    const idLine = candidates.find((t) => ctx.measureText(t).width <= W - 80) ?? `ID ${id}`;
-    ctx.fillText(idLine, W / 2, H - 140);
-  }
-  ctx.font = `400 26px ${SANS}`;
-  ctx.fillText("Viu algo suspeito? Confira você também em", W / 2, H - 100);
-  ctx.fillStyle = ACCENT;
-  ctx.font = `600 40px ${SANS}`;
-  ctx.fillText(location.host, W / 2, H - 52);
-
   return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => (blob ? resolve(blob) : reject(new Error("Falha ao gerar imagem."))),
-      "image/png",
-    );
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("O navegador não conseguiu gerar o PNG completo. Copie o texto completo da checagem.")), "image/png");
   });
 }

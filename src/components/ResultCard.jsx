@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { CLAIM_STATUS, VERDICTS } from "../data/constants.js";
 import ScoreRing from "./ScoreRing.jsx";
 import { copyText } from "../lib/hooks.js";
+import { buildShareText } from "../lib/shareCard.js";
 
 function SourceRow({ source }) {
   const body = (
@@ -97,18 +98,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
   const verdict = VERDICTS[result.verdict];
   const origin = result.origin;
   const [imgOk, setImgOk] = useState(true);
-  const hasVerdict = Boolean(verdict) && result.score != null;
-  const shareLabel = hasVerdict
-    ? `nota ${result.score}/100 (${verdict.label.toLowerCase()})`
-    : `${NO_VERDICT_LABEL[result.outcome] ?? "Sem veredito"} — sem nota ou conclusão factual`;
-  const shareText = [
-    `isso é verdade? — ${result.title || origin?.title || "Resultado da checagem"}`,
-    shareLabel,
-    result.summary,
-    origin?.url && `Conteúdo original: ${origin.url}`,
-    `Confira você também: ${location.origin}${location.pathname}`,
-  ].filter(Boolean).join("\n\n");
-  const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+  const shareText = buildShareText(result, typeof location !== "undefined" ? location : { origin: "", pathname: "/" });
   const reportUrl = `/correcoes.html?source=${encodeURIComponent(reportSource)}${result.id ? `&checkId=${encodeURIComponent(result.id)}` : ""}`;
 
   if (!verdict || result.score == null) {
@@ -129,9 +119,12 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
         <EvidenceNote result={result} />
         {result.origin?.url && <a href={result.origin.url} target="_blank" rel="noreferrer">Abrir conteúdo original ↗</a>}
         <div className="result-actions">
-          <a className="btn" href={whatsappUrl} target="_blank" rel="noopener noreferrer">
-            Compartilhar no WhatsApp
-          </a>
+          <button className="btn primary" onClick={() => onShareCard?.(result)}>
+            Compartilhar card
+          </button>
+          <button className="btn" onClick={() => copyText(shareText, showToast)}>
+            Copiar texto
+          </button>
           <a className="btn ghost" href={reportUrl}>
             Reportar problema ou contestar
           </a>
@@ -297,14 +290,11 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
 
       <div className="result-actions">
         <button className="btn primary" onClick={() => onShareCard?.(result)}>
-          Gerar card
+          Compartilhar card
         </button>
         <button className="btn" onClick={share}>
           Copiar texto
         </button>
-        <a className="btn" href={whatsappUrl} target="_blank" rel="noopener noreferrer">
-          Compartilhar no WhatsApp
-        </a>
         <a className="btn ghost" href={reportUrl}>
           Reportar problema ou contestar
         </a>

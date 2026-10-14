@@ -63,43 +63,45 @@ export const ERROR_MESSAGES = {
   content_refused: "O material foi recusado pela política de conteúdo.",
 };
 
-export const PIPELINE_STEPS = [
-  {
-    id: "intake",
-    title: "Recebendo seu conteúdo",
-    hint: "Preparamos link, texto, imagem ou vídeo para análise.",
-  },
-  {
-    id: "transcribe",
-    title: "Analisando conteúdo disponível",
-    hint: "Áudio pode ser transcrito e quadros podem ser amostrados; a cobertura pode ser parcial.",
-  },
-  {
-    id: "claims",
-    title: "Separando cada afirmação",
-    hint: "Identificamos afirmações verificáveis e registramos limites da análise.",
-  },
-  {
-    id: "sources",
-    title: "Buscando evidências",
-    hint: "Vinculamos trechos e fontes às afirmações quando há material disponível.",
-  },
-  {
-    id: "score",
-    title: "Consolidando o resultado",
-    hint: "A nota não é probabilidade calibrada; pode não haver veredito.",
-  },
-];
+/** Texto público das atividades reais emitidas pelo servidor (sem % inventada). */
+export const ACTIVITY_TEXT = {
+  "source-classification": { title: "Identificando o conteúdo do link…", hint: "Tipo ainda não determinado." },
+  "media-probe": { title: "Lendo a página vinculada…", hint: "Texto público e anexos ainda não confirmados." },
+  "media-acquisition": { title: "Baixando a mídia…", hint: "Aquisição em execução; sem porcentagem inventada." },
+  "media-upload": { title: "Processando o arquivo enviado…", hint: "Arquivo local; nunca apresentado como download." },
+  "media-metadata": { title: "Lendo os metadados disponíveis…", hint: "Título, descrição e contexto da origem." },
+  "media-transcription": { title: "Transcrevendo o áudio…", hint: "Áudio adquirido; a chamada real pode aguardar vaga." },
+  "media-vision": { title: "Analisando os quadros disponíveis…", hint: "Amostragem parcial; pode não cobrir tudo." },
+  judge: { title: "Investigando as afirmações e pesquisando fontes…", hint: "Julgamento com pesquisa habilitada." },
+  "article-research": { title: "Pesquisando a publicação e suas alegações…", hint: "URL, título, site e alegações disponíveis." },
+  final: { title: "Consolidando o resultado e seus limites…", hint: "Revisão das afirmações e evidências." },
+  evidence: { title: "Consultando os documentos das fontes…", hint: "URLs do dossiê sendo obtidas." },
+  "evidence-review": { title: "Conferindo se os trechos sustentam as afirmações…", hint: "Revisão da fidelidade das citações." },
+  cache: { title: "Resultado recuperado do cache", hint: "Trabalho já feito; sem animação falsa." },
+};
 
-// Frases rotativas do "thinking" — exibidas enquanto a IA trabalha.
-// Estilo das empresas de IA: curtas, progressivas, ganham tempo de leitura.
-export const THINKING_LINES = [
-  "Lendo o conteúdo…",
-  "Entendendo o contexto…",
-  "Separando as afirmações…",
-  "Buscando evidências…",
-  "Comparando com as evidências…",
-  "Comparando versões…",
-  "Pesando as evidências…",
-  "Montando o veredito…",
-];
+export const ACTIVITY_STATE_LABEL = {
+  pending: "pendente",
+  running: "em andamento",
+  done: "concluída",
+  skipped: "não aplicável",
+  limited: "limitada",
+  failed: "falhou",
+};
+
+/** Resumo público da modalidade identificada pelo servidor. */
+export function modalitySummary(content, { hasUpload = false } = {}) {
+  if (!content) return "Identificando o conteúdo do link…";
+  if (content.modality === "cached") return "Resultado recuperado do cache · trabalho já feito";
+  if (hasUpload && content.modality !== "image") return "Arquivo enviado · processando o conteúdo local";
+  switch (content.modality) {
+    case "text": return "Texto identificado · lendo o conteúdo disponível";
+    case "article": return content.provisional ? "Notícia/documento provável · confirmando a leitura" : "Texto identificado · lendo o conteúdo disponível";
+    case "social-post": return "Post identificado · verificando os anexos disponíveis";
+    case "video": return "Vídeo identificado · preparando áudio e quadros";
+    case "audio": return "Áudio identificado · preparando a transcrição";
+    case "image": return hasUpload ? "Imagem enviada · lendo o texto visível" : "Imagem identificada · lendo o texto visível";
+    case "document": return "Documento identificado · lendo o texto disponível";
+    default: return "Identificando o conteúdo do link…";
+  }
+}

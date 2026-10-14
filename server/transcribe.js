@@ -67,10 +67,12 @@ function safeDetail(value) {
 
 /**
  * @param {string} audioPath caminho do áudio local
- * @param {{ provider?: string, model?: string }} opts configuração selecionada
+ * @param {{ provider?: string, model?: string, onProgress?: (stage: "waiting-for-slot"|"calling-transcriber") => void }} opts configuração selecionada
+ * `onProgress` distingue espera por vaga de chamada real ao transcritor; nunca altera o resultado.
  * @returns {{ ok, segments?, text?, duration?, model?, provider?, reason? }}
  */
 export async function transcribe(audioPath, opts = {}) {
+  const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
   const provider = opts.provider ?? "openai";
   const model = typeof opts.model === "string" && opts.model ? opts.model : MODEL;
   if (provider !== "openai") return { ok: false, reason: "unsupported-transcription-provider", provider, model };
@@ -99,7 +101,10 @@ export async function transcribe(audioPath, opts = {}) {
   const pending = inFlight.get(key);
   if (pending) return pending;
   const job = (async () => {
+    const waitingForSlot = running >= MAX_PARALLEL;
+    if (waitingForSlot) onProgress?.("waiting-for-slot");
     await acquireSlot();
+    onProgress?.("calling-transcriber");
     try {
       const out = await runTranscribe(audioPath, model, buf);
       if (out.ok) {

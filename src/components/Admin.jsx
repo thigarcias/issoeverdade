@@ -522,8 +522,18 @@ function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSa
           const pair = draft[step] ?? {};
           const prov = providers[pair.provider] ?? {};
           const models = prov.models ?? [];
-          const eligible = models.some((m) => m.id === pair.model && (m.eligibleSteps ?? []).includes(step));
+          const current = models.find((m) => m.id === pair.model);
+          const eligible = Boolean(current && (current.eligibleSteps ?? []).includes(step));
           const availableProviders = Object.entries(providers).filter(([, p]) => p.hasKey && (p.models ?? []).some((m) => (m.eligibleSteps ?? []).includes(step)));
+          const currentReason = current?.stepReasons?.[step] ?? null;
+          const visibleReason = !prov.hasKey
+            ? "Provedor sem chave configurada — disponibilidade não confirmada."
+            : (prov.discovery?.stale && !current)
+              ? "Inventário desatualizado e modelo ausente da última descoberta — atualize o catálogo."
+              : !current
+                ? "Modelo não está no inventário descoberto."
+                : (currentReason?.eligible === false ? (currentReason.message ?? current.ineligibleReason ?? "Modelo incompatível com esta etapa.") : null);
+          const sorted = [...models].sort((a, b) => Number((b.eligibleSteps ?? []).includes(step)) - Number((a.eligibleSteps ?? []).includes(step)));
           return (
             <div key={step} className="admin-ai-row">
               <span className="admin-ai-step">{STEP_LABEL[step] ?? step}</span>
@@ -536,12 +546,14 @@ function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSa
               </select></label>
               <label>Modelo<select value={eligible ? pair.model : ""} disabled={saving || !models.length} onChange={(e) => setStep(step, { model: e.target.value })}>
                 <option value="" disabled>Selecione um modelo elegível</option>
-                {models.map((model) => {
+                {sorted.map((model) => {
                   const canUse = (model.eligibleSteps ?? []).includes(step);
-                  return <option key={model.id} value={model.id} disabled={!canUse}>{model.label ?? model.id}{canUse ? "" : " — incompatível com esta etapa"}</option>;
+                  const reason = model.stepReasons?.[step];
+                  const suffix = canUse ? "" : ` — ${reason?.message ?? model.ineligibleReason ?? "incompatível com esta etapa"}`;
+                  return <option key={model.id} value={model.id} disabled={!canUse}>{model.label ?? model.id}{suffix}</option>;
                 })}
               </select></label>
-              {!eligible && <p className="admin-ai-warning">A configuração atual não está elegível no catálogo recebido.</p>}
+              {!eligible && visibleReason && <p className="admin-ai-warning" role="status">{visibleReason}</p>}
             </div>
           );
         })}
@@ -559,10 +571,28 @@ function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSa
         {Object.entries(providers).map(([id, provider]) => {
           const models = (provider.models ?? []).filter((model) => !query || `${model.id} ${model.label ?? ""} ${model.protocol ?? ""} ${(model.capabilities ?? []).join(" ")} ${(model.eligibleSteps ?? []).join(" ")}`.toLowerCase().includes(query));
           const discovery = provider.discovery ?? {};
+          const steps = catalog.steps ?? [];
           return <section key={id}>
             <h3>{provider.label ?? id}</h3>
             <p>{provider.hasKey ? "Credencial disponível" : "Sem credencial configurada"} · {discovery.stale ? "inventário desatualizado" : discovery.updatedAt ? "descoberta atualizada" : "sem descoberta confirmada"}{discovery.updatedAt ? ` · ${fmtFullTime(discovery.updatedAt)}` : ""}{discovery.error ? ` · falha na descoberta: ${discovery.error}` : ""}</p>
-            {!models.length ? <p>Nenhum modelo corresponde ao filtro.</p> : <ul>{models.map((model) => <li key={model.id}><b>{model.label ?? model.id}</b><code>{model.id}</code><span>{model.protocol ?? "Protocolo não informado"} · {(model.capabilities ?? []).join(", ") || "capacidades não informadas"} · Elegível: {(model.eligibleSteps ?? []).map((step) => STEP_LABEL[step] ?? step).join(", ") || "nenhuma etapa validada"}</span>{model.ineligibleReason && <small>{model.ineligibleReason}</small>}</li>)}</ul>}
+            {!models.length ? <p>Nenhum modelo corresponde ao filtro.</p> : <div className="admin-table-wrap"><table className="admin-metric-table" aria-label={`Matriz de elegibilidade · ${provider.label ?? id}`}>
+              <thead><tr><th scope="col">Modelo</th><th scope="col">Protocolo</th>{steps.map((step) => <th scope="col" key={step}>{STEP_LABEL[step] ?? step}</th>)}<th scope="col">Motivo</th></tr></thead>
+              <tbody>{models.map((model) => {
+                const reasons = model.stepReasons ?? {};
+                const fallback = model.ineligibleReason ?? null;
+                const firstBlocked = steps.map((step) => reasons[step]).find((entry) => entry && entry.eligible === false) ?? null;
+                return <tr key={model.id}>
+                  <td><b>{model.label ?? model.id}</b> <code>{model.id}</code><br /><small className="admin-mut">{(model.capabilities ?? []).join(", ") || "capacidades não informadas"}</small></td>
+                  <td>{model.protocol ?? "Protocolo não informado"}</td>
+                  {steps.map((step) => {
+                    const entry = reasons[step];
+                    const ok = entry ? entry.eligible : (model.eligibleSteps ?? []).includes(step);
+                    return <td key={step}>{ok ? "✓" : "—"}</td>;
+                  })}
+                  <td><small>{firstBlocked?.message ?? fallback ?? (!provider.hasKey ? "Provedor sem chave configurada — disponibilidade não confirmada." : "")}</small></td>
+                </tr>;
+              })}</tbody>
+            </table></div>}
           </section>;
         })}
       </div>

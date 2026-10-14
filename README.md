@@ -41,7 +41,7 @@ Sem armazenamento compartilhado de limites, **produção recusa novas checagens*
 | `/` | site público: verificador, histórico local e transparência |
 | `/admin` | **URL canônica do painel** — `vercel.json` reescreve para o SPA; em Vite dev o fallback de SPA já resolve |
 | `/#/admin` | alias equivalente aceito pelo roteador do app |
-| `POST /api/verify` | execução da checagem (`api/verify.js` na Vercel, `vite.api-plugin.js` em dev) |
+| `POST /api/verify` | execução da checagem com progresso NDJSON incremental (`accepted`/`content`/`activity`/`result`/`error`); admissão recusada continua JSON+status (`api/verify.js` na Vercel, `vite.api-plugin.js` em dev) |
 | `GET /api/health` | limites e modos vigentes, sem segredos (smoke de implantação) |
 | `POST /api/corrections` | contestação pública: cria protocolo e entra na fila de revisão |
 | `GET /api/corrections?protocol=` | estado público de um protocolo |
@@ -86,9 +86,13 @@ Deep-link do detalhe: `/admin?detail=<id>` (restaurado no carregamento e no
 As chaves ficam somente no servidor. Modelos são escolhidos **por etapa**
 (julgamento, conclusão, visão/OCR, transcrição) em *Modelos & provedores*, a
 partir do inventário descoberto nos provedores configurados:
-
-- Modelos sem protocolo/capacidade validados aparecem no inventário com o
-  motivo, mas não podem ser selecionados.
+- Elegibilidade vem de um registro explícito de protocolos/capacidades por
+  provedor (`server/ai-config.js`), compartilhado pelo catálogo e pela
+  resolução de endpoint — sem inferência por semelhança de nome. Modelos sem
+  adapter/capacidade validados aparecem no inventário e na matriz por etapa
+  com o motivo específico (`other_step`, `no_adapter`,
+  `unvalidated_capability`, `missing_credential`, `not_in_inventory`,
+  `stale_inventory`), mas não podem ser selecionados.
 - Combinação incompatível é rejeitada no servidor (HTTP 400 com campo
   específico) e **não** altera a configuração vigente.
 - Não há troca automática de provedor quando uma etapa falha: a falha é
@@ -116,10 +120,14 @@ padrão). O contexto segue em `input.context` para a análise, é tratado como d
 não confiável e não comprova autenticidade. Trocar de aba ou limpar descarta o
 conteúdo anterior, evitando reutilizar texto/contexto em outra entrada.
 
-O card do resultado oferece **Compartilhar no WhatsApp**: abre o WhatsApp com
-título, nota/veredito quando disponíveis, resumo, URL original quando presente e
-link do site. Resultados sem veredito mantêm essa limitação na mensagem. O envio
-e a escolha do destinatário ficam a cargo do usuário; o botão não envia o PNG.
+O card do resultado abre o diálogo de compartilhamento com prévia PNG gerada
+localmente. Onde o aparelho aceita arquivos via Web Share, o botão
+**Compartilhar imagem e texto** abre o seletor do sistema (escolha WhatsApp
+nele); não há envio automático nem garantia de que o WhatsApp será escolhido.
+Sem suporte a arquivos, o diálogo oferece **Baixar imagem**, **Copiar texto** e
+**Abrir WhatsApp com texto**, avisando que a imagem deve ser anexada
+manualmente. Resultados sem veredito mantêm essa limitação na mensagem e na
+imagem, sem nota/selo factual.
 
 Links sociais usam texto disponível em oEmbed, worker, yt-dlp ou OpenGraph e
 seguem até três links documentais presentes nesse texto, dentro de limites. Texto

@@ -1,15 +1,44 @@
 import { useEffect, useRef, useState } from "react";
 import { buildShareText, renderShareCard, shareCardContent } from "../lib/shareCard.js";
 import { VERDICTS } from "../data/constants.js";
+import { copyText } from "../lib/hooks.js";
 
 export default function ShareDialog({ result, onClose, showToast }) {
   const ref = useRef(null);
+  const genRef = useRef(0);
+  const urlRef = useRef(null);
   const [imgUrl, setImgUrl] = useState(null);
   const [blob, setBlob] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const canShare = typeof navigator !== "undefined" && !!navigator.share;
+  const [status, setStatus] = useState("idle");
+  const [shareError, setShareError] = useState(null);
+  const [sharing, setSharing] = useState(false);
+  const [retry, setRetry] = useState(0);
+
+  const shareSupported = typeof navigator !== "undefined" && !!navigator.share;
   const content = result ? shareCardContent(result) : null;
-  const verdictLabel = result?.score == null ? "sem nota ou veredito factual" : `${VERDICTS[result?.verdict]?.label ?? "Sem veredito"}, nota ${result.score} de 100`;
+  const verdictLabel = result?.score == null
+    ? "sem nota ou veredito factual"
+    : `${VERDICTS[result?.verdict]?.label ?? "Sem veredito"}, nota ${result.score} de 100`;
+  const shareText = result
+    ? buildShareText(result, typeof location !== "undefined" ? location : { origin: "", pathname: "/" })
+    : "";
+  const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+
+  // Arquivo só existe após a geração; testa canShare com ele quando há blob.
+  // Sem blob ainda, assume compartilhável se navigator.share existe — o botão
+  // primário só habilita com blob pronto e revalida no clique.
+  let filesShareable = false;
+  if (shareSupported && blob) {
+    try {
+      filesShareable = typeof navigator.canShare === "function"
+        ? navigator.canShare({ files: [new File([blob], "card.png", { type: "image/png" })] })
+        : false;
+    } catch {
+      filesShareable = false;
+    }
+  } else if (shareSupported && typeof navigator.canShare !== "function") {
+    filesShareable = false;
+  }
 
   useEffect(() => {
     const dialog = ref.current;
@@ -29,62 +58,93 @@ export default function ShareDialog({ result, onClose, showToast }) {
   }, [onClose]);
 
   useEffect(() => {
-    if (!result) return;
+    if (urlRef.current) {
+      URL.revokeObjectURL(urlRef.current);
+      urlRef.current = null;
+    }
+    if (!result) {
+      setImgUrl(null);
+      setBlob(null);
+      setStatus("idle");
+      setShareError(null);
+      return;
+    }
     let cancelled = false;
-    setBusy(true);
-    setImgUrl(null);
+    const myGen = ++genRef.current;
+    setStatus("generating");
+    setShareError(null);
     setBlob(null);
+    setImgUrl(null);
     renderShareCard(result)
       .then((b) => {
-        if (cancelled) return;
+        if (cancelled || myGen !== genRef.current) return;
+        const url = URL.createObjectURL(b);
+        urlRef.current = url;
         setBlob(b);
-        setImgUrl(URL.createObjectURL(b));
+        setImgUrl(url);
+        setStatus("ready");
       })
       .catch(() => {
-        if (!cancelled) showToast("Não consegui gerar o card. Tente de novo.");
-      })
-      .finally(() => {
-        if (!cancelled) setBusy(false);
+        if (cancelled || myGen !== genRef.current) return;
+        setStatus("gen-error");
       });
     return () => {
       cancelled = true;
-      setImgUrl((u) => {
-        if (u) URL.revokeObjectURL(u);
-        return null;
-      });
     };
-  }, [result, showToast]);
+  }, [result, retry]);
+
+  useEffect(() => () => {
+    if (urlRef.current) {
+      URL.revokeObjectURL(urlRef.current);
+      urlRef.current = null;
+    }
+  }, []);
 
   function download() {
-    if (!blob) return;
+    if (!blob || !imgUrl) return;
     const a = document.createElement("a");
     a.href = imgUrl;
     a.download = result.score == null ? "isso-e-verdade-sem-nota.png" : `isso-e-verdade-nota-${result.score}.png`;
+    document.body.appendChild(a);
     a.click();
+    a.remove();
     showToast("Card salvo. Compartilhe onde quiser.");
   }
 
-
-  async function share() {
-    if (!blob) return;
-    const file = new File([blob], result.score == null ? "checagem-sem-nota.png" : `nota-${result.score}.png`, { type: "image/png" });
-    const data = {
-      title: "isso é verdade?",
-      text: buildShareText(result, location),
-      files: [file],
-    };
+  async function shareFile() {
+    if (!blob || !result) return;
+    const file = new File(
+      [blob],
+      result.score == null ? "checagem-sem-nota.png" : `nota-${result.score}.png`,
+      { type: "image/png" },
+    );
+    const data = { title: "isso é verdade?", text: shareText, files: [file] };
+    let ok = false;
     try {
-      if (navigator.canShare?.(data)) {
-        await navigator.share(data);
-      } else {
-        await navigator.share({ title: data.title, text: data.text });
-      }
+      ok = navigator.canShare?.(data) ?? false;
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      setShareError("unsupported");
+      return;
+    }
+    setSharing(true);
+    setShareError(null);
+    try {
+      await navigator.share(data);
     } catch (err) {
+      // Cancelamento é neutro: sem toast, sem fallback automático.
       if (err?.name !== "AbortError") {
-        showToast("Não consegui abrir o compartilhamento. Baixe o card.");
+        setShareError("denied");
       }
+    } finally {
+      setSharing(false);
     }
   }
+
+  const generating = status === "generating";
+  const ready = status === "ready" && blob;
 
   return (
     <dialog ref={ref} aria-label="Card de compartilhamento" className="share-dialog">
@@ -97,18 +157,56 @@ export default function ShareDialog({ result, onClose, showToast }) {
         </button>
       </div>
       <div className="dialog-body share-body">
-        {busy && <p className="verify-hint">Gerando seu card…</p>}
+        {generating && <p className="verify-hint">Gerando seu card…</p>}
+        {status === "gen-error" && (
+          <>
+            <p className="verify-hint" role="alert">Não consegui gerar a imagem do card.</p>
+            <div className="result-actions">
+              <button className="btn primary" onClick={() => setRetry((n) => n + 1)}>
+                Tentar de novo
+              </button>
+              <button className="btn" onClick={() => copyText(shareText, showToast)}>
+                Copiar texto
+              </button>
+            </div>
+          </>
+        )}
         {imgUrl && <img src={imgUrl} alt={`${content?.title ?? "Checagem"} — ${verdictLabel}. ${content?.summary ?? ""}`} className="share-preview" />}
-        <div className="result-actions">
-          <button className="btn primary" onClick={download} disabled={!blob}>
-            Baixar PNG
-          </button>
-          {canShare && (
-            <button className="btn" onClick={share} disabled={!blob}>
-              Compartilhar
-            </button>
-          )}
-        </div>
+        {ready && shareSupported && filesShareable && (
+          <>
+            <p className="verify-hint">Escolha WhatsApp no seletor do aparelho.</p>
+            <div className="result-actions">
+              <button className="btn primary" onClick={shareFile} disabled={sharing}>
+                {sharing ? "Abrindo…" : "Compartilhar imagem e texto"}
+              </button>
+              <button className="btn" onClick={download}>
+                Baixar imagem
+              </button>
+              <button className="btn" onClick={() => copyText(shareText, showToast)}>
+                Copiar texto
+              </button>
+            </div>
+          </>
+        )}
+        {ready && (!shareSupported || !filesShareable) && (
+          <>
+            <div className="result-actions">
+              <button className="btn primary" onClick={download}>
+                Baixar imagem
+              </button>
+              <button className="btn" onClick={() => copyText(shareText, showToast)}>
+                Copiar texto
+              </button>
+              <a className="btn" href={whatsappUrl} target="_blank" rel="noopener noreferrer">
+                Abrir WhatsApp com texto
+              </a>
+            </div>
+            <p className="verify-hint">O aparelho não compartilha arquivos pelo navegador: anexe a imagem manualmente no WhatsApp.</p>
+          </>
+        )}
+        {shareError === "denied" && (
+          <p className="verify-hint" role="alert">Compartilhamento negado pelo aparelho. Baixe a imagem ou copie o texto.</p>
+        )}
       </div>
     </dialog>
   );

@@ -29,11 +29,27 @@ function jsonError(status, body, headers = {}) {
   return { status, body, headers };
 }
 
+export const VERIFY_NDJSON_TYPE = "application/x-ndjson";
+export const VERIFY_CONTRACT = "iev-verify-ndjson/1";
+
+function publicErrorCode(err) {
+  const code = err?.payload?.error ?? err?.message ?? "upstream_error";
+  return typeof code === "string" && code ? code.slice(0, 80) : "upstream_error";
+}
+
+function publicErrorMessage(status, code) {
+  if (status === 503 && code === "missing_api_key") return "Serviço de checagem indisponível no momento.";
+  if (status === 504) return "A checagem demorou demais. Tente de novo.";
+  if (status === 503 && code === "moderation_unavailable") return "Moderação de conteúdo indisponível; a checagem não foi executada.";
+  return undefined;
+}
+
 /**
- * Executa o ciclo completo da requisição de checagem.
- * @returns {Promise<{status:number, body:object, headers?:object}>}
+ * Admissão: validação, limites e reserva de vaga antes de qualquer etapa paga.
+ * Erros aqui continuam JSON + status (pré-headers do stream).
+ * @returns {Promise<{status:number, body:object, headers?:object}|{input:object, slot:object, guard:object}>}
  */
-export async function handleVerifyRequest({ method, headers = {}, body, socketAddress, guard = activeGuard(), env = process.env } = {}) {
+export async function admitVerifyRequest({ method, headers = {}, body, socketAddress, guard = activeGuard(), env = process.env } = {}) {
   if (method !== "POST") return jsonError(405, { error: "method_not_allowed" });
   if (guard.mode === "blocked") {
     return jsonError(503, blockedPayload(guard));
@@ -95,15 +111,69 @@ export async function handleVerifyRequest({ method, headers = {}, body, socketAd
     throw error;
   }
   try {
-    try {
-      await guard.chargeUnits(undefined, input.kind);
-    } catch (error) {
-      if (error instanceof LimitsExceeded) {
-        return jsonError(429, { error: error.code, message: error.message }, { "Retry-After": String(error.retryAfterSec ?? 3600) });
-      }
-      if (error instanceof LimitsUnavailable) return jsonError(503, blockedPayload(guard));
-      throw error;
+    await guard.chargeUnits(undefined, input.kind);
+  } catch (error) {
+    await slot?.release?.().catch(() => {});
+    if (error instanceof LimitsExceeded) {
+      return jsonError(429, { error: error.code, message: error.message }, { "Retry-After": String(error.retryAfterSec ?? 3600) });
     }
+    if (error instanceof LimitsUnavailable) return jsonError(503, blockedPayload(guard));
+    throw error;
+  }
+  return { input, slot, guard };
+}
+
+/**
+ * Execução: roda a checagem com callback de progresso e concilia o consumo.
+ * `onEvent` recebe eventos NDJSON (`accepted`/`content`/`activity`/`result`/`error`);
+ * exatamente um terminal (`result` ou `error`) é emitido, com `seq` crescente.
+ */
+export async function executeVerifyStream({ input, slot, guard, checkId = null, onEvent } = {}) {
+  const emit = typeof onEvent === "function" ? onEvent : () => {};
+  let seq = 0;
+  let terminal = false;
+  const send = (event) => {
+    if (terminal) return;
+    seq += 1;
+    emit({ ...event, seq, at: new Date().toISOString() });
+    if (event?.type === "result" || event?.type === "error") terminal = true;
+  };
+  const id = typeof checkId === "string" && checkId ? checkId : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  send({ type: "accepted", checkId: id, contract: VERIFY_CONTRACT });
+  try {
+    const out = await runVerify(input, {
+      onProgress: (event) => {
+        if (event?.type !== "content" && event?.type !== "activity") return;
+        send(event);
+      },
+    });
+    const tokens = out?.tokenUsage?.total ?? 0;
+    if (tokens) await guard.reconcileTokens(tokens).catch(() => null);
+    send({ type: "result", checkId: out?.checkId ?? id, envelope: out });
+  } catch (err) {
+    if (err instanceof LimitsUnavailable) {
+      send({ type: "error", code: "limits_unavailable", message: blockedPayload(guard)?.message ?? "Controles de uso indisponíveis." });
+    } else {
+      const status = err?.status ?? 502;
+      const code = publicErrorCode(err);
+      const message = err?.payload?.message ?? publicErrorMessage(status, code) ?? "Não consegui checar agora. Tente de novo.";
+      send({ type: "error", code, message: String(message).slice(0, 500) });
+    }
+  } finally {
+    await slot?.release?.().catch(() => {});
+  }
+  return { checkId: id };
+}
+
+/**
+ * Executa o ciclo completo da requisição de checagem.
+ * @returns {Promise<{status:number, body:object, headers?:object}>}
+ */
+export async function handleVerifyRequest({ method, headers = {}, body, socketAddress, guard = activeGuard(), env = process.env } = {}) {
+  const admitted = await admitVerifyRequest({ method, headers, body, socketAddress, guard, env });
+  if (admitted.status) return admitted;
+  const { input, slot } = admitted;
+  try {
     const out = await runVerify(input);
     const tokens = out?.tokenUsage?.total ?? 0;
     if (tokens) await guard.reconcileTokens(tokens).catch(() => null);

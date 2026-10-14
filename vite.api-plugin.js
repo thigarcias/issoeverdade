@@ -1,7 +1,8 @@
 // Plugin Vite (dev): serve /api/verify, /api/corrections e /api/admin com as
 // chaves server-side — mesmos handlers da Vercel.
+// /api/verify admite (JSON + status em caso de recusa) e transmite NDJSON.
 import { loadEnv } from "vite";
-import { handleVerifyRequest } from "./server/endpoint.js";
+import { admitVerifyRequest, executeVerifyStream, VERIFY_CONTRACT, VERIFY_NDJSON_TYPE } from "./server/endpoint.js";
 import { handleCorrectionsRequest } from "./server/corrections-endpoint.js";
 import { handleAdminRequest } from "./server/admin-endpoint.js";
 import { handleHealthRequest } from "./server/health-endpoint.js";
@@ -40,30 +41,47 @@ export function apiVerifyPlugin() {
     },
     configureServer(server) {
       server.middlewares.use("/api/verify", async (req, res) => {
-        res.setHeader("Content-Type", "application/json");
-        const send = (status, obj, headers = {}) => {
+        const sendJson = (status, obj, headers = {}) => {
           res.statusCode = status;
+          res.setHeader("Content-Type", "application/json");
           for (const [key, value] of Object.entries(headers)) res.setHeader(key, value);
           res.end(JSON.stringify(obj));
         };
-        if (req.method !== "POST") return send(405, { error: "method_not_allowed" });
+        if (req.method !== "POST") return sendJson(405, { error: "method_not_allowed" });
         let body;
         try {
           body = JSON.parse(await readBody(req, 4_300_000));
         } catch (error) {
-          return send(error?.message === "payload too large" ? 413 : 400, { error: error?.message === "payload too large" ? "payload_too_large" : "bad_request" });
+          return sendJson(error?.message === "payload too large" ? 413 : 400, { error: error?.message === "payload too large" ? "payload_too_large" : "bad_request" });
         }
+        let admitted;
         try {
-          const out = await handleVerifyRequest({
+          admitted = await admitVerifyRequest({
             method: req.method,
             headers: req.headers,
             body,
             socketAddress: req.socket?.remoteAddress,
           });
-          return send(out.status, out.body, out.headers);
         } catch (err) {
-          return send(err.status ?? 502, err.payload ?? { error: err.message ?? "upstream_error" });
+          return sendJson(err.status ?? 502, err.payload ?? { error: err.message ?? "upstream_error" });
         }
+        if (admitted.status) return sendJson(admitted.status, admitted.body, admitted.headers);
+        res.writeHead(200, {
+          "Content-Type": VERIFY_NDJSON_TYPE,
+          "Cache-Control": "no-store",
+          "X-Verify-Contract": VERIFY_CONTRACT,
+        });
+        await executeVerifyStream({
+          input: admitted.input,
+          slot: admitted.slot,
+          guard: admitted.guard,
+          onEvent: (event) => {
+            try {
+              res.write(`${JSON.stringify(event)}\n`);
+            } catch { /* cliente desconectou; a vaga é liberada no finally */ }
+          },
+        });
+        res.end();
       });
       server.middlewares.use("/api/health", async (req, res) => {
         res.setHeader("Content-Type", "application/json");

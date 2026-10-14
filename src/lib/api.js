@@ -1,10 +1,13 @@
 // ---------------------------------------------------------------------------
-// API client — checagem real via /api/verify. Falhas viram exceção com mensagem
-// amigável; a UI exibe estado de erro com botão de tentar de novo.
-// Retorna `{ result, steps }`. Detalhes do modelo ficam no servidor.
+// API client — checagem real via POST /api/verify com resposta NDJSON
+// incremental (accepted/content/activity/result/error). Falhas viram exceção
+// com mensagem amigável; a UI exibe estado de erro com botão de tentar de novo.
+// Retorna `{ result }`. Detalhes do modelo ficam no servidor.
 // ---------------------------------------------------------------------------
 
-import { ERROR_MESSAGES, OUTCOME_LABEL, PIPELINE_STEPS, migrateVerdict } from "../data/constants.js";
+import { ERROR_MESSAGES, OUTCOME_LABEL, migrateVerdict } from "../data/constants.js";
+
+export const VERIFY_NDJSON_TYPE = "application/x-ndjson";
 
 function kindLabel(input) {
   if (input.kind === "link") {
@@ -102,16 +105,6 @@ function normalize(raw, input, origin) {
   };
 }
 
-function wait(ms, signal) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
-      clearTimeout(t);
-      reject(new DOMException("Aborted", "AbortError"));
-    });
-  });
-}
-
 async function encodeUpload(file) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = "";
@@ -122,64 +115,111 @@ async function encodeUpload(file) {
   return btoa(binary);
 }
 
+function friendlyError(code, serverMessage) {
+  const fallback = code === "payload_too_large" ? "O arquivo excede o limite de envio." : "Não consegui checar agora. Tente de novo.";
+  const error = new Error(serverMessage || ERROR_MESSAGES[code] || fallback);
+  error.code = code;
+  return error;
+}
+
+async function throwAdmissionError(res) {
+  let code = "upstream_error";
+  let serverMessage = "";
+  try {
+    const payload = await res.json();
+    code = payload?.error ?? code;
+    serverMessage = typeof payload?.message === "string" ? payload.message : "";
+  } catch { /* corpo ilegível */ }
+  throw friendlyError(code, serverMessage);
+}
+
 /**
  * @param {{ kind: "link"|"text"|"video"|"image", text: string, context?: string, fileName: string|null, file?: File }} input
- * @param {{ onStep?: (index: number) => void, signal?: AbortSignal }} opts
- * @returns {Promise<{ result: object, steps: typeof PIPELINE_STEPS }>}
+ * @param {{ onContent?: (content: { modality: string, provisional: boolean, coverage: object }) => void, onActivity?: (activity: { id: string, parent: string|null, state: string, note?: string }) => void, onAccepted?: (accepted: { checkId: string, contract: string }) => void, signal?: AbortSignal }} opts
+ * @returns {Promise<{ result: object, checkId: string }>}
+ *
+ * Consome o NDJSON incremental linha a linha (buffer split-chunk): cada chunk
+ * decodificado é acumulado até `\n`; linhas completas viram eventos. Eventos de
+ * execução obsoleta são ignorados pelo chamador via `runId`. Abort propaga ao
+ * fetch e o servidor libera a vaga ao detectar a desconexão.
  */
 export async function verify(input, opts = {}) {
-  opts.onStep?.(0);
-  await wait(400, opts.signal);
-  opts.onStep?.(1);
-  await wait(400, opts.signal);
-  const ctrl = new AbortController();
-  const onAbort = () => ctrl.abort();
-  opts.signal?.addEventListener("abort", onAbort);
-  let res;
+  const body = {
+    kind: input.kind,
+    text: input.text,
+    context: input.kind === "image" ? input.context ?? "" : "",
+    fileName: input.fileName,
+    fileMime: input.file?.type ?? input.fileMime ?? "",
+    fileData: input.file ? await encodeUpload(input.file) : undefined,
+  };
+  const res = await fetch("/api/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: opts.signal,
+  });
+  const contentType = String(res.headers?.get?.("content-type") ?? "");
+  if (!res.ok || !contentType.includes("x-ndjson")) {
+    await throwAdmissionError(res);
+  }
+  const reader = res.body?.getReader?.();
+  if (!reader) {
+    // Sem streaming legível, não há como acompanhar o progresso real.
+    throw friendlyError("upstream_error", "");
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let checkId = null;
+  let terminal = null;
   try {
-    const body = {
-      kind: input.kind,
-      text: input.text,
-      context: input.kind === "image" ? input.context ?? "" : "",
-      fileName: input.fileName,
-      fileMime: input.file?.type ?? input.fileMime ?? "",
-      fileData: input.file ? await encodeUpload(input.file) : undefined,
-    };
-    res = await fetch("/api/verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (line) {
+          let event = null;
+          try {
+            event = JSON.parse(line);
+          } catch { /* linha incompleta ou estranha: ignora sem quebrar o stream */ }
+          if (event?.type === "accepted") {
+            checkId = event.checkId ?? checkId;
+            opts.onAccepted?.({ checkId, contract: event.contract ?? null });
+          } else if (event?.type === "content") {
+            opts.onContent?.({ modality: event.modality ?? "unknown", provisional: Boolean(event.provisional), coverage: event.coverage ?? {} });
+          } else if (event?.type === "activity") {
+            opts.onActivity?.({ id: event.id, parent: event.parent ?? null, state: event.state, note: event.note, seq: event.seq ?? null, at: event.at ?? null });
+          } else if (event?.type === "result") {
+            terminal = { kind: "result", envelope: event.envelope, checkId: event.checkId ?? checkId };
+          } else if (event?.type === "error") {
+            terminal = { kind: "error", code: event.code ?? "upstream_error", message: event.message ?? "" };
+          }
+          if (terminal) {
+            try { await reader.cancel(); } catch { /* leitor já encerrado */ }
+            break;
+          }
+        }
+        newline = buffer.indexOf("\n");
+      }
+      if (terminal) break;
+      opts.signal?.throwIfAborted?.();
+    }
+  } catch (err) {
+    if (err?.name === "AbortError") throw err;
+    if (!terminal) throw friendlyError("upstream_error", "");
   } finally {
-    opts.signal?.removeEventListener("abort", onAbort);
+    try { reader.releaseLock(); } catch { /* leitor já liberado */ }
   }
-  opts.onStep?.(3);
-  await wait(300, opts.signal);
-  if (!res.ok) {
-    let code = "upstream_error";
-    let serverMessage = "";
-    try {
-      const payload = await res.json();
-      code = payload?.error ?? code;
-      serverMessage = typeof payload?.message === "string" ? payload.message : "";
-    } catch { /* corpo ilegível */ }
-    const fallback = code === "payload_too_large" ? "O arquivo excede o limite de envio." : "Não consegui checar agora. Tente de novo.";
-    const error = new Error(serverMessage || ERROR_MESSAGES[code] || fallback);
-    error.code = code;
-    throw error;
-  }
-  const data = await res.json();
-  opts.onStep?.(4);
-  await wait(300, opts.signal);
-  opts.onStep?.(PIPELINE_STEPS.length);
+  if (!terminal) throw friendlyError("upstream_error", "A conexão foi interrompida antes do resultado.");
+  if (terminal.kind === "error") throw friendlyError(terminal.code, terminal.message);
+  const data = terminal.envelope ?? {};
   // O identificador da checagem vem no envelope (data.checkId), não no resultado
   // validado: sem ele, o link de contestação não aponta para um registro real.
-  const result = normalize({ ...data.result, checkId: data.checkId ?? data.result?.checkId ?? null }, input, data.origin ?? null);
+  const result = normalize({ ...data.result, checkId: data.checkId ?? data.result?.checkId ?? checkId }, input, data.origin ?? null);
   result.cached = Boolean(data.cached);
   result.cachedFrom = data.cachedFrom ?? null;
-  return {
-    result,
-    steps: PIPELINE_STEPS,
-  };
+  return { result, checkId: data.checkId ?? checkId };
 }

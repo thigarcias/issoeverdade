@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { PIPELINE_STEPS, THINKING_LINES, VERDICTS } from "../data/constants.js";
+import { ACTIVITY_STATE_LABEL, ACTIVITY_TEXT, VERDICTS, modalitySummary } from "../data/constants.js";
 import { verify } from "../lib/api.js";
 import { useServerLimits } from "../lib/hooks.js";
 import ResultCard from "./ResultCard.jsx";
@@ -41,6 +41,15 @@ function formatDuration(ms) {
 function fileFingerprint(file) {
   return file ? `${file.name}:${file.size}:${file.lastModified}` : null;
 }
+const ACTIVITY_ORDER = ["source-classification", "media-probe", "media-acquisition", "media-upload", "media-metadata", "media-transcription", "media-vision", "judge", "article-research", "final", "evidence", "evidence-review", "cache"];
+function activityDot(state) {
+  if (state === "done") return "✓";
+  if (state === "running") return "…";
+  if (state === "failed") return "!";
+  if (state === "limited") return "◐";
+  if (state === "skipped") return "–";
+  return "·";
+}
 export default function Verifier({ showToast, onChecked, quickInput, onShareCard }) {
   const limits = useServerLimits();
   const [tab, setTab] = useState("link");
@@ -48,10 +57,11 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
   const [imageContext, setImageContext] = useState("");
   const [file, setFile] = useState(null);
   const [drag, setDrag] = useState(false);
-  const [step, setStep] = useState(-1); // -1 idle, 0..n running, len done
+  const [running, setRunning] = useState(false);
+  const [activities, setActivities] = useState(new Map());
+  const [content, setContent] = useState(null);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
-  const [thinkIdx, setThinkIdx] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [checkedInput, setCheckedInput] = useState(null);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -75,10 +85,10 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     setFile(null);
     setResult(null);
     setError(null);
-    setStep(-1);
+    setActivities(new Map());
+    setContent(null);
   }, [quickInput]);
 
-  const running = step >= 0 && step < PIPELINE_STEPS.length;
   const isUpload = tab === "video" || tab === "image";
   const linkOk = text.trim().length === 0 || isValidHttpUrl(text);
   const canSubmit =
@@ -91,23 +101,21 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
           ? Boolean(file)
           : text.trim().length >= 4);
 
-  // Frases de thinking + cronômetro: rotaciona enquanto a IA trabalha.
+  // Cronômetro do tempo decorrido (sem % inventada); aria-live anuncia as
+  // atividades, não cada tick do relógio.
   useEffect(() => {
-    if (!running) {
-      setThinkIdx(0);
-      return;
-    }
-    const think = setInterval(() => {
-      setThinkIdx((i) => (i + 1) % THINKING_LINES.length);
-    }, 2600);
+    if (!running) return;
     const clock = setInterval(() => {
       setElapsedMs(Date.now() - startRef.current);
     }, 500);
-    return () => {
-      clearInterval(think);
-      clearInterval(clock);
-    };
+    return () => clearInterval(clock);
   }, [running]);
+
+  function resetProgress() {
+    setActivities(new Map());
+    setContent(null);
+    setRunning(false);
+  }
 
   function switchTab(next) {
     if (next === tab) return;
@@ -119,7 +127,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     setFile(null);
     setResult(null);
     setError(null);
-    setStep(-1);
+    resetProgress();
   }
 
   async function handleSubmit(e) {
@@ -133,6 +141,9 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     setResult(null);
     setError(null);
     setExpanded(false);
+    setActivities(new Map());
+    setContent(null);
+    setRunning(true);
     try {
       const uploadFile = file;
       const snapshot = {
@@ -144,19 +155,35 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
         file: uploadFile ?? undefined,
         fileFingerprint: fileFingerprint(uploadFile),
       };
-      const { result: r } = await verify(
-        snapshot,
-        { onStep: setStep, signal: aborter.current.signal },
-      );
+      const { result: r } = await verify(snapshot, {
+        signal: aborter.current.signal,
+        onContent: (next) => {
+          if (runId.current !== mine) return;
+          setContent(next);
+        },
+        onActivity: (activity) => {
+          if (runId.current !== mine) return;
+          setActivities((prev) => {
+            const next = new Map(prev);
+            next.set(activity.id, activity);
+            return next;
+          });
+        },
+      });
       if (runId.current !== mine) return; // execução obsoleta
       r.elapsedMs = Date.now() - startRef.current;
       setResult(r);
       setCheckedInput({ kind: snapshot.kind, text: snapshot.text, context: snapshot.context, fileName: snapshot.fileName, fileFingerprint: snapshot.fileFingerprint });
       onChecked?.(r);
+      setRunning(false);
     } catch (err) {
-      if (err?.name === "AbortError") return;
+      if (runId.current !== mine) return;
+      if (err?.name === "AbortError") {
+        resetProgress();
+        return;
+      }
       setError(err?.message ?? "Não consegui checar agora. Tente de novo.");
-      setStep(-1);
+      setRunning(false);
     }
   }
 
@@ -208,7 +235,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     setResult(null);
     setError(null);
     setCheckedInput(null);
-    setStep(-1);
+    resetProgress();
   }
 
   return (
@@ -461,34 +488,35 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
 
           {running && !result && (
             <div className="processing-hero">
-              <p className="thinking thinking-big" aria-live="polite" key={thinkIdx}>
+              <p className="thinking thinking-big" aria-live="polite">
                 <span className="thinking-dots" aria-hidden="true">
                   <i /><i /><i />
                 </span>
-                {THINKING_LINES[thinkIdx]}
+                {modalitySummary(content, { hasUpload: Boolean(file) })}
               </p>
-              <div className="progress-track" aria-hidden="true">
-                <i style={{ width: `${Math.round(((step + 1) / PIPELINE_STEPS.length) * 100)}%` }} />
-              </div>
               <p className="eta-line">
                 {formatDuration(elapsedMs)} decorridos
                 {tab === "video" && <> · vídeos e arquivos enviados podem levar alguns minutos; o upload aceita até 3 MB</>}
               </p>
               <ol className="pipeline">
-                {PIPELINE_STEPS.map((s, i) => (
-                  <li
-                    key={s.id}
-                    className={`pipe-step${i < step ? " done" : ""}${i === step ? " active" : ""}`}
-                    aria-current={i === step ? "step" : undefined}
-                    style={{ "--i": i }}
-                  >
-                    <span className="pipe-dot">{i < step ? "✓" : i + 1}</span>
-                    <div>
-                      <h4>{s.title}</h4>
-                      <p>{s.hint}</p>
-                    </div>
-                  </li>
-                ))}
+                {ACTIVITY_ORDER.filter((id) => activities.has(id)).map((id, i) => {
+                  const activity = activities.get(id);
+                  const meta = ACTIVITY_TEXT[id] ?? { title: id, hint: "" };
+                  return (
+                    <li
+                      key={id}
+                      className={`pipe-step${activity.state === "done" || activity.state === "limited" ? " done" : ""}${activity.state === "running" || activity.state === "pending" ? " active" : ""}`}
+                      aria-current={activity.state === "running" ? "step" : undefined}
+                      style={{ "--i": i }}
+                    >
+                      <span className="pipe-dot">{activityDot(activity.state)}</span>
+                      <div>
+                        <h4>{meta.title}</h4>
+                        <p>{activity.note ?? meta.hint} · {ACTIVITY_STATE_LABEL[activity.state] ?? activity.state}</p>
+                      </div>
+                    </li>
+                  );
+                })}
               </ol>
               <div className="processing-actions">
                 <button className="btn ghost" type="button" onClick={reset}>

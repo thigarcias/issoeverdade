@@ -409,6 +409,7 @@ async function collectMediaArtifacts(audio, frameResult, mediaContext, opts = {}
         const result = await measure("media-transcription", () => transcribe(audio.file, {
           provider: opts.aiCfg?.transcribe?.provider,
           model: opts.aiCfg?.transcribe?.model,
+          onProgress: opts.onTranscribeProgress ?? opts.onProgress ?? null,
         }));
         const selected = opts.aiCfg?.transcribe ?? { provider: "openai", model: "whisper-1" };
         debug.push(result?.ok
@@ -572,12 +573,47 @@ async function enrichUploadedMedia(input, opts = {}) {
 }
 
 /**
- * Runs the configured research, media, validation, logging, and cache pipeline.
+ * Estados públicos das atividades emitidas no stream NDJSON. `pending` marca
+ * intenções confirmadas pelo roteamento antes do início; `limited` marca
+ * cobertura parcial observada (sem fala reconhecível, leitura parcial etc.).
  */
+export const ACTIVITY_STATES = new Set(["pending", "running", "done", "skipped", "limited", "failed"]);
+
+const PROGRESS_SEQ_START = 1;
+
+function makeProgressEmitter(onProgress) {
+  let seq = PROGRESS_SEQ_START - 1;
+  let closed = false;
+  const emittedIds = new Set();
+  const emit = (event) => {
+    if (closed || typeof onProgress !== "function") return;
+    seq += 1;
+    if (event?.type === "activity" && typeof event?.id === "string") emittedIds.add(event.id);
+    try {
+      onProgress({ ...event, seq, at: new Date().toISOString() });
+    } catch { /* progresso nunca quebra a checagem */ }
+  };
+  return {
+    emitted: (id) => emittedIds.has(id),
+    activity(id, state, parent = null, note = undefined) {
+      if (!ACTIVITY_STATES.has(state)) return;
+      emit(note == null ? { type: "activity", id, parent, state } : { type: "activity", id, parent, state, note: String(note).slice(0, 200) });
+    },
+    content(modality, provisional, coverage = {}) {
+      emit({ type: "content", modality, provisional: Boolean(provisional), coverage });
+    },
+    close() { closed = true; },
+  };
+}
+
 function makeId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
-
+/**
+ * Runs the configured research, media, validation, logging, and cache pipeline.
+ * `opts.onProgress` recebe eventos NDJSON (`content`/`activity`) da execução
+ * real; é opcional e nunca altera o resultado.
+ */
 export async function runVerify(input, opts = {}) {
   const normalizedInput = normalizeVerifyInput(input);
   const startedAt = Date.now();
@@ -619,7 +655,8 @@ export async function runVerify(input, opts = {}) {
   }
 }
 
-async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt } = {}) {
+async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt, onProgress } = {}) {
+  const progress = makeProgressEmitter(onProgress);
   const configState = await getAiConfigState();
   const aiCfg = configState.config;
   trace.aiConfig = Object.fromEntries(Object.entries(aiCfg).map(([step, pair]) => [step, `${pair.provider}:${pair.model}`]));
@@ -660,19 +697,60 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       error: null,
     }).catch(() => {});
     recordCheck({ kind: input?.kind, outcome: hit.result?.outcome ?? "checked", verdict: hit.result?.verdict ?? null, totalMs: elapsed, cached: true });
+    progress.content("cached", false, { cached: true, cachedFrom: hit.checkId ?? null });
+    progress.activity("cache", "done", null, "Resultado recuperado do cache");
+    progress.close();
     return { ...hit, checkId: id, cached: true, cachedFrom: hit.checkId ?? null };
   }
 
   const phases = trace?.phases ?? [];
+  const PHASE_ACTIVITY = {
+    "source-classification": { id: "source-classification", parent: null },
+    "media-probe": { id: "media-probe", parent: null },
+    "media-upload": { id: "media-upload", parent: null },
+    enrich: { id: "media-acquisition", parent: null },
+    "media-download": { id: "media-acquisition", parent: null },
+    "media-upload-extract": { id: "media-upload", parent: null },
+    "media-metadata": { id: "media-metadata", parent: "media-acquisition" },
+    "media-transcription": { id: "media-transcription", parent: "media-acquisition" },
+    "media-vision": { id: "media-vision", parent: "media-acquisition" },
+    "image-source-fetch": { id: "media-acquisition", parent: null },
+    vision: { id: "media-vision", parent: null },
+    judge: { id: "judge", parent: null },
+    "article-research": { id: "article-research", parent: "judge" },
+    final: { id: "final", parent: null },
+    evidence: { id: "evidence", parent: null },
+    "evidence-review": { id: "evidence-review", parent: "evidence" },
+  };
+  const activityDone = new Set();
+  function activityStateFor(name, outcome) {
+    if (outcome?.limited === true) return "limited";
+    if (outcome === null || outcome?.ok === false) return "failed";
+    if (typeof outcome === "object" && "text" in outcome && !outcome.text) return "limited";
+    return "done";
+  }
+  function markActivityDone(name, outcome, note) {
+    const mapping = PHASE_ACTIVITY[name];
+    if (!mapping || activityDone.has(mapping.id)) return;
+    activityDone.add(mapping.id);
+    progress.activity(mapping.id, activityStateFor(name, outcome), mapping.parent, note);
+  }
   async function phase(name, fn, parent = null) {
+    const mapping = PHASE_ACTIVITY[name];
+    if (mapping && !activityDone.has(mapping.id)) progress.activity(mapping.id, "running", mapping.parent);
     const start = Date.now();
     try {
       const out = await fn();
       const ok = out !== null && out?.ok !== false;
       phases.push({ name, parent, startMs: start - t0, ms: Date.now() - start, ok, ...(!ok ? { error: out?.reason ?? "no-result" } : {}) });
+      markActivityDone(name, out);
       return out;
     } catch (err) {
       phases.push({ name, parent, startMs: start - t0, ms: Date.now() - start, ok: false, error: String(err?.payload?.error ?? err?.message ?? err).slice(0, 200) });
+      if (mapping && !activityDone.has(mapping.id)) {
+        activityDone.add(mapping.id);
+        progress.activity(mapping.id, "failed", mapping.parent);
+      }
       throw err;
     }
   }
@@ -689,8 +767,33 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   const mediaTarget = videoTarget || audioTarget || socialMediaCandidate;
   const imageTarget = input?.kind === "image" || (input?.kind === "link" && sourceInfo?.type === "image");
   const articleTarget = input?.kind === "link" && isUrl && sourceInfo?.type === "html";
+  progress.content(
+    !isUrl || (!wantsMedia && input?.kind !== "image") ? "text"
+      : imageTarget ? "image"
+      : videoTarget ? "video"
+      : audioTarget ? "audio"
+      : socialMediaCandidate ? "social-post"
+      : articleTarget ? "article"
+      : sourceInfo?.type === "pdf" ? "document"
+      : sourceInfo?.type === "social" ? "social-post"
+      : "link",
+    true,
+    { kind: input?.kind ?? null, hasUpload: Boolean(input?.fileBuffer), sourceType: sourceInfo?.type ?? null },
+  );
   const modelsUsed = {};
   trace.modelsUsed = modelsUsed;
+  if (input?.fileBuffer) {
+    // Upload nunca é apresentado como download: a aquisição é o processamento local.
+    progress.activity("media-upload", "pending", null, "Arquivo enviado");
+  } else if (mediaTarget || imageTarget) {
+    progress.activity("media-acquisition", "pending", null, "Aquisição da mídia");
+  }
+  if (mediaTarget) {
+    progress.activity("media-transcription", "pending", "media-acquisition");
+    if (videoTarget || socialMediaCandidate || (!audioTarget && input?.kind === "video")) progress.activity("media-vision", "pending", "media-acquisition");
+  } else if (imageTarget) {
+    progress.activity("media-vision", "pending", null);
+  }
   const tokenUsage = { input: 0, output: 0 };
   const addUsage = (response) => {
     if (!response?.usage) return;
@@ -838,9 +941,14 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
 
   if (mediaTarget && !blockedResult) {
     let enriched = null;
+    // Notas de espera por vaga vs chamada real; emite running sem duplicar o done/failed do phase().
+    const transcribeProgressNote = (stage) => {
+      if (stage === "waiting-for-slot") progress.activity("media-transcription", "running", "media-acquisition", "Aguardando vaga do transcritor");
+      else if (stage === "calling-transcriber" && !activityDone.has("media-transcription")) progress.activity("media-transcription", "running", "media-acquisition", "Transcrevendo o áudio");
+    };
     if (input.fileBuffer) {
       enriched = await phase("media-upload", () =>
-        enrichUploadedMedia(input, { aiCfg, timeoutMs, sessionId: id, onUsage: addUsage, moderateText: moderateTextArtifact, moderateFrames: moderateFrameArtifact, checkVideoCoverage: () => checkVideoCoverage(modCfg), phase: (name, fn) => phase(name, fn, "media-upload") }),
+        enrichUploadedMedia(input, { aiCfg, timeoutMs, sessionId: id, onUsage: addUsage, moderateText: moderateTextArtifact, moderateFrames: moderateFrameArtifact, checkVideoCoverage: () => checkVideoCoverage(modCfg), phase: (name, fn) => phase(name, fn, "media-upload"), onTranscribeProgress: transcribeProgressNote }),
       ).catch((error) => {
         mediaDebug.push(`upload-failed:${String(error?.code ?? "processing-failed").slice(0, 80)}`);
         return null;
@@ -858,6 +966,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
           moderateFrames: moderateFrameArtifact,
           checkVideoCoverage: () => checkVideoCoverage(modCfg),
           phase: (name, fn) => phase(name, fn, "enrich"),
+          onTranscribeProgress: transcribeProgressNote,
         }),
       ).catch((error) => {
         mediaDebug.push(`enrich-failed:${String(error?.code ?? "processing-failed").slice(0, 80)}`);
@@ -892,6 +1001,19 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       origin = enriched.origin ?? origin;
       recordModel("transcribe", transcript);
       recordModel("vision", enriched.visionResult);
+      const via = enriched.via
+        ?? (enriched.debug ?? []).map((entry) => String(entry).match(/(?:^|:)(worker|yt-dlp|direct|local-upload|og-video)(?::|$)/)?.[1]).find(Boolean)
+        ?? null;
+      if (enriched.ok !== false) markActivityDone("media-download", { ok: true }, via ? `via ${via}` : undefined);
+      progress.content(videoTarget ? "video" : audioTarget ? "audio" : "social-post", false, {
+        kind: input?.kind ?? null,
+        hasAudio: transcript?.ok === true,
+        hasFrames: mediaFrameCount > 0,
+        hasVision: Boolean(vision),
+        via: via ?? undefined,
+      });
+    } else {
+      markActivityDone("media-download", { ok: false });
     }
     if (!blockedResult && !transcript?.ok && !vision && enriched?.postText) {
       // Há texto original disponível, mas nenhuma cobertura de anexos: checar só esse texto.
@@ -982,6 +1104,9 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     if (!providerKey(aiCfg.judge.provider) && !providerKey("openai") && !providerKey("opencode")) {
       fail(503, "missing_api_key", { message: "Nenhuma chave de IA configurada no servidor." });
     }
+    progress.activity("judge", "pending", null);
+    if (articleTarget) progress.activity("article-research", "pending", "judge");
+    if (mediaTarget || imageTarget) progress.activity("final", "pending", null);
     judge = await phase("judge", () =>
       callModel({
         aiCfg, step: "judge", instructions: judgeInstructions,
@@ -1086,6 +1211,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   const evCfg = evidenceConfig();
   let evidenceDossier = null;
   const evidenceCorrections = [];
+  if (!blockedResult && evCfg.enabled) progress.activity("evidence", "pending", null);
   if (!blockedResult && ["checked", "partial_coverage"].includes(finalResult?.outcome) && claims.length > 0 && evCfg.enabled) {
     evidenceDossier = await phase("evidence", () =>
       collectEvidence({ sources: finalResult.sources, claims: finalResult.claims, config: evCfg }),
@@ -1263,6 +1389,14 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     checkId: id,
     totalMs,
   };
+  // Atividades anunciadas como pendentes que nunca executaram viram `skipped`;
+  // nenhuma afirma progresso de trabalho não realizado.
+  for (const mapping of Object.values(PHASE_ACTIVITY)) {
+    if (activityDone.has(mapping.id) || !progress.emitted(mapping.id)) continue;
+    activityDone.add(mapping.id);
+    progress.activity(mapping.id, "skipped", mapping.parent);
+  }
+  progress.close();
   setCached(input, out, cacheNamespace).catch(() => {});
   return out;
 }

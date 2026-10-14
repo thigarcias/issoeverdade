@@ -31,16 +31,86 @@ const FACTORY = {
   vision: { provider: "opencode", model: "muse-spark-1.3-contributor" },
   transcribe: { provider: "openai", model: "whisper-1" },
 };
-const GO_RESPONSES = new Set([
-  "grok-4.6", "grok-4.7", "gpt-5.6-luna", "gpt-6-luna",
-  "muse-spark-1.2-contributor", "muse-spark-1.3-contributor",
-]);
-const OPENAI_TRANSCRIPTION = new Set([
-  "whisper-1", "gpt-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe",
-]);
+// Registro explícito de modelos com adapter implementado e capacidades
+// documentadas por provedor. Só IDs presentes aqui são elegíveis; qualquer
+// outro ID descoberto fica com protocolo "unknown", sem inferência por
+// semelhança de nome. `eligibleSteps` é derivado das capacidades.
+const MODEL_REGISTRY = {
+  opencode: {
+    "muse-spark-1.3-contributor": { label: "Muse Spark 1.3 Contributor", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "muse-spark-1.2-contributor": { label: "Muse Spark 1.2 Contributor", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-6-luna": { label: "GPT-6 Luna", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-5.6-luna": { label: "GPT-5.6 Luna", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "grok-4.7": { label: "Grok 4.7", protocol: "responses", capabilities: ["text-output", "web-search"] },
+    "grok-4.6": { label: "Grok 4.6", protocol: "responses", capabilities: ["text-output", "web-search"] },
+  },
+  openai: {
+    "gpt-4o": { label: "GPT-4o", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-4o-mini": { label: "GPT-4o Mini", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-4.1": { label: "GPT-4.1", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-4.1-mini": { label: "GPT-4.1 Mini", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "gpt-4.1-nano": { label: "GPT-4.1 Nano", protocol: "responses", capabilities: ["text-output", "web-search", "image-input"] },
+    "whisper-1": { label: "Whisper 1 (transcrição)", protocol: "audio-transcriptions", capabilities: ["audio-input", "transcription"] },
+    "gpt-4o-transcribe": { label: "GPT-4o Transcribe", protocol: "audio-transcriptions", capabilities: ["audio-input", "transcription"] },
+    "gpt-4o-mini-transcribe": { label: "GPT-4o Mini Transcribe", protocol: "audio-transcriptions", capabilities: ["audio-input", "transcription"] },
+    "gpt-transcribe": { label: "GPT Transcribe", protocol: "audio-transcriptions", capabilities: ["audio-input", "transcription"] },
+  },
+};
+
+// Motivos estruturados de (in)elegibilidade por (modelo, etapa).
+export const ELIGIBILITY_REASONS = {
+  OTHER_STEP: "other_step",
+  NO_ADAPTER: "no_adapter",
+  UNVALIDATED_CAPABILITY: "unvalidated_capability",
+  MISSING_CREDENTIAL: "missing_credential",
+  NOT_IN_INVENTORY: "not_in_inventory",
+  STALE_INVENTORY: "stale_inventory",
+};
+
+export const REASON_MESSAGES = {
+  other_step: "Modelo de transcrição: compatível apenas com a etapa de transcrição.",
+  no_adapter: "Protocolo ou provedor sem adapter validado neste pipeline.",
+  unvalidated_capability: "Capacidades deste modelo ainda não validadas para esta etapa.",
+  missing_credential: "Provedor sem chave configurada — disponibilidade não confirmada.",
+  not_in_inventory: "Modelo não está no inventário descoberto.",
+  stale_inventory: "Inventário desatualizado e modelo ausente da última descoberta — atualize o catálogo.",
+  missing_pair: "Par provedor/modelo ausente.",
+};
+function eligibleStepsFor(capabilities) {
+  if (capabilities.includes("transcription")) return ["transcribe"];
+  const steps = [];
+  if (capabilities.includes("text-output")) steps.push("judge", "final");
+  if (capabilities.includes("image-input")) steps.push("vision");
+  return steps;
+}
+
+function stepReasonEntry(provider, id, step) {
+  const found = registryStepReason(provider, id, step);
+  if (found.eligible) return { eligible: true, reason: null, message: null };
+  return { eligible: false, reason: found.reason, message: REASON_MESSAGES[found.reason] ?? found.reason };
+}
+
+// Elegibilidade no registro, sem depender do inventário descoberto nem de
+// credenciais: distingue outra etapa, adapter ausente e capacidade não
+// validada. Presença no inventário e credencial são avaliadas em
+// pairRejection, com precedência própria.
+function registryStepReason(provider, id, step) {
+  if (!PROVIDERS[provider]) return { eligible: false, reason: ELIGIBILITY_REASONS.NO_ADAPTER };
+  const entry = MODEL_REGISTRY[provider]?.[id];
+  if (!entry) return { eligible: false, reason: ELIGIBILITY_REASONS.NO_ADAPTER };
+  if (eligibleStepsFor(entry.capabilities).includes(step)) return { eligible: true, reason: null };
+  if (entry.capabilities.includes("transcription")) return { eligible: false, reason: ELIGIBILITY_REASONS.OTHER_STEP };
+  return { eligible: false, reason: ELIGIBILITY_REASONS.UNVALIDATED_CAPABILITY };
+}
 
 let memory = null;
 let catalogMemory = null;
+
+export function __resetAiConfigCaches() {
+  memory = null;
+  catalogMemory = null;
+}
+
 
 function blobToken() {
   return process.env.BLOB_READ_WRITE_TOKEN || "";
@@ -54,8 +124,7 @@ export function providerKey(provider) {
 export function providerUrl(provider, model) {
   const config = PROVIDERS[provider];
   if (!config) return null;
-  if (provider === "opencode" && GO_RESPONSES.has(model)) return config.responseUrl;
-  if (provider === "openai" && isOpenAiResponsesModel(model)) return config.responseUrl;
+  if (MODEL_REGISTRY[provider]?.[model]?.protocol === "responses") return config.responseUrl;
   return null;
 }
 
@@ -63,46 +132,23 @@ export function providerLabel(provider) {
   return PROVIDERS[provider]?.label ?? provider;
 }
 
-function isOpenAiResponsesModel(id) {
-  return /^(?:gpt-(?:6(?:\.\d+)?|5(?:\.\d+)?|4\.(?:1|o))(?:-(?:mini|nano|pro|sol|terra|luna))?)$/.test(id);
-}
-
-function modelInfo(provider, id) {
-  if (provider === "openai" && OPENAI_TRANSCRIPTION.has(id)) {
-    return {
-      id, label: id, protocol: "audio-transcriptions", capabilities: ["audio-input", "transcription"],
-      eligibleSteps: ["transcribe"],
-    };
-  }
-  const supported = provider === "opencode" ? GO_RESPONSES.has(id) : isOpenAiResponsesModel(id);
-  if (!supported) {
+export function modelInfo(provider, id) {
+  const entry = PROVIDERS[provider] ? MODEL_REGISTRY[provider]?.[id] : null;
+  if (!entry) {
     return {
       id, label: id, protocol: "unknown", capabilities: [], eligibleSteps: [],
-      ineligibleReason: "Protocolo ou capacidades ainda não validados para este pipeline.",
+      stepReasons: Object.fromEntries(STEPS.map((step) => [step, { eligible: false, reason: ELIGIBILITY_REASONS.NO_ADAPTER, message: REASON_MESSAGES.no_adapter }])),
+      ineligibleReason: REASON_MESSAGES.no_adapter,
     };
   }
-  const vision = provider === "openai" || /^(?:muse-spark|gpt-\d)/.test(id);
-  const capabilities = ["text-output", "web-search", ...(vision ? ["image-input"] : [])];
   return {
-    id, label: modelLabel(id), protocol: "responses", capabilities,
-    eligibleSteps: ["judge", "final", ...(vision ? ["vision"] : [])],
+    id,
+    label: entry.label ?? id,
+    protocol: entry.protocol,
+    capabilities: [...entry.capabilities],
+    eligibleSteps: eligibleStepsFor(entry.capabilities),
+    stepReasons: Object.fromEntries(STEPS.map((step) => [step, stepReasonEntry(provider, id, step)])),
   };
-}
-
-function modelLabel(id) {
-  const known = {
-    "muse-spark-1.3-contributor": "Muse Spark 1.3 Contributor",
-    "muse-spark-1.2-contributor": "Muse Spark 1.2 Contributor",
-    "gpt-6-luna": "GPT-6 Luna",
-    "gpt-5.6-luna": "GPT-5.6 Luna",
-    "grok-4.7": "Grok 4.7",
-    "grok-4.6": "Grok 4.6",
-    "whisper-1": "Whisper 1 (transcrição)",
-    "gpt-transcribe": "GPT Transcribe",
-    "gpt-4o-transcribe": "GPT-4o Transcribe",
-    "gpt-4o-mini-transcribe": "GPT-4o Mini Transcribe",
-  };
-  return known[id] ?? id;
 }
 
 async function fetchCatalog(provider) {
@@ -215,24 +261,40 @@ function envConfig() {
   return out;
 }
 
-function resolvePairs(raw, catalog, { strict = false } = {}) {
+// Precedência de recusa por (provedor, modelo, etapa): provedor sem adapter
+// > credencial ausente (independente de elegibilidade: sem chave não há como
+// confirmar disponibilidade) > ausência no inventário (com motivo próprio
+// quando o inventário está desatualizado, mantendo o bloqueio atual) >
+// elegibilidade da etapa no registro.
+function pairRejection(provider, model, step, catalog) {
+  if (!PROVIDERS[provider]) return ELIGIBILITY_REASONS.NO_ADAPTER;
+  if (!providerKey(provider)) return ELIGIBILITY_REASONS.MISSING_CREDENTIAL;
+  const discovered = catalog.providers[provider];
+  const info = discovered?.models?.find((candidate) => candidate.id === model);
+  if (!info) {
+    return discovered?.discovery?.stale ? ELIGIBILITY_REASONS.STALE_INVENTORY : ELIGIBILITY_REASONS.NOT_IN_INVENTORY;
+  }
+  if (!info.eligibleSteps.includes(step)) {
+    return info.stepReasons?.[step]?.reason ?? ELIGIBILITY_REASONS.UNVALIDATED_CAPABILITY;
+  }
+  return null;
+}
+
+export function resolvePairs(raw, catalog, { strict = false } = {}) {
   const out = {};
   const errors = {};
   for (const step of STEPS) {
     const pair = raw?.[step];
     if (!pair || typeof pair !== "object") {
-      if (strict) errors[step] = "Par provedor/modelo ausente.";
+      if (strict) errors[step] = REASON_MESSAGES.missing_pair;
       else out[step] = { ...FACTORY[step] };
       continue;
     }
     const provider = String(pair.provider ?? "");
     const model = String(pair.model ?? "");
-    const info = catalog.providers[provider]?.models?.find((candidate) => candidate.id === model);
-    const providerReady = Boolean(providerKey(provider));
-    if (!info || !info.eligibleSteps.includes(step) || !providerReady) {
-      const reason = !info ? "Modelo não está no inventário descoberto." :
-        !info.eligibleSteps.includes(step) ? info.ineligibleReason ?? `Modelo incompatível com ${step}.` : "Chave do provedor ausente.";
-      if (strict) errors[step] = reason;
+    const reason = pairRejection(provider, model, step, catalog);
+    if (reason) {
+      if (strict) errors[step] = REASON_MESSAGES[reason] ?? reason;
       else out[step] = { ...FACTORY[step] };
       continue;
     }

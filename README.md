@@ -141,24 +141,28 @@ padrão). O contexto segue em `input.context` para a análise, é tratado como d
 não confiável e não comprova autenticidade. Trocar de aba ou limpar descarta o
 conteúdo anterior, evitando reutilizar texto/contexto em outra entrada.
 
-O card do resultado abre o diálogo de compartilhamento com prévia PNG gerada
-localmente: um arquivo de 1080 px de largura, com altura medida antes do desenho.
-A síntese representa o conjunto, e o card preserva todas as afirmações, textos,
-justificativas, trechos de evidência, pontos não checados com seus motivos,
-cobertura e limites disponíveis no resultado. Não há corte de linhas nem teto
-de três afirmações/fontes; as fontes têm número, identificação e URL completos.
-O texto copiado ou compartilhado também inclui esses pontos. Resultados extensos
-geram uma imagem mais alta, legível em tamanho original; se excederem os limites
-de dimensão/memória do Canvas, a geração falha explicitamente e o texto completo
-continua disponível, sem produzir uma imagem parcial.
-Onde o aparelho aceita arquivos via Web Share, o botão
-**Compartilhar imagem e texto** abre o seletor do sistema (escolha WhatsApp
-nele); não há envio automático nem garantia de que o WhatsApp será escolhido.
-Sem suporte a arquivos, o diálogo oferece **Baixar imagem**, **Copiar texto** e
-**Abrir WhatsApp com texto**, avisando que a imagem deve ser anexada
-manualmente. Resultados sem veredito mantêm essa limitação na mensagem e na
-imagem, sem nota/selo factual. Resultados “sem comprovação” preservam afirmações,
-fontes e o selo de limitação, mas exibem nota indisponível, nunca zero.
+O card do resultado abre o diálogo de compartilhamento com prévias PNG geradas
+localmente, sempre verticais de **1080 × 1920 px** (9:16). A imagem é um parecer rápido:
+veredito global e nota (ou sua indisponibilidade), cobertura compacta, texto
+integral de cada afirmação com score/status e pontos não checados identificados
+separadamente. Não repete resumos longos, justificativas nem trechos de evidência:
+esses detalhes, motivos, limites e fontes com URLs continuam completos no
+resultado e no texto copiado ou compartilhado. Não há teto de três pontos nem
+corte de texto; quando o conteúdo não cabe com fonte legível, são geradas páginas
+numeradas. Um ponto maior que uma página segue com rótulo de
+**continuação**, sem omitir seu texto. O rodapé informa quantidade de fontes,
+limitação essencial, checagem automática e identificação da checagem/site.
+O card segue a identidade do site (creme, tinta e vermelho): marca e veredito em Faustina (serifa); pontos, status e rótulos em Geist. Sem caixas nem faixas: o veredito e a nota dominam o topo; cada ponto é separado por uma régua fina, com número, texto e, sob ele, o status com a nota à direita. Pontos não checados ficam em seção própria. Nas páginas seguintes, uma linha de contexto repete o veredito e a nota. No PNG de 1080 px: marca 36 px, veredito 76 px, nota 136 px, pontos 30 px, status e rótulos 24 px, rodapé 24 px.
+Texto e rótulos continuam explicitando o resultado, sem depender somente da cor.
+O diálogo permite navegar pelas páginas e baixar a imagem selecionada.
+Onde o aparelho aceita todos os arquivos via Web Share, **Compartilhar imagens e
+texto** abre o seletor do sistema com todos os PNGs (escolha WhatsApp nele); não
+há envio automático nem garantia de que o WhatsApp será escolhido.
+Sem suporte ao conjunto de arquivos, o diálogo oferece download das páginas,
+**Copiar texto** e **Abrir WhatsApp com texto**, avisando que todas as imagens
+devem ser anexadas manualmente. Resultados sem veredito mantêm essa limitação,
+sem inventar nota/selo factual. Resultados “sem comprovação” preservam os pontos
+e o status de limitação, mas a nota indisponível nunca é convertida em zero.
 
 Links sociais usam texto disponível em oEmbed, worker, yt-dlp ou OpenGraph e
 seguem até três links documentais presentes nesse texto, dentro de limites. Texto

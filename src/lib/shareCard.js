@@ -1,24 +1,46 @@
-// Gera um único PNG de 1080 px de largura e altura medida via Canvas 2D.
-// Preserva a identidade do site e todo o conteúdo; nunca corta pontos para caber.
+// Gera PNGs verticais 1080 × 1920 para leitura rápida, sem cortar o texto dos pontos.
+// Justificativas e citações completas permanecem no resultado e no texto compartilhado.
 // Zero dependências — roda 100% no browser.
 
 import { CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, OUTCOME_LABEL, VERDICTS } from "../data/constants.js";
 
 const W = 1080;
-const MIN_H = 1350;
-// Evita dimensões inválidas e alocações excessivas. Acima disso, falha explicitamente,
-// mantendo o texto completo disponível no diálogo em vez de produzir um PNG parcial.
-const MAX_DIMENSION = 32767;
-const MAX_PIXELS = 32 * 1024 * 1024;
+const H = 1920;
+const M = 72;
+const NUM_W = 64;
+const TEXT_X = M + NUM_W;
+const TEXT_WIDTH = W - M - TEXT_X;
+const TEXT_SIZE = 30;
+const TEXT_LINE = 42;
+const ROW_PAD = 24;
+const META_GAP = 14;
+const META_H = 40;
+const META_SIZE = 24;
+const POINT_SCORE_SIZE = 34;
+const CONT_LINE = 34;
+const SECTION_H = 56;
+const FOOTER_SIZE = 24;
+const FOOTER_LINE = 34;
+const BRAND_Y = 92;
+const RULE_Y = 118;
+const EYEBROW_Y = 184;
+const HEADLINE_Y = 252;
+const HEADLINE_SIZE = 76;
+const HEADLINE_LINE = 84;
+const HERO_SCORE_SIZE = 136;
+const COVERAGE_SIZE = 24;
+const COVERAGE_LINE = 34;
+const CONT_Y = 150;
+const CONT_RULE_Y = 176;
+const CONT_BODY_Y = 208;
 const BG = "#F2ECDC";
-const PANEL = "#FBF7EB";
 const INK = "#1A140C";
-const ACCENT = "#D9341F";
 const FG2 = "#453F33";
 const FG3 = "#5F5849";
-const LINE = "#1A140C2E";
-const SERIF = "Faustina, Georgia, serif";
+const ACCENT = "#D9341F";
+const RULE = "#1A140C26";
 const SANS = "Geist, 'Helvetica Neue', Arial, sans-serif";
+const SERIF = "Faustina, Georgia, 'Times New Roman', serif";
 const CLAIM_ICON = { true: "✓", false: "✕", unproven: "?", context: "◐" };
 const RELATION_LABEL = { supports: "Sustenta", refutes: "Contradiz", context: "Contextualiza" };
 const SCOPE_LABEL = {
@@ -31,15 +53,6 @@ const number = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 6 });
 const text = (value) => String(value ?? "").trim();
 const list = (value) => Array.isArray(value) ? value : [];
 
-function rr(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
 
 function breakWord(ctx, word, maxW) {
   const parts = [];
@@ -207,192 +220,224 @@ export function buildShareText(result, { origin, pathname = "/" }) {
 async function ensureFonts() {
   try {
     await Promise.all([
-      document.fonts.load('600 100px Faustina'),
-      document.fonts.load('400 42px Faustina'),
-      document.fonts.load('600 30px Geist'),
-      document.fonts.load('400 30px Geist'),
-      document.fonts.load('400 25px Geist'),
+      document.fonts.load(`400 36px ${SERIF}`),
+      document.fonts.load(`400 ${HERO_SCORE_SIZE}px ${SERIF}`),
+      document.fonts.load(`400 ${TEXT_SIZE}px ${SANS}`),
+      document.fonts.load(`600 ${META_SIZE}px ${SANS}`),
     ]);
     await document.fonts.ready;
-  } catch { /* fallback serif/sans */ }
+  } catch { /* fallback sans-serif */ }
 }
 
-function grain(ctx, height) {
-  ctx.save();
-  ctx.globalAlpha = 0.05;
-  let seed = 42;
-  const rand = () => {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed / 0x7fffffff;
-  };
-  ctx.fillStyle = INK;
-  for (let i = 0; i < Math.ceil(2600 * height / MIN_H); i++) ctx.fillRect(rand() * W, rand() * height, 2, 2);
-  ctx.restore();
-}
-
-function hardShadow(ctx, x, y, w, h, r) {
-  ctx.save();
-  ctx.fillStyle = "#1A140C2E";
-  rr(ctx, x + 10, y + 10, w, h, r);
-  ctx.fill();
-  ctx.restore();
-}
-
-/** @returns {Promise<Blob>} PNG completo ou erro explícito, nunca imagem parcial. */
-export async function renderShareCard(result) {
+/** @returns {Promise<Blob[]>} Todos os pontos, em um ou mais PNGs de 1080 × 1920. */
+export async function renderShareCards(result) {
   await ensureFonts();
   const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("O navegador não oferece Canvas 2D. Copie o texto completo da checagem.");
-  const content = shareCardContent(result);
+  const claims = list(result?.claims).filter(Boolean);
+  const notCheckedClaims = list(result?.notCheckedClaims).filter(Boolean);
   const verdict = VERDICTS[result?.verdict];
   const color = verdict?.color ?? FG3;
-  const commands = [];
-  let y = result?.score == null ? 460 : 500;
+  const label = verdict?.label ?? OUTCOME_LABEL[result?.outcome] ?? "Sem veredito";
+  const sources = list(result?.sources);
+  const hasScore = result?.score != null;
+  const kind = text(result?.kind);
+  const media = result?.mediaCoverage;
+  const coverage = [
+    `${claims.length} ${claims.length === 1 ? "analisado" : "analisados"}`,
+    notCheckedClaims.length ? `${notCheckedClaims.length} não ${notCheckedClaims.length === 1 ? "checado" : "checados"}` : "",
+    result?.coverage ? `${result.coverage.assessed} com evidência · ${result.coverage.unproven} sem comprovação` : "",
+    (result?.coverage?.omitted ?? result?.omittedClaimsCount) > 0 ? `${result?.coverage?.omitted ?? result.omittedClaimsCount} sem análise` : "",
+  ].filter(Boolean).join(" · ");
 
-  // Primeiro mede e posiciona todas as linhas, inclusive fontes/limites/rodapé.
-  // O desenho usa exatamente o mesmo plano, sem outro ajuste ou corte.
-  function paragraph(value, { size = 25, lineHeight = 34, weight = 400, family = SANS, color: fill = FG2, x = 110, width = W - 220, align = "left", gap = 10 } = {}) {
-    const font = `${weight} ${size}px ${family}`;
-    ctx.font = font;
-    const lines = wrap(ctx, value, width);
-    if (!lines.length) return;
-    commands.push({ type: "text", lines, font, color: fill, x: align === "center" ? W / 2 : x, y, lineHeight, align });
-    y += lines.length * lineHeight + gap;
+  function measure(value, width, size = TEXT_SIZE, weight = 400, family = SANS) {
+    ctx.font = `${weight} ${size}px ${family}`;
+    return wrap(ctx, value, width);
   }
-  function section(label) {
-    y += 12;
-    commands.push({ type: "line", y });
-    y += 24;
-    paragraph(label, { size: 22, lineHeight: 30, weight: 600, color: FG3, gap: 18 });
+  function widthOf(value, size, weight, family) {
+    ctx.font = `${weight} ${size}px ${family}`;
+    ctx.letterSpacing = "0px";
+    return ctx.measureText(value).width;
+  }
+  function paint(value, x, y, { size = TEXT_SIZE, weight = 400, family = SANS, fill = INK, align = "left", baseline = "top", spacing = 0 } = {}) {
+    ctx.font = `${weight} ${size}px ${family}`;
+    ctx.fillStyle = fill;
+    ctx.textAlign = align;
+    ctx.textBaseline = baseline;
+    ctx.letterSpacing = `${spacing}px`;
+    ctx.fillText(value, x, y);
+  }
+  function paintLines(lines, x, y, style, lineHeight) {
+    lines.forEach((line, index) => paint(line, x, y + index * lineHeight, style));
+  }
+  function rule(y, fill = RULE, height = 1) {
+    ctx.fillStyle = fill;
+    ctx.fillRect(M, y, W - M * 2, height);
   }
 
-  paragraph(content.title, { size: 42, lineHeight: 54, family: SERIF, color: INK, x: 130, width: W - 260, align: "center", gap: 16 });
-  paragraph(content.summary, { size: 26, lineHeight: 36, x: 130, width: W - 260, align: "center", gap: 0 });
-  const cardBottom = y + 30;
-  y = cardBottom + 42;
-  if (content.claims.length) {
-    section(`AFIRMAÇÕES ANALISADAS · ${content.claims.length}`);
-    for (const [index, claim] of content.claims.entries()) {
-      paragraph(claimLabel(claim, index), { size: 26, lineHeight: 36, weight: 600, color: CLAIM_STATUS[claim.status]?.color ?? CLAIM_STATUS.unproven.color });
-      paragraph(text(claim.text) || "Afirmação sem texto", { size: 30, lineHeight: 40 });
-      for (const detail of claimDetails(claim, content.sources)) paragraph(detail);
-      y += 18;
+  // Cabeçalho do primeiro PNG: veredito e nota dominam; a cobertura fica discreta.
+  const headlineWidth = hasScore ? W - M * 2 - 320 : W - M * 2;
+  const titleLines = measure(label, headlineWidth, HEADLINE_SIZE, 400, SERIF);
+  const coverageLines = measure(coverage, W - M * 2, COVERAGE_SIZE);
+  const headlineEnd = HEADLINE_Y + Math.max(0, titleLines.length - 1) * HEADLINE_LINE;
+  const coverageY = headlineEnd + 52;
+  const coverageEnd = coverageY + Math.max(0, coverageLines.length - 1) * COVERAGE_LINE;
+  const firstRuleY = coverageEnd + 40;
+  const firstBodyY = firstRuleY + 36;
+
+  // Rodapé: fontes, aviso de método, limites da mídia e identificação da checagem.
+  const footerLines = [
+    sources.length
+      ? `${sources.length} ${sources.length === 1 ? "fonte" : "fontes"} · justificativas e citações no texto completo.`
+      : "Nenhuma fonte documental disponível no resultado.",
+    hasScore ? "Checagem automática · a nota não é probabilidade calibrada." : "Checagem automática · nota indisponível não significa falsidade.",
+  ].flatMap((value) => measure(value, W - M * 2, FOOTER_SIZE));
+  if (kind.startsWith("Vídeo") || list(result?.media).some((attempt) => /^(audio|frames|transcribe|vision):/.test(attempt))) {
+    footerLines.push(...measure("Vídeo: cobertura parcial de áudio/quadros; não verifica autenticidade.", W - M * 2, FOOTER_SIZE));
+  } else if (kind.startsWith("Imagem") || media?.image) {
+    footerLines.push(...measure(media?.image && !["described", "examined"].includes(media.image)
+      ? "Imagem não analisada; autoria, data e contexto não autenticados."
+      : "Imagem: análise não autentica autoria, data ou contexto.", W - M * 2, FOOTER_SIZE));
+  }
+  const identityLines = measure([location.host, result?.id ? `ID ${result.id}` : ""].filter(Boolean).join(" · "), W - M * 2 - 200, FOOTER_SIZE);
+  const footerTop = H - M - (footerLines.length + identityLines.length) * FOOTER_LINE;
+  const footerRuleY = footerTop - 24;
+  const bodyBottom = footerRuleY - 20;
+  const minPointHeight = ROW_PAD * 2 + TEXT_LINE + META_GAP + META_H;
+  if (bodyBottom - firstBodyY < minPointHeight) {
+    throw new Error("Os metadados não cabem no card. Copie o texto completo da checagem.");
+  }
+
+  // Pontos inteiros ficam juntos; só um texto maior que a página é dividido, com rótulo de continuação.
+  const pages = [];
+  let page = [];
+  let pageTop = firstBodyY;
+  let y = firstBodyY;
+  function openPage() {
+    page = [];
+    pages.push(page);
+    pageTop = pages.length === 1 ? firstBodyY : CONT_BODY_Y;
+    y = pageTop;
+  }
+  function addSection(continued) {
+    page.push({ type: "section", y, continued });
+    y += SECTION_H;
+  }
+  function newPage(inNotChecked) {
+    openPage();
+    if (inNotChecked) addSection(true);
+  }
+  function addPoint(claim, index, notChecked) {
+    const lines = measure(text(claim.text) || (notChecked ? "Ponto sem texto" : "Afirmação sem texto"), TEXT_WIDTH);
+    const status = notChecked ? { label: "Não checado", color: FG3 } : (CLAIM_STATUS[claim.status] ?? CLAIM_STATUS.unproven);
+    const score = !notChecked && claim.score != null ? `${claim.score}/100` : null;
+    const fullHeight = ROW_PAD * 2 + lines.length * TEXT_LINE + META_GAP + META_H;
+    const freshCapacity = bodyBottom - CONT_BODY_Y - (notChecked ? SECTION_H : 0);
+    if (y + fullHeight > bodyBottom && fullHeight <= freshCapacity) newPage(notChecked);
+    let offset = 0;
+    while (offset < lines.length) {
+      const continued = offset > 0;
+      const head = continued ? CONT_LINE : 0;
+      const remaining = lines.length - offset;
+      const avail = bodyBottom - y - ROW_PAD * 2 - head;
+      const finishes = remaining * TEXT_LINE + META_GAP + META_H <= avail;
+      // Sem espaço para a linha de status, a última linha segue para a próxima página.
+      const count = finishes ? remaining : Math.min(Math.floor(avail / TEXT_LINE), remaining - 1);
+      if (count < 1) {
+        if (y === pageTop) throw new Error("Os metadados não cabem no card. Copie o texto completo da checagem.");
+        newPage(notChecked);
+        continue;
+      }
+      const last = page[page.length - 1];
+      page.push({
+        type: "point", index, continued, finishes, status, score,
+        separator: !continued && last?.type === "point",
+        y, lines: lines.slice(offset, offset + count),
+      });
+      y += ROW_PAD * 2 + head + count * TEXT_LINE + (finishes ? META_GAP + META_H : 0);
+      offset += count;
+      if (!finishes) newPage(notChecked);
     }
   }
-  if (content.notCheckedClaims.length) {
-    section(`PONTOS NÃO CHECADOS · ${content.notCheckedClaims.length}`);
-    for (const [index, claim] of content.notCheckedClaims.entries()) {
-      paragraph(`${index + 1}. ${text(claim.text) || "Ponto sem texto"}`, { size: 30, lineHeight: 40 });
-      paragraph(`Motivo: ${text(claim.reason) || "Não informado no resultado."}`, { color: FG3 });
-      y += 18;
-    }
+
+  openPage();
+  claims.forEach((claim, index) => addPoint(claim, index + 1, false));
+  if (notCheckedClaims.length) {
+    if (bodyBottom - y < SECTION_H + minPointHeight) newPage(false);
+    addSection(false);
+    notCheckedClaims.forEach((claim, index) => addPoint(claim, claims.length + index + 1, true));
   }
-  if (content.limits.length) {
-    section("COBERTURA E LIMITES");
-    for (const limit of content.limits) paragraph(limit);
+  if (!claims.length && !notCheckedClaims.length) {
+    page.push({
+      type: "empty", y,
+      lines: measure("Nenhuma afirmação factual foi checada neste resultado. Consulte o texto completo para o motivo e os limites.", W - M * 2),
+    });
   }
-  section(`FONTES CONSULTADAS · ${content.sources.length}`);
-  paragraph("Fontes encontradas não são comprovação por si só; confira a relação e os limites de cada trecho.", { color: FG3 });
-  if (content.sources.length) {
-    for (const [index, source] of content.sources.entries()) paragraph(sourceText(source, index));
-  } else paragraph("Nenhuma fonte documental disponível no resultado.");
 
-  y += 30;
-  const footerStart = y;
-  const host = location.host;
-  paragraph([result?.kind, result?.publishedAt ? `checada em ${result.publishedAt}` : ""].filter(Boolean).join(" · "), { size: 22, lineHeight: 30, color: FG3, align: "center" });
-  paragraph(result?.score == null ? "Checagem automática · nota indisponível não significa falsidade" : "Checagem automática · a nota não é probabilidade calibrada", { size: 22, lineHeight: 30, align: "center" });
-  if (result?.id) paragraph(`ID ${result.id} · confira correções em ${host}/correcoes.html?checkId=${encodeURIComponent(result.id)}`, { size: 22, lineHeight: 30, color: FG3, align: "center" });
-  paragraph("Viu algo suspeito? Confira você também em", { size: 26, lineHeight: 36, align: "center" });
-  paragraph(host, { size: 40, lineHeight: 50, weight: 600, color: ACCENT, align: "center", gap: 0 });
-  const height = Math.max(MIN_H, Math.ceil(y + 52));
-  if (!Number.isSafeInteger(height) || height > MAX_DIMENSION || W * height > MAX_PIXELS) {
-    throw new Error("O resultado completo excede o tamanho de PNG suportado. Copie o texto completo da checagem; nenhum ponto foi cortado.");
-  }
-  // O mínimo de altura mantém a composição dos cards curtos sem esticar conteúdo.
-  const footerShift = height - Math.ceil(y + 52);
-  for (const command of commands) if (command.y >= footerStart) command.y += footerShift;
-  canvas.width = W;
-  canvas.height = height;
-  if (canvas.width !== W || canvas.height !== height) throw new Error("O navegador não suporta o tamanho do card completo. Copie o texto completo da checagem.");
+  const blobs = [];
+  for (const [pageIndex, commands] of pages.entries()) {
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+    const brandWidth = widthOf("isso é verdade", 36, 400, SERIF);
+    paint("isso é verdade", M, BRAND_Y, { size: 36, family: SERIF, baseline: "alphabetic" });
+    paint("?", M + brandWidth + 1, BRAND_Y, { size: 36, family: SERIF, fill: ACCENT, baseline: "alphabetic" });
+    paint("PARECER RÁPIDO", W - M, BRAND_Y, { size: 22, weight: 600, fill: FG3, align: "right", baseline: "alphabetic", spacing: 3 });
+    rule(RULE_Y, INK, 2);
 
-  ctx.fillStyle = BG;
-  ctx.fillRect(0, 0, W, height);
-  grain(ctx, height);
-  ctx.fillStyle = INK;
-  ctx.fillRect(0, 0, W, 150);
-  ctx.fillStyle = "#0D0A06";
-  ctx.fillRect(0, 146, W, 4);
-  ctx.textBaseline = "alphabetic";
-  ctx.textAlign = "center";
-  ctx.fillStyle = BG;
-  ctx.font = `400 52px ${SERIF}`;
-  const brandW = ctx.measureText("isso é verdade?").width;
-  ctx.fillText("isso é verdade", W / 2 - 14, 88);
-  ctx.fillStyle = ACCENT;
-  ctx.fillText("?", W / 2 + brandW / 2 - 14, 88);
-  ctx.fillStyle = "#B9B09A";
-  ctx.font = `600 22px ${SANS}`;
-  ctx.fillText("ELEIÇÕES 2026  ·  SEGUNDO TURNO", W / 2, 126);
-
-  hardShadow(ctx, 70, 200, W - 140, cardBottom - 200, 28);
-  ctx.fillStyle = PANEL;
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 3;
-  rr(ctx, 70, 200, W - 140, cardBottom - 200, 28);
-  ctx.fill();
-  ctx.stroke();
-  if (result?.score != null) {
-    ctx.lineWidth = 22;
-    ctx.lineCap = "round";
-    ctx.strokeStyle = "#EFE7D3";
-    ctx.beginPath();
-    ctx.arc(240, 360, 105, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.strokeStyle = color;
-    ctx.beginPath();
-    ctx.arc(240, 360, 105, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * result.score / 100);
-    ctx.stroke();
-  }
-  ctx.fillStyle = INK;
-  ctx.font = `600 96px ${SERIF}`;
-  ctx.fillText(result?.score == null ? "—" : String(result.score), 240, 394);
-  ctx.fillStyle = FG3;
-  ctx.font = `500 22px ${SANS}`;
-  ctx.fillText(result?.score == null ? "sem nota" : "/ 100", 240, 426);
-
-  ctx.font = `600 30px ${SANS}`;
-  const chipLines = wrap(ctx, (verdict?.label ?? "Sem veredito").toUpperCase(), 470);
-  const chipWidth = Math.max(...chipLines.map((line) => ctx.measureText(line).width)) + 76;
-  const chipHeight = chipLines.length * 38 + 24;
-  ctx.fillStyle = verdict ? `${color}1F` : "#1A140C12";
-  rr(ctx, 400, 330, chipWidth, chipHeight, 14);
-  ctx.fill();
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.arc(424, 330 + chipHeight / 2, 8, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.textAlign = "left";
-  ctx.textBaseline = "top";
-  for (const [index, line] of chipLines.entries()) ctx.fillText(line, 446, 342 + index * 38);
-
-  for (const command of commands) {
-    if (command.type === "line") {
-      ctx.strokeStyle = LINE;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(110, command.y);
-      ctx.lineTo(W - 110, command.y);
-      ctx.stroke();
+    if (pageIndex === 0) {
+      paint("VEREDITO", M, EYEBROW_Y, { size: 22, weight: 600, fill: FG3, baseline: "alphabetic", spacing: 3 });
+      paintLines(titleLines, M, HEADLINE_Y, { size: HEADLINE_SIZE, family: SERIF, fill: color, baseline: "alphabetic" }, HEADLINE_LINE);
+      if (hasScore) {
+        const suffix = "/100";
+        paint(suffix, W - M, HEADLINE_Y, { size: 26, fill: FG3, align: "right", baseline: "alphabetic" });
+        paint(`${result.score}`, W - M - widthOf(suffix, 26, 400, SANS) - 6, HEADLINE_Y, { size: HERO_SCORE_SIZE, family: SERIF, fill: color, align: "right", baseline: "alphabetic" });
+      } else {
+        paint("Sem nota global", W - M, HEADLINE_Y, { size: 28, weight: 600, fill: FG3, align: "right", baseline: "alphabetic" });
+      }
+      paintLines(coverageLines, M, coverageY, { size: COVERAGE_SIZE, fill: FG2, baseline: "alphabetic" }, COVERAGE_LINE);
+      rule(firstRuleY);
     } else {
-      ctx.font = command.font;
-      ctx.fillStyle = command.color;
-      ctx.textAlign = command.align;
-      for (const [index, line] of command.lines.entries()) ctx.fillText(line, command.x, command.y + index * command.lineHeight);
+      paint(label, M, CONT_Y, { size: 26, weight: 600, fill: color, baseline: "alphabetic" });
+      paint(hasScore ? `${result.score}/100` : "Sem nota global", W - M, CONT_Y, { size: 26, weight: 600, fill: FG2, align: "right", baseline: "alphabetic" });
+      rule(CONT_RULE_Y);
     }
+
+    for (const command of commands) {
+      if (command.type === "section") {
+        rule(command.y);
+        paint(command.continued ? "PONTOS NÃO CHECADOS · CONTINUAÇÃO" : "PONTOS NÃO CHECADOS", M, command.y + 20, { size: 22, weight: 600, fill: FG3, spacing: 3 });
+      } else if (command.type === "empty") {
+        paintLines(command.lines, M, command.y, { size: TEXT_SIZE, fill: FG2 }, TEXT_LINE);
+      } else {
+        if (command.separator) rule(command.y);
+        const textY = command.y + ROW_PAD + (command.continued ? CONT_LINE : 0);
+        if (command.continued) paint("continuação", TEXT_X, command.y + ROW_PAD, { size: META_SIZE, weight: 600, fill: FG3 });
+        else paint(String(command.index).padStart(2, "0"), M, textY + 6, { size: 24, weight: 600, fill: FG3 });
+        paintLines(command.lines, TEXT_X, textY, { size: TEXT_SIZE, fill: INK }, TEXT_LINE);
+        if (command.finishes) {
+          const metaY = textY + command.lines.length * TEXT_LINE + META_GAP + META_H / 2;
+          ctx.beginPath();
+          ctx.arc(TEXT_X + 6, metaY, 6, 0, Math.PI * 2);
+          ctx.fillStyle = command.status.color;
+          ctx.fill();
+          paint(command.status.label, TEXT_X + 22, metaY, { size: META_SIZE, weight: 600, fill: command.status.color, baseline: "middle" });
+          if (command.score) paint(command.score, W - M, metaY, { size: POINT_SCORE_SIZE, family: SERIF, fill: command.status.color, align: "right", baseline: "middle" });
+        }
+      }
+    }
+
+    rule(footerRuleY);
+    paintLines(footerLines, M, footerTop, { size: FOOTER_SIZE, fill: FG3 }, FOOTER_LINE);
+    const identityY = footerTop + footerLines.length * FOOTER_LINE;
+    paintLines(identityLines, M, identityY, { size: FOOTER_SIZE, fill: FG3 }, FOOTER_LINE);
+    if (pages.length > 1) paint(`Página ${pageIndex + 1}/${pages.length}`, W - M, identityY, { size: FOOTER_SIZE, weight: 600, fill: FG2, align: "right" });
+
+    blobs.push(await new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("O navegador não conseguiu gerar todas as páginas PNG. Copie o texto completo da checagem.")), "image/png");
+    }));
   }
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("O navegador não conseguiu gerar o PNG completo. Copie o texto completo da checagem.")), "image/png");
-  });
+  return blobs;
 }

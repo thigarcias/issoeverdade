@@ -58,14 +58,15 @@ export function normalizeVerifyInput(value, env = process.env) {
     throw error;
   }
   const rawText = String(value?.text ?? "");
-  if (rawText.length > limits.maxTextChars) {
+  const context = kind === "image" ? String(value?.context ?? "") : "";
+  if (rawText.length > limits.maxTextChars || context.length > limits.maxTextChars) {
     const error = new Error("text_too_long");
     error.status = 413;
     throw error;
   }
   const text = rawText;
   const fileName = value?.fileName ? String(value.fileName).slice(0, 200) : null;
-  const out = { kind, text, fileName, fileBuffer: null, fileMime: null, fileHash: null };
+  const out = { kind, text, context, fileName, fileBuffer: null, fileMime: null, fileHash: null };
   if ((value?.fileData == null || value.fileData === "") && !Buffer.isBuffer(value?.fileBuffer)) return out;
   if (kind !== "video" && kind !== "image") {
     const error = new Error("upload_not_allowed_for_kind");

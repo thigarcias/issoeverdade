@@ -4,6 +4,7 @@
 //   POST /fetch { url }    → { ok, context, media, attempts } (metadados, sem baixar)
 //   POST /audio { url }    → { ok, audio_b64, mime } ou { ok:false, reason }
 //   POST /frames { url }   → { ok, frames: [jpeg_b64], count, seconds } — OCR/visão
+//   POST /media { url, source_type? } → áudio + frames de uma única aquisição
 //   POST /upload { file_b64, mime } → áudio MP3 + frames do arquivo enviado
 // Segurança:
 //   - Sem WORKER_SECRET o processo recusa iniciar (WORKER_ALLOW_INSECURE=1 só em dev).
@@ -18,7 +19,7 @@ import { readdir, rm, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
-import { hostPolicy, parseUrlStrict, resolvePublicHost } from "../server/net.js";
+import { hostPolicy, parseUrlStrict, resolvePublicHost, safeFetch } from "../server/net.js";
 import { runLimited } from "../server/proc.js";
 import { processMediaFile } from "../server/local-media.js";
 
@@ -42,7 +43,8 @@ function intEnv(value, fallback) {
 const LIMITS = {
   maxMediaSeconds: intEnv(process.env.IEV_MAX_MEDIA_SECONDS, 900),
   maxTempBytes: intEnv(process.env.IEV_MAX_TEMP_BYTES, 256 * 1024 * 1024),
-  maxFileBytes: intEnv(process.env.IEV_MAX_MEDIA_FILE_BYTES, 64 * 1024 * 1024),
+  maxFileBytes: intEnv(process.env.IEV_MAX_MEDIA_FILE_BYTES, 32 * 1024 * 1024),
+  maxTransferBytes: intEnv(process.env.IEV_MAX_DOWNLOAD_BYTES, 64 * 1024 * 1024),
   ytdlpTimeoutMs: intEnv(process.env.IEV_YTDLP_TIMEOUT_MS, 150_000),
   concurrency: intEnv(process.env.IEV_WORKER_CONCURRENCY, 2),
 };
@@ -145,7 +147,7 @@ async function probe(url) {
     media.durationSec && `Duração: ${media.durationSec}s (vídeo/áudio)`,
     media.description && `Descrição/texto do post: ${media.description}`,
   ].filter(Boolean);
-  return { media, context: lines.join("\n") };
+  return { ok: true, media, context: lines.join("\n") };
 }
 
 async function mkdtempSafe() {
@@ -245,6 +247,60 @@ async function fetchFrames(url) {
   }
 }
 
+/** Uma aquisição e uma vaga para todas as modalidades do vídeo. */
+async function fetchMedia(url, sourceType) {
+  const dir = await mkdtempSafe();
+  try {
+    let download;
+    if (["audio", "video"].includes(sourceType)) {
+      const response = await safeFetch(url, {
+        maxBytes: Math.min(LIMITS.maxFileBytes, LIMITS.maxTransferBytes),
+        timeoutMs: 90_000,
+        maxRedirects: 3,
+        accept: "video/*,audio/*,application/octet-stream",
+      });
+      if (!response.ok) return { ok: false, reason: `direct-http-${response.status}` };
+      const mime = String(response.headers?.["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+      if (mime && !/^(?:audio\/|video\/|application\/octet-stream$)/.test(mime)) {
+        return { ok: false, reason: "unsupported-media-content-type" };
+      }
+      const file = join(dir, "source.bin");
+      await writeFile(file, response.body, { flag: "wx" });
+      download = { ok: true, file };
+    } else {
+      download = await downloadSource(url, dir, "worst[height<=480][acodec!=none]/best[height<=480][acodec!=none]/worst");
+    }
+    if (!download.ok) return download;
+    const processed = await processMediaFile(download.file, dir, {
+      maxMediaSeconds: LIMITS.maxMediaSeconds,
+      maxTempBytes: LIMITS.maxTempBytes,
+      maxAudioBytes: MAX_AUDIO_BYTES,
+      maxFrames: MAX_FRAMES,
+      maxFramesBytes: MAX_FRAMES_BYTES,
+    });
+    return extractionResponse(processed);
+  } catch (error) {
+    const code = error?.code;
+    return { ok: false, reason: code === "too_large" ? "file-too-large" : code === "timeout" ? "download-timeout" : "media-processing-failed", detail: safeDetail(error?.message) };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+function extractionResponse(processed) {
+  if (!processed.ok) return processed;
+  return {
+    ok: true,
+    audio: processed.audioBytes ? { audio_b64: processed.audioBytes.toString("base64"), mime: "audio/mpeg", bytes: processed.audioBytes.length } : null,
+    audio_reason: processed.audioReason,
+    frames: processed.frames.map((frame) => ({ image_b64: frame.data, timestamp_sec: frame.timestampSec })),
+    frame_reason: processed.frameReason,
+    duration_sec: processed.durationSec,
+    has_audio: processed.hasAudio,
+    has_video: processed.hasVideo,
+  };
+}
+
 async function processUpload(encoded, mime) {
   if (!UPLOAD_MIMES.has(mime) || typeof encoded !== "string" || encoded.length === 0 || encoded.length > Math.ceil(MAX_UPLOAD_BYTES / 3) * 4) {
     return { ok: false, reason: "unsupported-upload" };
@@ -269,21 +325,7 @@ async function processUpload(encoded, mime) {
       maxFrames: MAX_FRAMES,
       maxFramesBytes: MAX_FRAMES_BYTES,
     });
-    if (!processed.ok) return processed;
-    const audio = processed.audioBytes
-      ? { audio_b64: processed.audioBytes.toString("base64"), mime: "audio/mpeg", bytes: processed.audioBytes.length }
-      : null;
-    if (!audio && !processed.frames.length) return { ok: false, reason: processed.audioReason ?? processed.frameReason ?? "no-readable-media" };
-    return {
-      ok: true,
-      audio,
-      frames: processed.frames.map((frame) => ({ image_b64: frame.data, timestamp_sec: frame.timestampSec })),
-      duration_sec: processed.durationSec,
-      has_audio: processed.hasAudio,
-      has_video: processed.hasVideo,
-      audio_reason: processed.audioReason,
-      frame_reason: processed.frameReason,
-    };
+    return extractionResponse(processed);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -311,7 +353,7 @@ const server = createServer(async (req, res) => {
         const run = await runLimited("yt-dlp", ["--version"], { timeoutMs: 10_000, maxOutputBytes: 4096 });
         ytdlp = run.ok ? run.stdout.trim() : "missing";
       } catch { ytdlp = "missing"; }
-      return send(res, 200, { ok: true, ytdlp, busy, limits: { concurrency: LIMITS.concurrency, maxMediaSeconds: LIMITS.maxMediaSeconds } });
+      return send(res, 200, { ok: true, protocol: 2, ytdlp, busy, limits: { concurrency: LIMITS.concurrency, maxMediaSeconds: LIMITS.maxMediaSeconds } });
     }
     if (!authorized(req)) return send(res, 401, { ok: false, reason: "unauthorized" });
     if (req.method !== "POST") return send(res, 405, { ok: false, reason: "method_not_allowed" });
@@ -324,6 +366,9 @@ const server = createServer(async (req, res) => {
     } catch (error) {
       return send(res, error?.message === "payload too large" ? 413 : 400, { ok: false, reason: error?.message === "payload too large" ? "payload-too-large" : "bad_request" });
     }
+    // A leitura do corpo cede execução; outra requisição pode ocupar a última vaga.
+    const afterBodyLimit = limitReason();
+    if (afterBodyLimit) return send(res, 503, { ok: false, reason: afterBodyLimit }, { "Retry-After": "20" });
     busy++;
     try {
       if (req.url === "/upload") {
@@ -343,11 +388,12 @@ const server = createServer(async (req, res) => {
       if (req.url === "/fetch") {
         try {
           const out = await probe(url);
-          return send(res, 200, { ok: true, ...out, attempts: ["worker:yt-dlp:ok"] });
+          return send(res, 200, { ...out, attempts: [out.ok ? "worker:yt-dlp:ok" : `worker:yt-dlp:${out.reason}`] });
         } catch (err) {
           return send(res, 200, { ok: false, reason: "probe-failed", detail: safeDetail(err?.message ?? err) });
         }
       }
+      if (req.url === "/media") return send(res, 200, await fetchMedia(url, body?.source_type));
       if (req.url === "/audio") {
         try {
           return send(res, 200, await fetchAudio(url));

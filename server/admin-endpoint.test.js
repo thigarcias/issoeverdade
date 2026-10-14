@@ -76,6 +76,38 @@ test("fila de correções lista, atualiza e registra correção editorial", asyn
   assert.equal(inexistente.status, 404);
 });
 
+test("admin vê reportes operacionais e resolvê-los não marca correção editorial nem invalida cache", async () => {
+  for (const kind of ["technical", "transcription", "download", "slow", "result", "card", "other"]) {
+    const created = await createCorrection(normalizeCorrection({
+      kind,
+      checkId: `operational-${kind}`,
+      message: "Ao baixar o card, aparece um erro e o arquivo não é salvo.",
+      context: "Safari no celular, botão Baixar PNG.",
+      contact: "relator@example.org",
+      source: "detail",
+    }).value);
+    const list = await handleAdminRequest({ method: "GET", headers: auth, query: { corrections: "1" } });
+    assert.equal(list.status, 200);
+    assert.ok(list.body.kinds.some((entry) => entry.id === kind));
+    assert.equal(list.body.items.find((item) => item.protocol === created.protocol).kind, kind);
+    const detail = await handleAdminRequest({ method: "GET", headers: auth, query: { correction: created.protocol } });
+    assert.equal(detail.body.correction.context, "Safari no celular, botão Baixar PNG.");
+    assert.equal(detail.body.correction.contact, "relator@example.org");
+    assert.equal(detail.body.correction.operational, true);
+    const updated = await handleAdminRequest({
+      method: "POST",
+      headers: auth,
+      query: { corrections: "1" },
+      body: { protocol: created.protocol, status: "corrected", note: "Problema operacional resolvido." },
+    });
+    assert.equal(updated.status, 200);
+    assert.equal(updated.body.correction.status, "corrected");
+    assert.equal(updated.body.cacheInvalidated, false);
+    assert.equal(updated.body.applied, null);
+    assert.equal(updated.body.correction.history.at(-1).note, "Problema operacional resolvido.");
+  }
+});
+
 test("invalidação de cache troca a época e exige ação explícita", async () => {
   const semAcao = await handleAdminRequest({ method: "POST", headers: auth, query: { cache: "1" }, body: {} });
   assert.equal(semAcao.status, 400);

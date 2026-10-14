@@ -107,6 +107,15 @@ serverless sem worker declara indisponibilidade. Worker configurado não tem
 fallback silencioso se falhar. O navegador guarda até 20 resultados em
 `localStorage`; logs/cache no servidor dependem do Blob privado ([privacidade](docs/privacidade-dados-ia.md)).
 
+Na entrada rápida, digite ou cole **texto ou link**: o teclado é de texto e a
+interface identifica links HTTP/HTTPS automaticamente. No verificador completo,
+a aba **Imagem** aceita um **contexto opcional**, separado dos campos de texto e
+URL das outras abas. Você pode enviar somente a imagem ou explicar a alegação,
+origem e data alegadas (até o limite de texto do servidor, 8.000 caracteres por
+padrão). O contexto segue em `input.context` para a análise, é tratado como dado
+não confiável e não comprova autenticidade. Trocar de aba ou limpar descarta o
+conteúdo anterior, evitando reutilizar texto/contexto em outra entrada.
+
 O card do resultado oferece **Compartilhar no WhatsApp**: abre o WhatsApp com
 título, nota/veredito quando disponíveis, resumo, URL original quando presente e
 link do site. Resultados sem veredito mantêm essa limitação na mensagem. O envio

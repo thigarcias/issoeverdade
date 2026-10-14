@@ -6,6 +6,7 @@ const { guardUrl, server } = await import("./server.js");
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { createMediaFixture } from "../server/test-utils/media-fixture.js";
 
 let base = "";
@@ -155,5 +156,59 @@ test("servidor serverless consome upload pelo worker sem fallback local", async 
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
+  }
+});
+
+test("worker /fetch preserva falha do probe sem anunciar sucesso", async () => {
+  const previousPath = process.env.PATH;
+  process.env.PATH = "";
+  try {
+    const response = await fetch(`${base}/fetch`, {
+      method: "POST", headers: auth, body: JSON.stringify({ url: "https://1.1.1.1/short.mp4" }),
+    });
+    const result = await response.json();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "probe-failed");
+    assert.deepEqual(result.attempts, ["worker:yt-dlp:probe-failed"]);
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
+});
+
+test("worker /media usa uma transferência para áudio e frames reais", async (t) => {
+  const fixture = await createMediaFixture(t, { durationSec: 1 });
+  if (!fixture) return;
+  const previousPrivate = process.env.IEV_ALLOW_PRIVATE_HOSTS;
+  const previousPorts = process.env.IEV_HTTP_PORTS;
+  let requests = 0;
+  const source = createServer((_req, res) => {
+    requests++;
+    res.writeHead(200, { "Content-Type": "video/mp4" });
+    res.end(fixture.bytes);
+  });
+  await new Promise((resolve) => source.listen(0, "127.0.0.1", resolve));
+  process.env.IEV_ALLOW_PRIVATE_HOSTS = "1";
+  process.env.IEV_HTTP_PORTS = String(source.address().port);
+  try {
+    const response = await fetch(`${base}/media`, {
+      method: "POST", headers: auth,
+      body: JSON.stringify({ url: `http://127.0.0.1:${source.address().port}/clip`, source_type: "video" }),
+    });
+    const result = await response.json();
+    assert.equal(result.ok, true);
+    assert.equal(requests, 1);
+    assert.ok(result.duration_sec > 0);
+    assert.ok(result.audio?.audio_b64.length > 0);
+    assert.ok(result.frames.length > 0);
+    assert.equal(result.has_audio, true);
+    assert.equal(result.has_video, true);
+  } finally {
+    await new Promise((resolve) => source.close(resolve));
+    await fixture.cleanup();
+    if (previousPrivate === undefined) delete process.env.IEV_ALLOW_PRIVATE_HOSTS;
+    else process.env.IEV_ALLOW_PRIVATE_HOSTS = previousPrivate;
+    if (previousPorts === undefined) delete process.env.IEV_HTTP_PORTS;
+    else process.env.IEV_HTTP_PORTS = previousPorts;
   }
 });

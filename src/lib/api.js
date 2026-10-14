@@ -123,7 +123,7 @@ async function encodeUpload(file) {
 }
 
 /**
- * @param {{ kind: "link"|"text"|"video"|"image", text: string, fileName: string|null }} input
+ * @param {{ kind: "link"|"text"|"video"|"image", text: string, context?: string, fileName: string|null, file?: File }} input
  * @param {{ onStep?: (index: number) => void, signal?: AbortSignal }} opts
  * @returns {Promise<{ result: object, steps: typeof PIPELINE_STEPS }>}
  */
@@ -140,6 +140,7 @@ export async function verify(input, opts = {}) {
     const body = {
       kind: input.kind,
       text: input.text,
+      context: input.kind === "image" ? input.context ?? "" : "",
       fileName: input.fileName,
       fileMime: input.file?.type ?? input.fileMime ?? "",
       fileData: input.file ? await encodeUpload(input.file) : undefined,

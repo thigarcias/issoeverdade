@@ -77,6 +77,35 @@ function wrap(ctx, text, maxW) {
 const CLAIM_ICON = { true: "✓", false: "✕", unproven: "?", context: "◐" };
 const RELATION_LABEL = { supports: "Sustenta", refutes: "Contradiz", context: "Contextualiza" };
 
+/** Usa a alegação efetivamente checada, não a pergunta ou o nome do upload. */
+export function shareCardContent(result) {
+  const claims = (Array.isArray(result?.claims) ? result.claims : []).filter((claim) => String(claim?.text ?? "").trim());
+  const first = claims[0];
+  const title = first
+    ? `Alegação: ${String(first.text).trim()}`
+    : String(result?.title ?? "Checagem sem alegação verificável");
+  const summary = String(result?.summary ?? "").trim() || String(first?.note ?? "").trim();
+  return { title, summary, claims };
+}
+
+export function buildShareText(result, { origin, pathname = "/" }) {
+  const content = shareCardContent(result);
+  const label = VERDICTS[result?.verdict]?.label ?? "Sem veredito";
+  const verdict = result?.score == null ? "Sem nota ou veredito factual" : `${label} · nota ${result.score}/100`;
+  const correction = result?.id
+    ? `Checagem automática ${result.id}. Confira correções em ${origin}/correcoes.html?checkId=${encodeURIComponent(result.id)}`
+    : "Checagem automática.";
+  return `${content.title}\n${verdict}${content.summary ? `\n\n${content.summary}` : ""}\n\n${correction}\nConfira você também em ${origin}${pathname}`;
+}
+
+function sourceHost(source) {
+  try {
+    return new URL(source?.url).hostname.replace(/^www\./, "");
+  } catch {
+    return String(source?.outlet ?? "Fonte");
+  }
+}
+
 /** Fatia linhas com "…" na última quando corta conteúdo. Usa a fonte atual do ctx. */
 function sliceLines(ctx, lines, max, maxW) {
   const out = lines.slice(0, max);
@@ -137,8 +166,9 @@ export async function renderShareCard(result) {
   canvas.width = W;
   canvas.height = H;
   const ctx = canvas.getContext("2d");
+  const content = shareCardContent(result);
   const verdict = VERDICTS[result.verdict] ?? VERDICTS.unproven;
-  const claims = (result.claims ?? []).slice(0, 3);
+  const claims = content.claims.slice(0, 3);
   const sources = (result.sources ?? []).filter((s) => s.url && s.url !== "#").slice(0, 3);
 
   // Fundo creme + textura
@@ -169,7 +199,7 @@ export async function renderShareCard(result) {
   const cw = W - 140;
   const cardTop = 200;
   ctx.font = `400 42px ${SERIF}`;
-  let cleanTitle = result.title.replace(/^\[MOCK\]\s*/, "");
+  let cleanTitle = content.title;
   const urlMatch = cleanTitle.match(/https?:\/\/[^\s]+/);
   if (urlMatch) {
     try {
@@ -185,16 +215,18 @@ export async function renderShareCard(result) {
   const prepared = claims.map((c, idx) => {
     const text = String(c.text ?? "").replace(/^["“]|["”]$/g, "");
     ctx.font = `400 30px ${SANS}`;
-    const textFull = wrap(ctx, text, W - 220);
+    const textFull = claims.length === 1 ? [] : wrap(ctx, text, W - 220);
     ctx.font = `400 25px ${SANS}`;
     const noteFull = c.note ? wrap(ctx, String(c.note), W - 220) : [];
-    const ev = (c.evidence ?? []).find((e) => e?.quote && String(e.quote).trim());
+    const expected = c.status === "true" ? "supports" : c.status === "false" ? "refutes" : "context";
+    const ev = (c.evidence ?? []).find((e) => e?.relation === expected && String(e.quote ?? "").trim())
+      ?? (c.evidence ?? []).find((e) => String(e?.quote ?? "").trim());
     let evFull = [];
     if (ev) {
-      const outlet = result.sources?.[ev.sourceId]?.outlet ?? "";
-      const rel = RELATION_LABEL[ev.relation] ?? "Evidência";
+      const source = result.sources?.[ev.sourceId];
+      const rel = c.status === "unproven" ? "Contexto, não comprovação" : RELATION_LABEL[ev.relation] ?? "Evidência";
       ctx.font = `400 24px ${SANS}`;
-      evFull = wrap(ctx, `${rel} · ${outlet}: “${String(ev.quote).trim()}”`, W - 236);
+      evFull = wrap(ctx, `${rel} · ${sourceHost(source)} · trecho original: “${String(ev.quote).trim()}”`, W - 236);
     }
     const first = idx === 0;
     return {
@@ -212,7 +244,7 @@ export async function renderShareCard(result) {
   });
   ctx.font = `400 27px ${SANS}`;
   const sourceFull = sources.map((s) => {
-    const label = s.detail ? `•  ${s.outlet} — ${s.detail}` : `•  ${s.outlet}`;
+    const label = `•  ${s.outlet || sourceHost(s)} · ${sourceHost(s)}`;
     return wrap(ctx, label, W - 220);
   });
   let titleN = Math.min(3, titleFull.length);
@@ -234,7 +266,7 @@ export async function renderShareCard(result) {
   const fitsAll = () => totalH() <= FOOTER_TOP;
   // Resumo: alvo de 2 linhas; mantém pelo menos 1 para contextualizar o veredito.
   ctx.font = `400 26px ${SANS}`;
-  const fullSummary = wrap(ctx, result.summary ?? "", cw - 120);
+  const fullSummary = wrap(ctx, content.summary, cw - 120);
   summaryN = Math.min(2, fullSummary.length);
   const minSummary = fullSummary.length > 0 ? 1 : 0;
   while (summaryN > minSummary && !fitsAll()) summaryN -= 1;
@@ -270,7 +302,7 @@ export async function renderShareCard(result) {
   ctx.font = `400 42px ${SERIF}`;
   const titleLines = sliceLines(ctx, titleFull, titleN, cw - 120);
   ctx.font = `400 26px ${SANS}`;
-  const summaryLines = sliceLines(ctx, wrap(ctx, result.summary ?? "", cw - 120), summaryN, cw - 120);
+  const summaryLines = sliceLines(ctx, fullSummary, summaryN, cw - 120);
   const claimBlocks = prepared.slice(0, visible).map((p) => {
     ctx.font = `400 30px ${SANS}`;
     const clines = sliceLines(ctx, p.textFull, p.alloc.t, W - 220);
@@ -301,20 +333,20 @@ export async function renderShareCard(result) {
   ctx.stroke();
   ctx.strokeStyle = verdict.color;
   ctx.beginPath();
-  ctx.arc(ringX, ringY, R, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * result.score) / 100);
+  if (result.score != null) ctx.arc(ringX, ringY, R, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * result.score) / 100);
   ctx.stroke();
   ctx.fillStyle = INK;
   ctx.font = `600 96px ${SERIF}`;
   ctx.textAlign = "center";
-  ctx.fillText(String(result.score), ringX, ringY + 34);
+  ctx.fillText(result.score == null ? "—" : String(result.score), ringX, ringY + 34);
   ctx.fillStyle = FG3;
   ctx.font = `500 22px ${SANS}`;
-  ctx.fillText("/ 100", ringX, ringY + 66);
+  ctx.fillText(result.score == null ? "sem nota" : "/ 100", ringX, ringY + 66);
 
   // Chip veredito (igual .chip do site)
   ctx.textAlign = "left";
   ctx.font = `600 30px ${SANS}`;
-  const chipLabel = verdict.label.toUpperCase();
+  const chipLabel = result.score == null ? "SEM VEREDITO" : verdict.label.toUpperCase();
   const chipW = ctx.measureText(chipLabel).width + 96;
   const chipX = cx0 + 330;
   const chipY = 330;

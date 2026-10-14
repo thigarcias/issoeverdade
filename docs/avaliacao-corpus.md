@@ -19,6 +19,39 @@ arcabouço: harness, ferramenta de corpus e um fixture sintético. Consequência
 - As ferramentas validam estrutura, não pessoas: `independent: true` e a adjudicação são declarações do corpus. O script
   não autentica quem anotou, a independência real, a qualidade das decisões nem a autenticidade das fontes.
 
+## Por que a bateria não cobriu os relatos de uso
+
+A bateria de fontes e o corpus factual medem coisas diferentes. O relatório
+[da bateria de 13/10](bateria-fontes-2026-10-13.md) registra 62 URLs e 8 uploads,
+mas a maioria das sondas só lê, extrai ou valida conteúdo; não percorre a
+checagem com IA até a interface e o PNG compartilhado. Esse relatório já
+identificava que os testes de mídia não exercitavam o caminho `yt-dlp`.
+Um download aprovado isoladamente não prova que a transcrição foi consumida,
+nem que o resultado descreveu corretamente sua cobertura.
+
+O harness factual lê `prediction` já registrada no JSONL; não baixa vídeos,
+não chama a visão/transcrição, não mede latência de provedores e não renderiza
+formulários ou cards. O smoke do fixture retorna 8 casos, apenas 2 por modalidade,
+todos com aviso de amostra insuficiente. São dados sintéticos, não uma
+validação das checagens reais nem dos dois IDs reportados.
+
+Para liberar mudanças de mídia, a verificação precisa distinguir:
+
+| Camada | Evidência necessária |
+| --- | --- |
+| Entrada | Texto digitável no celular; imagem com e sem contexto; contexto não reaproveitado de outra aba |
+| Extração | Áudio real chega à transcrição; erro de download separado de erro de transcrição e ausência de fala |
+| Cobertura | Metadados/OCR não apresentados como transcrição; contexto informado não tratado como prova |
+| Resultado | Alegação, evidência e limite permanecem coerentes após a revisão |
+| Compartilhamento | PNG legível, sem substituir síntese factual por mensagem interna de validação |
+| Operação | Tempos por etapa e motivos de falha disponíveis no registro; reporte técnico chega à fila sem exigir fonte factual |
+
+Regressões determinísticas cobrem essas transições quando reproduzíveis
+localmente. Aprovação dessas regressões não atesta disponibilidade de uma
+plataforma social, qualidade factual do modelo nem a causa de uma ocorrência
+de produção sem seu registro original.
+
+
 ## Fluxo de trabalho
 
 ```sh

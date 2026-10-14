@@ -121,9 +121,9 @@ O extrator de páginas vinculadas agora compartilha a leitura de metadados/corpo
 com notícias enviadas diretamente. Posts mantêm até 3 links, 512 KiB/15 s por
 página, corpo de até 2.500 caracteres e contexto combinado de até 12.000.
 Cada trecho é identificado como contexto limitado, sem prometer artigo
-integral. A revisão atual do cache é `article-content-v4`, mantendo a metodologia
-`fact-check-5`; o histórico acima descreve execuções anteriores e não comprova a
-implantação atual.
+integral. A revisão atual do cache é `media-context-v5`, mantendo a metodologia
+`fact-check-5` e a revisão da configuração de IA; o histórico acima descreve
+execuções anteriores e não comprova a implantação atual.
 
 O mesmo roteamento classifica HTML, post social, PDF, imagem, áudio e vídeo.
 Notícias comuns não disparam download audiovisual; Spotify só trata episódios
@@ -132,3 +132,94 @@ diretas passam por `safeFetch`, validação e visão, e áudio/vídeo exigem str
 duração legíveis. Upload local usa ffprobe/ffmpeg somente sem worker e fora de
 serverless; worker configurado não tem fallback silencioso. Mídia não lida não
 gera veredito factual.
+
+## Diagnóstico dos relatos de mídia e demora (13/10/2026)
+
+Os dois registros foram recuperados por `GET /api/admin?id=...` na aplicação
+publicada, com autorização administrativa mantida somente no processo local.
+Não houve reexecução dos links relatados. O Blob não está configurado no `.env`
+local; a consulta remota retornou HTTP 200 e os registros originais.
+
+| Checagem | Tempo registrado | Áudio | Frames | Fases de IA |
+| --- | --- | --- | --- | --- |
+| `mv7axq0x-5n9f41` | 77.927 ms (77,927 s) | download 13.867 ms; `worker-duration-unavailable`, depois `no-direct-video-url` | download 12.152 ms; 10 frames, mas `sampled-description-failed` | judge 29.994 ms, final 13.768 ms, revisão de evidência 15.502 ms |
+| `mv7c3tp0-xf5hiv` | 27.567 ms (27,567 s) | download 15.350 ms; mesmos motivos | download 12.894 ms; 10 frames, mas `sampled-description-failed` | judge 2.881 ms, final 2.375 ms |
+
+No primeiro caso, as três chamadas de IA acima somam 59.264 ms, aproximadamente
+76% do tempo registrado; extração/download não explica sozinho a demora.
+No segundo, a aquisição de mídia (15.351 ms no enriquecimento) domina, seguida
+da classificação da origem (4.176 ms). Áudio e frames eram paralelos: seus
+tempos não devem ser somados. `totalMs` é medido antes da persistência final do
+log e não equivale necessariamente ao tempo de rede/parede do navegador.
+
+Em ambos os registros, não há fase de transcrição nem de visão executada.
+`openai:gpt-transcribe` era o par selecionado, mas não consta em `modelsUsed`:
+não é evidência de erro desse modelo ou de sua API. O motivo observável é a
+rejeição do contrato de duração do áudio recebido do worker. Metadados/texto
+do post sustentaram o restante da checagem; os anexos não foram cobertos por OCR
+ou transcrição. O primeiro terminou `checked`, o segundo `no_verifiable_claims`;
+isso não comprova precisão factual nem leitura do vídeo.
+
+Os artefatos históricos `waudio.json`/`audio-resp.json` têm `ok`, `audio_b64`,
+`mime` e `bytes`, mas não duração. A saúde pública do worker indicado por
+`fly.toml` retornou `ok`/versão de yt-dlp, sem `busy`/`limits` do código atual.
+São evidências compatíveis com worker antigo/incompatível; o corpo original
+de `/audio` desses IDs e a configuração remota do endereço do worker não foram
+preservados nos registros consultados, portanto não identificam conclusivamente
+qual revisão produziu cada resposta. Da mesma forma, `sampled-description-failed`
+sem fase de visão não permite atribuir a falha visual a uma resposta de modelo.
+
+### Correções do pipeline
+
+- A checagem usa `downloadMedia`: uma aquisição fornece áudio e frames do
+  mesmo arquivo, em vez de dois downloads completos e duas vagas do worker.
+  URLs diretas usam leitura HTTP validada; páginas sociais usam yt-dlp ou o
+  worker. Metadados e aquisição correm em paralelo; a moderação do material
+  continua antes das chamadas de análise factual.
+- O worker possui `POST /media` com áudio, frames, streams e `duration_sec`
+  validados pelo ffprobe. `/health` informa `protocol: 2`. Servidor e worker
+  precisam ser implantados juntos; worker sem `/media` produz
+  `worker-protocol-incompatible`, sem adaptador legado ou aceitação de áudio
+  sem duração. Worker configurado não aciona ferramentas locais como fallback.
+- O motivo JSON de respostas não-2xx (por exemplo `worker-busy`) é preservado;
+  `/fetch` não converte falha do probe em `ok: true`. O limite de concorrência
+  é novamente consultado após a leitura assíncrona do corpo.
+- A fila de transcrição antes encadeava o job completo, efetivamente uma chamada
+  por vez apesar do limite de três. Agora três vagas FIFO são realmente usadas;
+  áudio idêntico em voo compartilha uma chamada, e cache separa provedor/modelo.
+  Falhas não são cacheadas; status HTTP e detalhe redigido chegam ao diagnóstico
+  de mídia. Não houve troca de modelo nem remoção de verificação de evidências.
+- Contexto opcional de imagem chega em `input.context`, separado do texto e
+  do OCR. Passa por moderação, integra identidade/hash/cache e aparece delimitado
+  como alegação/pista não confiável, não prova. A descrição visual não recebe
+  esse contexto como observação. Sem contexto/OCR factual, o prompt exige não
+  inventar alegação de local, data, identidade ou autenticidade pela aparência.
+- A falha de áudio não impede analisar frames legíveis. Arquivos temporários
+  são removidos também quando a moderação/cobertura bloqueia o enriquecimento.
+  Logs de erro preservam as tentativas de mídia já coletadas.
+
+### Evidência e lacunas dos testes
+
+Smoke direcionado autorizado nesta intervenção: **7/7** cenários passaram
+para três transcrições simultâneas (sem serialização), deduplicação em voo,
+uma transferência direta audiovisual, aquisição conjunta real via yt-dlp,
+contrato incompatível/busy/duração/base64 do worker, probe com ferramenta
+indisponível e transferência audiovisual real de `/media`. Nenhum desses
+cenários pulou por falta de ffprobe/ffmpeg/yt-dlp neste ambiente.
+
+Os **3/3** testes de construção do prompt passaram; outros **2/2** cenários
+de pipeline com respostas de modelo controladas passaram para imagem com
+contexto separado e vídeo real sem áudio, comprovando que frames chegam à
+visão e geram cobertura `sampled-and-described` mesmo sem transcrição.
+Respostas de modelo controladas testam o contrato, não acurácia de visão ou
+resistência factual/injection do provedor real. A bateria de fontes usa agora
+a mesma aquisição conjunta da checagem, sem ocultar causas em dois fluxos.
+
+A bateria histórica F1/F2 já documentava exit 101 e perda de diagnóstico; o
+código atual já removia `--max-downloads` e registrava tentativas. Isso não
+autoriza atribuir esses bugs antigos aos dois IDs sem evidencia de revisão.
+Testes locais de mídia real não cobrem login-wall, CAPTCHA, permissões de
+conta, cold start do Fly, qualidade de ASR/OCR e latência dos provedores em
+produção. Não foi executada novamente a bateria remota completa nem uma
+medição de melhoria pós-deploy. A revisão atual depende da implantação do
+worker e do servidor; não altera registros antigos.

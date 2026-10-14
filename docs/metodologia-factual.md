@@ -4,7 +4,7 @@
 
 ## Fluxo efetivo e versão
 
-As novas checagens usam `fact-check-5`. O fluxo configura/cacheia a entrada, aplica triagem de propósito e moderação, extrai mídia quando necessário, executa julgamento com busca web, revisa com dossiê, **obtém os documentos das fontes vinculadas para localizar os trechos citados** e valida evidências/pontuação antes de fixar score/veredito. Para imagens/vídeos, a etapa final recebe o material e um dossiê da primeira avaliação, com claims, fontes elegíveis, URLs estruturadas e consultas. Quando todos os claims da prévia têm classificação sustentada, a revisão não recebe ferramenta de busca; quando há claims sem comprovação, pode pesquisar lacunas e conflitos. Texto e links comuns usam o julgamento. Não são dois pesquisadores independentes.
+As novas checagens usam `fact-check-6`. O fluxo configura/cacheia a entrada, aplica triagem de propósito e moderação, extrai mídia quando necessário, executa julgamento com busca web, revisa com dossiê, **obtém os documentos das fontes vinculadas para localizar os trechos citados** e valida evidências/pontuação antes de fixar score/veredito. Para imagens/vídeos, a etapa final recebe o material e um dossiê da primeira avaliação, com claims, fontes elegíveis, URLs estruturadas e consultas. Quando todos os claims da prévia têm classificação sustentada, a revisão não recebe ferramenta de busca; quando há claims sem comprovação, pode pesquisar lacunas e conflitos. Texto e links comuns usam o julgamento. Não são dois pesquisadores independentes.
 
 Ordem das etapas de segurança: (1) política de URL no endpoint; (2) triagem de propósito (pedido direto ao assistente não é afirmação verificável); (3) moderação de texto/imagem antes das chamadas caras; (4) cobertura de vídeo declarada; (5) moderação da transcrição e dos frames amostrados antes da visão; (6) análise factual; (7) dossiê de evidências; (8) validação e registro.
 
@@ -67,7 +67,7 @@ de que todas as fontes/alegações foram confirmadas.
 
 ### Perguntas, rumores e ações futuras
 
-`fact-check-5` orienta julgamento e revisão a investigar hipóteses factuais implícitas em perguntas, inclusive informais. Uma pergunta sobre uma ação futura atribuída a alguém deve levar à busca de declarações, anúncios, propostas ou medidas verificáveis, não à previsão do futuro nem à classificação automática como `no_verifiable_claims`.
+`fact-check-6` mantém a investigação de hipóteses factuais implícitas em perguntas, inclusive informais, introduzida por `fact-check-5`. Uma pergunta sobre uma ação futura atribuída a alguém deve levar à busca de declarações, anúncios, propostas ou medidas verificáveis, não à previsão do futuro nem à classificação automática como `no_verifiable_claims`.
 
 O claim deve explicitar a hipótese investigada, sem inventar uma fala ou alvo. Um caso individual não identificado fica em `notCheckedClaims`; isso não impede investigar a alegação geral. Desmentidos antigos são contexto, não refutação automática de uma hipótese atual. Sem evidência adequada, o claim fica `unproven`. Opiniões e previsões puras continuam sem pontuação factual; os controles de segurança não foram relaxados.
 
@@ -80,7 +80,7 @@ Uma fonte só permanece quando sua URL HTTP(S) específica aparece em uma anota�
 
 A evidência usa relação `supports`, `refutes` ou `context`, identificador de fonte e trecho. O servidor valida o vínculo estrutural, a relação e um trecho não vazio de pelo menos oito caracteres. Depois da revisão final, ele **obtém o documento da fonte** (até `IEV_EVIDENCE_MAX_DOCS` por checagem, com teto de bytes por documento e por job), extrai texto de HTML ou PDF e **localiza o trecho citado** por comparação literal, normalizada (sem acentos/caixa) ou aproximada (mesmos tokens com pontuação diferente). O resultado de cada citação é registrado como `exact`, `normalized`, `approximate`, `prefix`, `tokens`, `missing`, `empty_quote`, `document_unavailable` ou `not_fetched`.
 
-Quando há trecho localizado, uma revisão adicional por modelo decide se o trecho sustenta, refuta, contextualiza, é inconclusivo ou **contradiz** a relação afirmada. Se um claim confirmado/refutado não tem nenhuma citação confirmada e não há contradição, ele volta para `unproven` com justificativa própria; se há contradição, a justificativa afirma que o documento diz algo diferente do citado.
+Quando há trecho localizado, uma revisão adicional por modelo decide se o trecho sustenta, refuta, contextualiza, é inconclusivo ou **contradiz** a relação afirmada. Apenas suporte/refutação efetivo mantém uma classificação confirmada/refutada: contexto não basta. Se nenhuma citação revisada confirma a relação necessária, ou se há contradição, o claim volta para `unproven` com a explicação factual e o limite identificado. As relações dos trechos revisados também são atualizadas; material inconclusivo ou contraditório não continua rotulado como suporte/refutação.
 
 **Isso não prova que a fonte esteja errada nem que a citação seja fiel ao contexto integral.** Ausência de trecho é limitação registrada, nunca falsidade: paywall, página que exige JavaScript, PDF sem texto extraível, tradução e paráfrase aparecem como `document_unavailable`/`missing`. A revisão por modelo é defesa adicional, não validação humana, e não substitui o corpus humano anotado.
 
@@ -89,6 +89,17 @@ O registro preserva consultas, URLs estruturadas e diagnóstico por etapa: busca
 ### Comparação temporal
 
 Os prompts distinguem publicação, coleta/referência, rodada anterior/atual, votos totais/válidos, percentuais/pontos percentuais e intenção de voto/rejeição. Datas relativas devem usar a data do material original, não automaticamente a data da checagem. Quando conhecidos, claims e evidências incluem `referencePeriod` com início/fim ISO. O servidor converte suporte/refutação de períodos disjuntos em contexto; sem outra evidência compatível, rebaixa a classificação e substitui a justificativa contraditória. Datas ausentes não são inventadas. Esse controle é estrutural: não valida independentemente as datas nem garante que intervalos sobrepostos sejam semanticamente comparáveis.
+
+### Síntese legível e compartilhamento
+
+`fact-check-6` exige que resumo e justificativa apresentem fatos e limites em pt-BR, não comentários internos sobre extração de claims, revisão ou ajustes de nota. Pedido, negociação, promessa e recebimento de dinheiro são ações distintas; uma notícia sobre suspeita ou investigação não comprova, por si, o fato investigado. Fontes indiretas e compilações devem ter seu alcance explicado e não substituem automaticamente o documento original. Os trechos citados continuam literais no idioma da fonte; a justificativa explica seu significado em português, sem inventar uma tradução literal.
+
+Correções apenas de pontuação ou selo preservam a síntese factual. Quando a validação ou revisão muda a classificação de uma alegação, o resumo é reconstruído com as alegações, classificações e justificativas vigentes, para não manter uma confirmação já descartada. As correções técnicas permanecem no registro de diagnóstico, não substituem a resposta por um aviso genérico.
+
+O PNG e o texto compartilhado usam a alegação efetivamente checada como título, em vez de uma pergunta que possa insinuar um fato mais amplo. O card prioriza a justificativa em português, identifica citações como trechos originais e mantém a fonte atribuída; para uma alegação sem comprovação, o trecho aparece como contexto, não como prova. O texto compartilhado também inclui a síntese e o endereço de correções. Estados sem avaliação factual não recebem nota nem selo de verdade no compartilhamento. O PNG é uma síntese de espaço limitado; o resultado completo conserva as alegações e fontes.
+
+Regressões de contrato estão em `server/scoring.test.js`, `server/evidence.test.js` e `server/share-card.test.js`: preservação da síntese em ajuste numérico, reconstrução após mudança de classificação, contexto versus prova e pedido versus recebimento. Essas entradas controladas não demonstram precisão factual em casos reais nem substituem revisão humana.
+
 
 
 ## Resultados, estados e pontuação

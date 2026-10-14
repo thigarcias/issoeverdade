@@ -95,7 +95,19 @@ async function workerPost(path, payload, { timeoutMs = mediaLimits().workerTimeo
       timeoutMs,
       policy: workerPolicy(),
     });
-    if (!response.ok) return { ok: false, reason: `worker-http-${response.status}` };
+    if (!response.ok) {
+      if (path === "/media" && response.status === 404) {
+        return { ok: false, reason: "worker-protocol-incompatible", detail: "Implante a versão atual do worker junto com o servidor." };
+      }
+      // O worker devolve motivos operacionais também com 4xx/503 (ex.: ocupado).
+      try {
+        const data = JSON.parse(response.body.toString("utf8"));
+        if (data?.ok === false && typeof data.reason === "string") {
+          return { ok: false, reason: sanitizeDiagnostic(data.reason), detail: sanitizeDiagnostic(data.detail) };
+        }
+      } catch { /* resposta não JSON: preserva o status */ }
+      return { ok: false, reason: `worker-http-${response.status}` };
+    }
     try {
       return JSON.parse(response.body.toString("utf8"));
     } catch {
@@ -225,52 +237,59 @@ export async function enforceDuration(file, maxSeconds) {
   return inspectMediaFile(file, maxSeconds);
 }
 
+/** Valida os mesmos artefatos para upload e extração remota de URL. */
+async function consumeWorkerExtraction(data, via) {
+  const limits = mediaLimits();
+  if (!data?.ok) {
+    const reason = via === "worker-upload" && /payload|too-large/.test(String(data?.reason ?? "")) ? "upload-too-large" : data?.reason ?? "worker-extraction-failed";
+    return { ok: false, reason, detail: sanitizeDiagnostic(data?.detail, 160) };
+  }
+  const seconds = Number(data.duration_sec);
+  if (!Number.isFinite(seconds) || seconds <= 0) return { ok: false, reason: "worker-duration-unavailable" };
+  const durationSec = Math.ceil(seconds);
+  if (durationSec > limits.maxMediaSeconds) return { ok: false, reason: `duration-limit:${durationSec}s` };
+  let audio = null;
+  let audioReason = data.audio_reason ?? null;
+  let audioDir = null;
+  try {
+    if (data.audio?.audio_b64 != null) {
+      const encoded = data.audio.audio_b64;
+      if (typeof encoded !== "string" || encoded.length === 0 || encoded.length > Math.ceil(MAX_WORKER_AUDIO_BYTES / 3) * 4) {
+        audioReason = "worker-audio-invalid";
+      } else {
+        const audioBytes = Buffer.from(encoded, "base64");
+        if (audioBytes.length === 0 || audioBytes.length > MAX_WORKER_AUDIO_BYTES || audioBytes.toString("base64") !== encoded) {
+          audioReason = "worker-audio-invalid";
+        } else {
+          audioDir = await mkdtemp(join(tmpdir(), "iev-worker-"));
+          const file = join(audioDir, "audio.mp3");
+          await writeFile(file, audioBytes, { flag: "wx" });
+          audio = { ok: true, file, dir: audioDir, via };
+        }
+      }
+    }
+    const frames = normalizeWorkerFrames(data.frames);
+    const frameReason = frames.length ? null : data.frame_reason ?? "no-frames";
+    if (!audio && !frames.length) {
+      if (audioDir) await rm(audioDir, { recursive: true, force: true }).catch(() => {});
+      return { ok: false, reason: audioReason ?? frameReason ?? "no-readable-media" };
+    }
+    const hasAudio = Boolean(audio) || data.has_audio === true;
+    const hasVideo = data.has_video === true || frames.length > 0;
+    return { ok: true, audio, frames, count: frames.length, durationSec, via, audioReason, frameReason, hasAudio, hasVideo, dir: audioDir };
+  } catch (error) {
+    if (audioDir) await rm(audioDir, { recursive: true, force: true }).catch(() => {});
+    return { ok: false, reason: "worker-artifact-invalid", detail: sanitizeDiagnostic(error?.message) };
+  }
+}
+
 /** Processa upload localmente quando não há worker; serverless permanece fail-closed. */
 export async function processUploadedMedia(fileBuffer, mime) {
   if (!Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) return { ok: false, reason: "empty-upload" };
   const limits = mediaLimits();
   if (WORKER_URL) {
     const data = await workerPost("/upload", { file_b64: fileBuffer.toString("base64"), mime });
-    if (!data?.ok) {
-      const reason = /payload|too-large/.test(String(data?.reason ?? "")) ? "upload-too-large" : data?.reason ?? "worker-upload-failed";
-      return { ok: false, reason, detail: sanitizeDiagnostic(data?.detail, 160) };
-    }
-    const durationSec = Number(data.duration_sec);
-    if (!Number.isFinite(durationSec) || durationSec <= 0) return { ok: false, reason: "worker-duration-unavailable" };
-    if (durationSec > limits.maxMediaSeconds) return { ok: false, reason: `duration-limit:${Math.ceil(durationSec)}s` };
-    let audio = null;
-    let audioReason = data.audio_reason ?? null;
-    let audioDir = null;
-    try {
-      if (data.audio?.audio_b64 != null) {
-        const encoded = data.audio.audio_b64;
-        if (typeof encoded !== "string" || encoded.length === 0 || encoded.length > Math.ceil(MAX_WORKER_AUDIO_BYTES / 3) * 4) {
-          audioReason = "worker-audio-invalid";
-        } else {
-          const audioBytes = Buffer.from(encoded, "base64");
-          if (audioBytes.length === 0 || audioBytes.length > MAX_WORKER_AUDIO_BYTES || audioBytes.toString("base64") !== encoded) {
-            audioReason = "worker-audio-invalid";
-          } else {
-            audioDir = await mkdtemp(join(tmpdir(), "iev-upload-"));
-            const file = join(audioDir, "audio.mp3");
-            await writeFile(file, audioBytes, { flag: "wx" });
-            audio = { ok: true, file, dir: audioDir, via: "worker-upload" };
-          }
-        }
-      }
-      const frames = normalizeWorkerFrames(data.frames);
-      const frameReason = frames.length ? null : data.frame_reason ?? "no-frames";
-      if (!audio && !frames.length) {
-        if (audioDir) await rm(audioDir, { recursive: true, force: true }).catch(() => {});
-        return { ok: false, reason: audioReason ?? frameReason ?? "no-readable-media" };
-      }
-      const hasAudio = Boolean(audio) || data.has_audio === true;
-      const hasVideo = data.has_video === true || frames.length > 0;
-      return { ok: true, audio, frames, count: frames.length, durationSec, via: "worker-upload", audioReason, frameReason, hasAudio, hasVideo, dir: audioDir };
-    } catch (error) {
-      if (audioDir) await rm(audioDir, { recursive: true, force: true }).catch(() => {});
-      return { ok: false, reason: "worker-upload-invalid", detail: sanitizeDiagnostic(error?.message) };
-    }
+    return consumeWorkerExtraction(data, "worker-upload");
   }
 
   if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) return { ok: false, reason: "worker-unavailable-serverless" };
@@ -360,6 +379,54 @@ export async function probeWithYtDlp(url) {
   }
 }
 
+/**
+ * Caminho da checagem: uma aquisição gera áudio e frames do mesmo arquivo.
+ * Evita dois downloads e duas vagas do worker para um único vídeo.
+ */
+export async function downloadMedia(url, outDir = "./media-tmp", sourceType = null) {
+  const source = sourceType ? { type: sourceType } : classifySourceUrl(url);
+  const directAsset = ["audio", "video"].includes(source.type);
+  const attempts = [];
+  let result;
+  if (directAsset && !WORKER_URL) {
+    result = await downloadDirectAsset(url, outDir, "both");
+    attempts.push(diagnosticAttempt("direct-media", result));
+  } else if (WORKER_URL) {
+    const data = await workerPost("/media", { url, source_type: directAsset ? source.type : null });
+    result = await consumeWorkerExtraction(data, "worker");
+    attempts.push(diagnosticAttempt("worker-media", result));
+    // Worker configurado não muda para ferramentas locais após uma falha.
+  } else {
+    result = await downloadViaYtDlp(url, outDir, "both");
+    attempts.push(diagnosticAttempt("yt-dlp-media", result));
+    if (!result.ok) {
+      const budget = byteBudget(mediaLimits().maxTransferBytes);
+      try {
+        const direct = await directVideoUrl(url, budget);
+        result = direct.ok ? await downloadDirectAsset(direct.url, outDir, "both", budget) : direct;
+      } catch (error) {
+        result = { ok: false, reason: netReason(error) };
+      }
+      attempts.push(diagnosticAttempt("og-video-media", result));
+    }
+  }
+  const shared = { hasAudio: result?.hasAudio, hasVideo: result?.hasVideo, durationSec: result?.durationSec };
+  return {
+    ok: result?.ok === true,
+    reason: result?.reason,
+    attempts,
+    audio: result?.audio ? { ...result.audio, ...shared } : { ok: false, reason: result?.audioReason ?? result?.reason ?? "no-audio-track", ...shared },
+    frameResult: {
+      ok: Boolean(result?.frames?.length),
+      frames: result?.frames ?? [],
+      seconds: result?.durationSec,
+      via: result?.via,
+      reason: source.type === "audio" ? "not-applicable-audio" : result?.frameReason ?? result?.reason ?? "no-frames",
+      ...shared,
+    },
+  };
+}
+
 /** Camada 2: áudio — worker remoto, yt-dlp local ou URL og:video validada. */
 export async function downloadAudio(url, outDir = "./media-tmp", sourceType = null) {
   const attempts = [];
@@ -399,8 +466,9 @@ function subprocessReason(run, stage, fallback) {
   return fallback;
 }
 
-async function downloadViaYtDlp(url, outDir) {
+async function downloadViaYtDlp(url, outDir, mode = "audio") {
   const limits = mediaLimits();
+  if (!(await hasYtDlp())) return { ok: false, reason: "no-ytdlp" };
   const dir = await mediaTempDir(outDir, "iev-audio-");
   const maxBytes = Math.min(limits.maxTransferBytes, limits.maxFileBytes);
   let keep = false;
@@ -408,7 +476,7 @@ async function downloadViaYtDlp(url, outDir) {
     const run = await runLimited(
       "yt-dlp",
       [
-        "--no-playlist", "-f", "bestaudio/best",
+        "--no-playlist", "-f", mode === "both" ? "worst[height<=480][acodec!=none]/best[height<=480][acodec!=none]/worst" : "bestaudio/best",
         "--no-warnings", "--no-progress", "--retries", "2", "--socket-timeout", "20",
         "--max-filesize", String(maxBytes),
         "--extractor-args", "youtube:player_client=android,web",
@@ -428,9 +496,14 @@ async function downloadViaYtDlp(url, outDir) {
       maxMediaSeconds: limits.maxMediaSeconds,
       maxTempBytes: limits.maxTempBytes,
       maxAudioBytes: MAX_WORKER_AUDIO_BYTES,
-      extractFrames: false,
+      extractFrames: mode === "both",
     });
     if (!extracted.ok) return extracted;
+    if (mode === "both") {
+      const audio = extracted.audioBytes ? { ok: true, file: join(dir, "audio.mp3"), dir, via: "yt-dlp" } : null;
+      keep = Boolean(audio);
+      return { ...extracted, audio, dir: audio ? dir : null, via: "yt-dlp" };
+    }
     if (!extracted.audioBytes) return { ok: false, reason: extracted.audioReason ?? "no-audio-track", hasAudio: extracted.hasAudio, hasVideo: extracted.hasVideo };
     keep = true;
     return { ok: true, file: join(dir, "audio.mp3"), dir, via: "yt-dlp", durationSec: extracted.durationSec, hasAudio: extracted.hasAudio, hasVideo: extracted.hasVideo };
@@ -561,12 +634,17 @@ async function downloadDirectAsset(url, outDir, mode, budget = byteBudget(mediaL
       maxAudioBytes: MAX_WORKER_AUDIO_BYTES,
       maxFrames: MAX_FRAMES,
       maxFramesBytes: MAX_FRAMES_BYTES,
-      extractAudio: mode === "audio",
-      extractFrames: mode === "frames",
+      extractAudio: mode !== "frames",
+      extractFrames: mode !== "audio",
     });
     if (!extracted.ok) {
       await rm(dir, { recursive: true, force: true }).catch(() => {});
       return extracted;
+    }
+    if (mode === "both") {
+      const audio = extracted.audioBytes ? { ok: true, file: join(dir, "audio.mp3"), dir, via: "direct" } : null;
+      if (!audio) await rm(dir, { recursive: true, force: true }).catch(() => {});
+      return { ...extracted, audio, dir: audio ? dir : null, via: "direct" };
     }
     if (mode === "audio") {
       if (!extracted.audioBytes) {

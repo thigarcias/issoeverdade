@@ -15,6 +15,7 @@ import {
   correctionsEnabled,
   correctionsMode,
   getCorrection,
+  isOperationalReport,
   listCorrections,
   updateCorrection,
 } from "./corrections.js";
@@ -127,7 +128,8 @@ export async function handleAdminRequest({ method, headers = {}, query = {}, bod
       recordCorrection(updated.record.status === "corrected" ? "corrected" : "updated");
       const record = updated.record;
       let applied = null;
-      if (record.status === "corrected" && record.checkId) {
+      const editorialCorrection = record.status === "corrected" && record.checkId && !isOperationalReport(record.kind);
+      if (editorialCorrection) {
         applied = await appendCorrectionToLog(record.checkId, {
           protocol: record.protocol,
           note: body?.note ?? record.claim ?? "",
@@ -136,7 +138,7 @@ export async function handleAdminRequest({ method, headers = {}, query = {}, bod
         });
         await invalidateCache(`correção ${record.protocol}`);
       }
-      return { status: 200, body: { correction: adminCorrection(record), applied, cacheInvalidated: Boolean(record.status === "corrected" && record.checkId) } };
+      return { status: 200, body: { correction: adminCorrection(record), applied, cacheInvalidated: Boolean(editorialCorrection) } };
     }
     return jsonError(405, { error: "method_not_allowed" });
   }

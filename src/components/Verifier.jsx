@@ -45,6 +45,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
   const limits = useServerLimits();
   const [tab, setTab] = useState("link");
   const [text, setText] = useState("");
+  const [imageContext, setImageContext] = useState("");
   const [file, setFile] = useState(null);
   const [drag, setDrag] = useState(false);
   const [step, setStep] = useState(-1); // -1 idle, 0..n running, len done
@@ -70,6 +71,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     pendingQuick.current = { tab: isUrl ? (looksVideo ? "video" : "link") : "text", text: quickInput };
     setTab(pendingQuick.current.tab);
     setText(quickInput);
+    setImageContext("");
     setFile(null);
     setResult(null);
     setError(null);
@@ -108,9 +110,12 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
   }, [running]);
 
   function switchTab(next) {
+    if (next === tab) return;
     aborter.current?.abort();
     runId.current += 1;
     setTab(next);
+    setText("");
+    setImageContext("");
     setFile(null);
     setResult(null);
     setError(null);
@@ -132,7 +137,8 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
       const uploadFile = file;
       const snapshot = {
         kind: tab,
-        text: text.trim(),
+        text: tab === "image" ? "" : text.trim(),
+        context: tab === "image" ? imageContext.trim() : "",
         fileName: uploadFile?.name ?? null,
         fileMime: uploadFile?.type ?? "",
         file: uploadFile ?? undefined,
@@ -145,7 +151,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
       if (runId.current !== mine) return; // execução obsoleta
       r.elapsedMs = Date.now() - startRef.current;
       setResult(r);
-      setCheckedInput({ kind: snapshot.kind, text: snapshot.text, fileName: snapshot.fileName, fileFingerprint: snapshot.fileFingerprint });
+      setCheckedInput({ kind: snapshot.kind, text: snapshot.text, context: snapshot.context, fileName: snapshot.fileName, fileFingerprint: snapshot.fileFingerprint });
       onChecked?.(r);
     } catch (err) {
       if (err?.name === "AbortError") return;
@@ -197,6 +203,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
     aborter.current?.abort();
     runId.current += 1;
     setText("");
+    setImageContext("");
     setFile(null);
     setResult(null);
     setError(null);
@@ -380,6 +387,31 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                     onChange={(e) => handleFiles(e.target.files)}
                   />
                 </div>
+                {tab === "image" && (
+                  <div>
+                    <label className="field-label" htmlFor="verify-image-context">
+                      Contexto da imagem (opcional)
+                    </label>
+                    <textarea
+                      id="verify-image-context"
+                      className="input-plain"
+                      inputMode="text"
+                      placeholder="Qual afirmação você quer checar? Se souber, conte onde a imagem circulou e a data alegada…"
+                      value={imageContext}
+                      maxLength={limits.maxTextChars}
+                      onChange={(e) => setImageContext(e.target.value)}
+                      aria-describedby="verify-image-context-help"
+                    />
+                    <p className="field-help" id="verify-image-context-help">
+                      Você pode enviar só a imagem. Este texto orienta a checagem; não comprova autoria, data ou autenticidade.
+                    </p>
+                    {imageContext.length > limits.maxTextChars * 0.9 && (
+                      <p className="field-help" role="note">
+                        {imageContext.length}/{limits.maxTextChars} caracteres. Envie o contexto essencial; o servidor recusa texto acima do limite.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -399,7 +431,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                     Cancelar
                   </button>
                 )}
-                {(result || text || file) && !running && (
+                {(result || text || imageContext || file) && !running && (
                   <button className="btn ghost" type="button" onClick={reset}>
                     Limpar
                   </button>
@@ -418,7 +450,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
             <span className="aside">{result ? (result.score == null ? "sem veredito" : `nota ${result.score}/100`) : running ? "a IA está trabalhando" : "leva segundos"}</span>
           </div>
           {result && !running && expanded && checkedInput &&
-            (text.trim() !== checkedInput.text || tab !== checkedInput.kind || fileFingerprint(file) !== checkedInput.fileFingerprint) && (
+            ((tab === "image" ? "" : text.trim()) !== checkedInput.text || (tab === "image" ? imageContext.trim() : "") !== checkedInput.context || tab !== checkedInput.kind || fileFingerprint(file) !== checkedInput.fileFingerprint) && (
               <p className="stale-warning" role="status">
                 Você alterou o conteúdo — este resultado é da checagem anterior.{" "}
                 <button type="button" className="quiet-link" onClick={handleSubmit} disabled={!canSubmit}>
@@ -489,6 +521,12 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
           )}
 
           {result && <ResultCard result={result} showToast={showToast} onShareCard={onShareCard} />}
+          {!result && (
+            <p className="verify-hint" style={{ marginTop: 10 }}>
+              Falha no envio, erro ou demora na checagem?{" "}
+              <a className="quiet-link" href="/correcoes.html?source=app">Reportar problema</a>
+            </p>
+          )}
         </div>
       </div>
 

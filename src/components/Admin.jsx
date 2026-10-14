@@ -604,6 +604,8 @@ const CORRECTION_MODE_LABEL = {
   blocked: "bloqueado nesta implantação",
 };
 
+const REPORT_SOURCE_LABEL = { result: "Resultado", detail: "Detalhe da checagem", app: "Formulário de checagem", card: "Card compartilhado" };
+
 const CORRECTION_STATUS_TINT = {
   received: "tint-info",
   in_review: "tint-warn",
@@ -631,6 +633,8 @@ function AdminCorrections({ data, loading, error, statuses, detail, detailLoadin
   const [cacheReason, setCacheReason] = useState("");
   const [cacheBusy, setCacheBusy] = useState(false);
   const [cacheResult, setCacheResult] = useState(null);
+  const [kindFilter, setKindFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const protocol = detail?.protocol ?? "";
   const lastProtocol = useRef("");
 
@@ -681,13 +685,18 @@ function AdminCorrections({ data, loading, error, statuses, detail, detailLoadin
   const blocked = data?.mode === "blocked";
   const memoryOnly = Boolean(data) && data.enabled === false && !blocked;
   const items = data?.items ?? [];
+  const kinds = data?.kinds ?? [];
+  const kindLabel = (kind) => kinds.find((entry) => entry.id === kind)?.label ?? ({ correction: "Correção de informação", right_of_reply: "Direito de resposta", removal: "Remoção de conteúdo" })[kind] ?? kind ?? "tipo não registrado";
+  const pending = items.filter((item) => ["received", "in_review", "awaiting_info"].includes(item.status)).length;
+  const visibleItems = items.filter((item) => (kindFilter === "all" || item.kind === kindFilter)
+    && (statusFilter === "all" || item.status === statusFilter));
 
   return (
     <section className="admin-corrections" aria-labelledby="admin-corrections-title">
       <div className="admin-section-heading">
         <p className="admin-eyebrow">Canal público</p>
-        <h1 id="admin-corrections-title">Correções</h1>
-        <p>Pedidos enviados pelo formulário público. Marcar um pedido como <b>Corrigido</b> só altera o registro vigente quando existe uma checagem vinculada.</p>
+        <h1 id="admin-corrections-title">Reportes e correções</h1>
+        <p>Todos os problemas enviados pelo público entram aqui, inclusive sem ID ou evidência. Resolver um problema operacional não altera a conclusão factual. Marcar uma contestação editorial como <b>Corrigido</b> só marca o registro vigente quando existe uma checagem vinculada.</p>
       </div>
       {blocked && <p className="admin-error-state" role="alert">A fila de correções está bloqueada nesta implantação (modo <code>blocked</code>): sem armazenamento durável o canal público recusa novos pedidos e o painel não consegue registrar estados.</p>}
       {memoryOnly && <p className="admin-notice" role="status">A fila existe apenas em memória nesta instância (modo <code>{data.mode}</code>): pedidos e mudanças de estado não sobrevivem ao reinício do processo nem são compartilhados entre instâncias.</p>}
@@ -697,6 +706,12 @@ function AdminCorrections({ data, loading, error, statuses, detail, detailLoadin
         {data && <span className="admin-mut">{items.length} de até {data.max ?? "—"} pedidos retidos · modo {CORRECTION_MODE_LABEL[data.mode] ?? data.mode}</span>}
         <span className="admin-corr-spacer" />
         <button className="btn ghost" type="button" aria-expanded={cacheOpen} onClick={() => { setCacheOpen((open) => !open); setCacheResult(null); }}>Invalidar cache</button>
+      </div>
+      {data && <p className="admin-notice" role="status">{pending} {pending === 1 ? "pedido pendente" : "pedidos pendentes"} na fila retida · {visibleItems.length} exibidos de {items.length}.</p>}
+      <div className="admin-check-toolbar">
+        <label className="admin-sort">Tipo de problema<select value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}><option value="all">Todos</option>{kinds.map((kind) => <option key={kind.id} value={kind.id}>{kind.label}</option>)}</select></label>
+        <label className="admin-sort">Estado<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">Todos</option>{statuses.map((status) => <option key={status.id} value={status.id}>{status.label}</option>)}</select></label>
+        {(kindFilter !== "all" || statusFilter !== "all") && <button className="btn ghost" type="button" onClick={() => { setKindFilter("all"); setStatusFilter("all"); }}>Limpar filtros</button>}
       </div>
       {cacheOpen && <section className="admin-cache-panel" aria-label="Invalidar cache de checagens">
         <p className="admin-mut">Publica uma nova época de cache: resultados gravados antes dela deixam de ser servidos. Use depois de corrigir um registro já publicado.</p>
@@ -713,10 +728,10 @@ function AdminCorrections({ data, loading, error, statuses, detail, detailLoadin
         ? <ul className="admin-skel" aria-label="Carregando pedidos de correção"><li /><li /><li /></ul>
         : <div className="admin-corr-grid">
           <div className="admin-corr-queue">
-            {items.length === 0
-              ? <div className="empty"><h3>Nenhum pedido retido</h3><p>{data?.enabled ? "A fila não tem pedidos de correção no momento." : "A fila não é durável nesta implantação; nenhum pedido é retido."}</p></div>
+            {visibleItems.length === 0
+              ? <div className="empty"><h3>{items.length ? "Nenhum relato neste filtro" : "Nenhum pedido retido"}</h3><p>{items.length ? "Ajuste o tipo ou o estado para ver outros relatos." : data?.enabled ? "A fila não tem relatos no momento." : "A fila não é durável nesta implantação; nenhum pedido é retido."}</p></div>
               : <ul className="admin-queue">
-                {items.map((item) => <li key={item.protocol} className={selected === item.protocol ? "is-open" : ""}>
+                {visibleItems.map((item) => <li key={item.protocol} className={selected === item.protocol ? "is-open" : ""}>
                   <button type="button" className="admin-queue-row" onClick={() => onOpen(item.protocol)}>
                     <span className="admin-queue-head">
                       <code>{item.protocol}</code>
@@ -724,7 +739,7 @@ function AdminCorrections({ data, loading, error, statuses, detail, detailLoadin
                       <time title={fmtFullTime(item.at)}>{fmtTime(item.at)}</time>
                     </span>
                     <span className="admin-queue-msg">{item.messagePreview || "(sem prévia da mensagem)"}</span>
-                    <span className="admin-queue-meta">{item.checkId ? `Checagem ${item.checkId}` : "Sem checagem vinculada"} · {KIND_LABEL[item.kind] ?? item.kind ?? "tipo não registrado"} · atualizado em {fmtTime(item.updatedAt)}</span>
+                    <span className="admin-queue-meta">{item.checkId ? `Checagem ${item.checkId}` : "Sem checagem vinculada"} · {kindLabel(item.kind)} · atualizado em {fmtTime(item.updatedAt)}</span>
                   </button>
                   {item.checkId && <button className="quiet-link" type="button" onClick={() => onOpenCheck(item.checkId)}>Abrir detalhe da checagem</button>}
                 </li>)}
@@ -749,17 +764,20 @@ function AdminCorrections({ data, loading, error, statuses, detail, detailLoadin
                 <dt>Checagem vinculada</dt>
                 <dd>{detail.checkId
                   ? <button className="quiet-link" type="button" onClick={() => onOpenCheck(detail.checkId)}>Abrir detalhe de {detail.checkId}</button>
-                  : "Nenhuma checagem vinculada — corrigir este pedido não altera registro publicado."}</dd>
-                <dt>Tipo de entrada</dt>
-                <dd>{KIND_LABEL[detail.kind] ?? detail.kind ?? "não registrado"}</dd>
+                  : "Nenhuma checagem vinculada — corrigir este pedido não altera registro publicado."}{detail.operational && <small className="admin-mut"> · Relato operacional: o ID serve apenas para investigação, não para retificação editorial.</small>}</dd>
+                <dt>Tipo de problema</dt>
+                <dd>{kindLabel(detail.kind)}</dd>
                 <dt>Persistência</dt>
                 <dd>{detail.persisted ? "Durável (Blob)" : "Apenas em memória nesta instância"}</dd>
                 <dt>Mensagem</dt>
                 <dd className="admin-quote">{detail.message || "—"}</dd>
-                <dt>Afirmação contestada</dt>
-                <dd>{detail.claim || "não informada"}</dd>
-                <dt>Evidência enviada</dt>
-                <dd>{detail.evidenceUrl ? <a href={detail.evidenceUrl} target="_blank" rel="noreferrer">{detail.evidenceUrl}</a> : "não informada"}</dd>
+                <dt>Contexto para reproduzir</dt>
+                <dd className="admin-quote">{detail.context || "não informado"}{" "}<small className="admin-mut">(uso interno)</small></dd>
+                <dt>Origem do reporte</dt>
+                <dd>{REPORT_SOURCE_LABEL[detail.source] ?? "não informada"}</dd>
+                {detail.claim && <><dt>Afirmação contestada</dt><dd>{detail.claim}</dd></>}
+                <dt>Link relacionado ou evidência</dt>
+                <dd>{detail.evidenceUrl ? <a href={detail.evidenceUrl} target="_blank" rel="noreferrer">{detail.evidenceUrl}</a> : "não informado — opcional, inclusive para problemas operacionais"}</dd>
                 <dt>Contato</dt>
                 <dd>{detail.contact || "não informado"}{" "}<small className="admin-mut">(uso interno; não aparece no site)</small></dd>
               </dl>
@@ -923,7 +941,7 @@ function AdminMetrics({ data, loading, error, onReload }) {
 const ADMIN_SECTIONS = [
   { id: "overview", label: "Visão geral" },
   { id: "checks", label: "Checagens" },
-  { id: "corrections", label: "Correções" },
+  { id: "corrections", label: "Reportes e correções" },
   { id: "metrics", label: "Métricas" },
   { id: "models", label: "Modelos & provedores" },
   { id: "methodology", label: "Metodologia" },

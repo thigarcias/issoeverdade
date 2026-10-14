@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Como ajustes automatizados são registrados e quais canais públicos de correção estão disponíveis.">
-<title>Correções — Isso é Verdade?</title>
+<meta name="description" content="Reporte problemas técnicos, transcrição, lentidão, downloads, cards ou conteste uma informação. Acompanhe seu protocolo.">
+<title>Reportar problema e correções — Isso é Verdade?</title>
 <style>
 :root{color-scheme:light;--ink:#26231f;--muted:#625d55;--paper:#faf8f2;--line:#ded8cb;--accent:#a83227}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:1rem/1.7 system-ui,-apple-system,"Segoe UI",sans-serif}header,main,footer{width:min(100% - 2rem,54rem);margin-inline:auto}header{padding:1.5rem 0;border-bottom:1px solid var(--line)}nav{display:flex;flex-wrap:wrap;gap:.5rem 1.25rem}a{color:#84271f;text-underline-offset:.18em}a:focus-visible{outline:3px solid var(--accent);outline-offset:3px;border-radius:2px}.current{font-weight:700;text-decoration:none}main{padding:2rem 0 3rem}h1,h2{line-height:1.2}h1{font-size:clamp(2rem,7vw,3rem);margin:.35rem 0 1rem}h2{margin:2rem 0 .5rem;font-size:1.4rem}.date,.note{color:var(--muted)}.note{border-left:4px solid var(--accent);padding:.8rem 1rem;background:#f0ece2}footer{border-top:1px solid var(--line);padding:1rem 0 2rem;color:var(--muted)}@media(min-width:42rem){main{padding-top:3rem}}
 </style>
@@ -27,49 +27,60 @@ button[disabled]{opacity:.6;cursor:progress}
 <body>
 <header><nav aria-label="Transparência"><a href="metodologia.html">Metodologia</a><a class="current" aria-current="page" href="correcoes.html">Correções</a><a href="privacidade.html">Privacidade</a></nav></header>
 <main>
-<p class="date">Informações sobre correções</p>
-<h1>Correções</h1>
+<p class="date">Canal público de reportes e correções</p>
+<h1>Encontrou um problema? Conte para nós</h1>
 <p class="note">As análises são automatizadas e não substituem revisão profissional, apuração ou verificação independente. Não declaramos certificação nem afiliação ao IFCN.</p>
-<h2>Ajustes registrados pelo sistema</h2>
-<p>O servidor valida estrutura, vínculo de evidências, status e coerência de score/veredito. Algumas incompatibilidades são corrigidas automaticamente e registradas no log interno; se a conclusão mudar, o resumo pode ser substituído por um aviso genérico. Isso não é revisão editorial humana, comunicação ao usuário nem reanálise de todos os históricos.</p>
-<p>Registros antigos descrevem a execução preservada. Não são reexecutados automaticamente com a metodologia atual. Um registro sem versão metodológica pode ser identificado como legado.</p>
+<p>Seu relato ajuda a melhorar o serviço. Você pode avisar sobre erro técnico, transcrição, download, lentidão, resultado confuso ou card — mesmo sem uma checagem concluída.</p>
 <h2>Canal público</h2>
 <p id="check-status" class="status" role="status" aria-live="polite"></p>
-<p>Use o formulário abaixo para contestar um resultado específico. Cada pedido recebe um <b>protocolo</b> e entra numa fila de revisão com estados (recebido, em revisão, aguardando informação, corrigido, mantido, encerrado). A revisão é feita por pessoa; a IA pode apoiar a análise, mas não altera resultado histórico sozinha.</p>
-<p>Um pedido não garante alteração automática nem prazo de resposta. Não envie dados sensíveis, documentos de terceiros ou material ilegal: o formulário aceita texto, link e contato, e o armazenamento é privado.</p>
+<p>Descreva o que aconteceu no formulário abaixo. <b>Para problemas de funcionamento, não é preciso provar uma informação falsa nem enviar evidência.</b> Cada relato recebe um protocolo e entra na fila privada do administrador, com acompanhamento de estado.</p>
+<p>Não há alteração automática nem prazo garantido de resposta. Não envie senhas, dados sensíveis, documentos de terceiros ou material ilegal. Inclua apenas o contexto necessário; mensagem, contexto e contato não são publicados.</p>
 <form id="corrections-form" novalidate>
   <div class="field">
     <label for="checkId">ID da checagem (opcional)</label>
-    <input id="checkId" name="checkId" type="text" inputmode="text" autocomplete="off" placeholder="ex.: mv6y75tx-3qqrxr">
-    <p class="help">O ID aparece no resultado da checagem e no endereço do painel administrativo.</p>
+    <input id="checkId" name="checkId" type="text" maxlength="80" inputmode="text" autocomplete="off" placeholder="ex.: mv6y75tx-3qqrxr">
+    <p class="help">Já vem preenchido se você abriu o reporte pelo resultado. Se não tiver ID ou a checagem falhou antes de gerar um, deixe em branco.</p>
   </div>
   <div class="field">
-    <label for="kind">Tipo de pedido</label>
+    <label for="kind">Onde está o problema?</label>
     <select id="kind" name="kind">
+      <option value="technical">Erro técnico ou checagem que falhou</option>
+      <option value="transcription">Transcrição ou leitura de mídia</option>
+      <option value="download">Download ou compartilhamento</option>
+      <option value="slow">Lentidão</option>
+      <option value="result">Resultado ou explicação confusa</option>
+      <option value="card">Card ou apresentação</option>
+      <option value="other">Outro problema</option>
       <option value="correction">Correção de informação</option>
       <option value="right_of_reply">Direito de resposta</option>
       <option value="removal">Remoção de conteúdo</option>
     </select>
   </div>
   <div class="field">
-    <label for="message">O que está incorreto e por quê (obrigatório)</label>
-    <textarea id="message" name="message" rows="7" required minlength="20" maxlength="4000" placeholder="Descreva o trecho, o resultado apresentado e a informação correta, com referência à fonte."></textarea>
-    <p class="help"><span id="message-count">0</span>/4000 caracteres · mínimo de 20.</p>
+    <label for="message">O que aconteceu? (obrigatório)</label>
+    <textarea id="message" name="message" rows="5" required minlength="20" maxlength="4000" aria-describedby="message-help" placeholder="Ex.: ao baixar o card no celular, apareceu um erro e nenhum arquivo foi salvo."></textarea>
+    <p id="message-help" class="help"><span id="message-count">0</span>/4000 caracteres · mínimo de 20. Diga o que tentou fazer, o que esperava e o que aconteceu.</p>
   </div>
   <div class="field">
-    <label for="evidenceUrl">Link da evidência (opcional)</label>
-    <input id="evidenceUrl" name="evidenceUrl" type="url" inputmode="url" placeholder="https://...">
+    <label for="context">Contexto para reproduzir (opcional)</label>
+    <textarea id="context" name="context" rows="3" maxlength="1000" aria-describedby="context-help" placeholder="Passos, mensagem de erro, trecho da transcrição, horário aproximado, navegador e celular/computador."></textarea>
+    <p id="context-help" class="help">Até 1000 caracteres. Não coletamos automaticamente seu aparelho, entrada original ou histórico de navegação.</p>
+  </div>
+  <div class="field">
+    <label for="evidenceUrl">Link relacionado ou evidência (opcional)</label>
+    <input id="evidenceUrl" name="evidenceUrl" type="url" maxlength="500" inputmode="url" placeholder="https://..." aria-describedby="evidence-help">
+    <p id="evidence-help" class="help">Pode ajudar numa contestação factual, mas não é necessário para reportar um problema técnico. Não envie links com dados privados ou tokens de acesso.</p>
   </div>
   <div class="field">
     <label for="contact">Contato para retorno (opcional)</label>
-    <input id="contact" name="contact" type="text" autocomplete="email" placeholder="e-mail ou perfil público">
+    <input id="contact" name="contact" type="text" maxlength="300" autocomplete="email" placeholder="e-mail ou perfil público">
     <p class="help">Sem contato, acompanhe o estado pelo protocolo nesta página.</p>
   </div>
   <div class="field hp" aria-hidden="true">
     <label for="website">Não preencha este campo</label>
     <input id="website" name="website" type="text" tabindex="-1" autocomplete="off">
   </div>
-  <button type="submit" id="submit-button">Enviar pedido</button>
+  <button type="submit" id="submit-button">Enviar relato</button>
   <p id="form-status" class="status" role="status" aria-live="polite"></p>
 </form>
 <h2>Acompanhar um pedido</h2>
@@ -81,8 +92,11 @@ button[disabled]{opacity:.6;cursor:progress}
   <button type="submit">Consultar estado</button>
   <p id="status-result" class="status" role="status" aria-live="polite"></p>
 </form>
+<h2>Ajustes registrados pelo sistema</h2>
+<p>O servidor valida estrutura, vínculo de evidências, status e coerência de score/veredito. Algumas incompatibilidades são corrigidas automaticamente e registradas no log interno. Isso não é revisão editorial humana, comunicação ao usuário nem reanálise de todos os históricos.</p>
+<p>Registros antigos descrevem a execução preservada. Não são reexecutados automaticamente com a metodologia atual. Um registro sem versão metodológica pode ser identificado como legado.</p>
 <h2>Limites</h2>
-<p>O pedido é registrado em armazenamento privado; contato e histórico interno não são publicados. Se o serviço de registro estiver indisponível, o formulário avisa em vez de confirmar um protocolo que não foi gravado. Quando uma correção é aplicada, a versão vigente do resultado é marcada e o cache daquela checagem é invalidado.</p>
+<p>O relato é registrado em armazenamento privado; mensagem, contexto, contato e notas internas não são publicados. Se o registro estiver indisponível, o formulário avisa em vez de confirmar um protocolo que não foi gravado. Problemas operacionais podem ser resolvidos sem mudar o resultado. Para uma correção editorial aplicada a uma informação, a versão vigente é marcada e o cache é invalidado, preservando a execução original.</p>
 <p>Leia também <a href="metodologia.html">Metodologia</a> e <a href="privacidade.html">Privacidade</a>.</p>
 </main>
 <footer><p>Esta descrição reflete o comportamento implementado no código; não representa um compromisso de atendimento ou uma revisão independente.</p></footer>

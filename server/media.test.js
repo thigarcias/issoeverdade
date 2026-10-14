@@ -420,3 +420,98 @@ test("teto de transferência impede declarar extração completa", async () => {
     else process.env.IEV_MAX_DOC_BYTES = previous;
   }
 });
+
+test("checagem adquire vídeo direto uma vez e extrai áudio/frames da mesma origem", async (t) => {
+  const fixture = await createMediaFixture(t);
+  if (!fixture) return;
+  let requests = 0;
+  let extracted;
+  try {
+    await comServidor((_req, res) => {
+      requests++;
+      res.writeHead(200, { "Content-Type": "video/mp4" });
+      res.end(fixture.bytes);
+    }, async (port) => {
+      extracted = await media.downloadMedia(`http://127.0.0.1:${port}/clip`, fixture.dir, "video");
+      assert.equal(extracted.ok, true);
+      assert.equal(requests, 1);
+      assert.equal(extracted.audio.ok, true);
+      assert.equal(extracted.frameResult.ok, true);
+      assert.equal(extracted.audio.via, "direct");
+      assert.equal(extracted.frameResult.via, "direct");
+      assert.equal(extracted.audio.durationSec, extracted.frameResult.seconds);
+      assert.ok((await media.enforceDuration(extracted.audio.file, 900)).hasAudio);
+      assert.equal(media.normalizeWorkerFrames(extracted.frameResult.frames).length, extracted.frameResult.frames.length);
+    });
+  } finally {
+    if (extracted?.audio?.dir) await rm(extracted.audio.dir, { recursive: true, force: true });
+    await fixture.cleanup();
+  }
+});
+
+test("aquisição conjunta yt-dlp preserva ambas modalidades e duração", async (t) => {
+  const fixture = await createMediaFixture(t);
+  if (!fixture) return;
+  if (!(await media.hasYtDlp())) {
+    await fixture.cleanup();
+    t.skip("yt-dlp is required for combined downloader integration");
+    return;
+  }
+  let extracted;
+  try {
+    await comServidor((_req, res) => {
+      res.writeHead(200, { "Content-Type": "video/mp4" });
+      res.end(fixture.bytes);
+    }, async (port) => {
+      extracted = await media.downloadMedia(`http://127.0.0.1:${port}/short.mp4`, fixture.dir, "social");
+      assert.equal(extracted.ok, true);
+      assert.equal(extracted.audio.ok, true);
+      assert.equal(extracted.frameResult.ok, true);
+      assert.equal(extracted.audio.via, "yt-dlp");
+      assert.equal(extracted.frameResult.via, "yt-dlp");
+      assert.deepEqual(extracted.attempts, ["yt-dlp-media:ok"]);
+      assert.equal(extracted.audio.durationSec, extracted.frameResult.seconds);
+    });
+  } finally {
+    if (extracted?.audio?.dir) await rm(extracted.audio.dir, { recursive: true, force: true });
+    await fixture.cleanup();
+  }
+});
+
+test("contrato conjunto worker preserva busy, rejeita duração ausente e informa implantação antiga", async () => {
+  const previous = Object.fromEntries(["MEDIA_WORKER_URL", "IEV_ALLOW_PRIVATE_WORKER"].map((name) => [name, process.env[name]]));
+  let response = { status: 404, body: { ok: false, reason: "not_found" } };
+  let requests = 0;
+  await comServidor((req, res) => {
+    assert.equal(req.url, "/media");
+    requests++;
+    res.writeHead(response.status, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(response.body));
+  }, async (port) => {
+    process.env.MEDIA_WORKER_URL = `http://127.0.0.1:${port}`;
+    process.env.IEV_ALLOW_PRIVATE_WORKER = "1";
+    try {
+      const remote = await import("./media.js?combined-worker-contract");
+      const oldWorker = await remote.downloadMedia("https://example.org/video");
+      assert.equal(oldWorker.reason, "worker-protocol-incompatible");
+      assert.equal(requests, 1); // Sem dois endpoints antigos ou fallback local.
+
+      response = { status: 503, body: { ok: false, reason: "worker-busy" } };
+      assert.equal((await remote.downloadMedia("https://example.org/video")).reason, "worker-busy");
+
+      response = { status: 200, body: { ok: true, audio: { audio_b64: Buffer.from("transport-fixture").toString("base64") }, frames: [] } };
+      assert.equal((await remote.downloadMedia("https://example.org/video")).reason, "worker-duration-unavailable");
+
+      response.body.duration_sec = 1;
+      response.body.audio.audio_b64 = "not-base64";
+      const invalid = await remote.downloadMedia("https://example.org/video");
+      assert.equal(invalid.ok, false);
+      assert.equal(invalid.reason, "worker-audio-invalid");
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+});

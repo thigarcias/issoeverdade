@@ -8,11 +8,13 @@ import { readFile, stat } from "node:fs/promises";
 
 const API_URL = "https://api.openai.com/v1/audio/transcriptions";
 const MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || "whisper-1";
-const TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 120_000);
+const configuredTimeout = Number(process.env.OPENAI_TIMEOUT_MS);
+const TIMEOUT_MS = Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 120_000;
 const MAX_BYTES = 25 * 1024 * 1024;
 
 const cache = new Map();
-let queue = Promise.resolve();
+const inFlight = new Map();
+const waiting = [];
 let running = 0;
 const MAX_PARALLEL = 3;
 const MAX_CACHE = 100;
@@ -38,6 +40,31 @@ function formatTs(sec) {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+async function acquireSlot() {
+  if (running < MAX_PARALLEL) {
+    running++;
+    return;
+  }
+  await new Promise((resolve) => waiting.push(resolve));
+}
+
+function releaseSlot() {
+  const next = waiting.shift();
+  if (next) next(); // Transfere a vaga, sem polling nem serializar todos os jobs.
+  else running--;
+}
+
+function safeDetail(value) {
+  return String(value ?? "")
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[url]")
+    .replace(/\b(?:bearer\s+)[A-Za-z0-9._~-]+/gi, "Bearer [redacted]")
+    .replace(/\b(token|secret|signature|sig|auth|key)\s*[:=]\s*[^\s&]+/gi, "$1=[redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]+/g, "[redacted]")
+    .replace(/\b[A-Za-z]:\\[^\s"'<>]+/g, "[path]")
+    .replace(/\/(?:tmp|var\/tmp)\/[^\s"'<>]+/g, "[path]")
+    .slice(0, 300);
+}
+
 /**
  * @param {string} audioPath caminho do áudio local
  * @param {{ provider?: string, model?: string }} opts configuração selecionada
@@ -48,12 +75,14 @@ export async function transcribe(audioPath, opts = {}) {
   const model = typeof opts.model === "string" && opts.model ? opts.model : MODEL;
   if (provider !== "openai") return { ok: false, reason: "unsupported-transcription-provider", provider, model };
   if (!SUPPORTED_MODELS.has(model)) return { ok: false, reason: "unsupported-transcription-model", provider, model };
+  if (!apiKey()) return { ok: false, reason: "no-openai-key", provider, model };
   let size = 0;
   try {
     size = (await stat(audioPath)).size;
   } catch {
     return { ok: false, reason: "audio-not-found" };
   }
+  if (size === 0) return { ok: false, reason: "empty-audio", provider, model };
   if (size > MAX_BYTES) {
     return { ok: false, reason: "audio-too-large", detail: `${Math.round(size / 1024 / 1024)}MB > 25MB` };
   }
@@ -67,22 +96,27 @@ export async function transcribe(audioPath, opts = {}) {
   const key = `${provider}:${model}:${digest}`;
   const cached = cache.get(key);
   if (cached) return cached;
-  const job = queue.then(async () => {
-    while (running >= MAX_PARALLEL) await new Promise((resolve) => setTimeout(resolve, 200));
-    running++;
+  const pending = inFlight.get(key);
+  if (pending) return pending;
+  const job = (async () => {
+    await acquireSlot();
     try {
-      return await runTranscribe(audioPath, model, buf);
+      const out = await runTranscribe(audioPath, model, buf);
+      if (out.ok) {
+        cache.set(key, out);
+        if (cache.size > MAX_CACHE) cache.delete(cache.keys().next().value);
+      }
+      return out;
     } finally {
-      running--;
+      releaseSlot();
     }
-  });
-  queue = job.catch(() => {});
-  const out = await job;
-  if (out.ok) {
-    cache.set(key, out);
-    if (cache.size > MAX_CACHE) cache.delete(cache.keys().next().value);
+  })();
+  inFlight.set(key, job);
+  try {
+    return await job;
+  } finally {
+    inFlight.delete(key);
   }
-  return out;
 }
 
 
@@ -111,7 +145,7 @@ async function runTranscribe(audioPath, model = MODEL, buf) {
       try {
         msg = JSON.parse(raw)?.error?.message ?? msg;
       } catch { /* mantém raw */ }
-      return { ok: false, reason: "openai-error", detail: msg.slice(0, 300) };
+      return { ok: false, reason: "openai-error", status: res.status, detail: safeDetail(msg), provider: "openai", model };
     }
     const data = JSON.parse(raw);
     const segments = Array.isArray(data.segments)
@@ -127,7 +161,7 @@ async function runTranscribe(audioPath, model = MODEL, buf) {
     return { ok: true, segments, text, duration: data.duration ?? null, model, provider: "openai" };
   } catch (err) {
     if (err?.name === "AbortError") return { ok: false, reason: "transcribe-timeout" };
-    return { ok: false, reason: "transcribe-failed", detail: String(err?.message ?? err).slice(0, 300) };
+    return { ok: false, reason: "transcribe-failed", detail: safeDetail(err?.message ?? err), provider: "openai", model };
   } finally {
     clearTimeout(timeout);
   }

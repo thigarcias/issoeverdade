@@ -18,11 +18,31 @@ export const CORRECTION_STATUSES = [
   { id: "closed", label: "Encerrado" },
 ];
 
+export const REPORT_KINDS = [
+  { id: "technical", label: "Erro técnico" },
+  { id: "transcription", label: "Transcrição ou leitura de mídia" },
+  { id: "download", label: "Download ou compartilhamento" },
+  { id: "slow", label: "Lentidão" },
+  { id: "result", label: "Resultado ou explicação confusa" },
+  { id: "card", label: "Card ou apresentação" },
+  { id: "other", label: "Outro problema" },
+  { id: "correction", label: "Correção de informação" },
+  { id: "right_of_reply", label: "Direito de resposta" },
+  { id: "removal", label: "Remoção de conteúdo" },
+];
+const REPORT_KIND_IDS = new Set(REPORT_KINDS.map((kind) => kind.id));
+const OPERATIONAL_KINDS = new Set(["technical", "transcription", "download", "slow", "result", "card", "other"]);
+
+export function isOperationalReport(kind) {
+  return OPERATIONAL_KINDS.has(kind);
+}
+
 const STATUS_IDS = new Set(CORRECTION_STATUSES.map((status) => status.id));
 const MAX_MESSAGE = 4000;
 const MIN_MESSAGE = 20;
 const MAX_CONTACT = 300;
 const MAX_URL = 500;
+const MAX_CONTEXT = 1000;
 
 const memory = new Map();
 let indexMemory = [];
@@ -65,6 +85,9 @@ export function normalizeCorrection(body) {
   if (evidenceUrl && !/^https?:\/\//i.test(evidenceUrl)) return { ok: false, error: "bad_evidence_url", status: 400 };
   const contact = clean(body?.contact, MAX_CONTACT);
   const claim = clean(body?.claim, 600);
+  const context = String(body?.context ?? "").trim();
+  if (context.length > MAX_CONTEXT) return { ok: false, error: "context_too_long", status: 413 };
+  const source = ["result", "detail", "app", "card"].includes(body?.source) ? body.source : null;
   return {
     ok: true,
     value: {
@@ -74,7 +97,9 @@ export function normalizeCorrection(body) {
       claim: claim || null,
       evidenceUrl: evidenceUrl || null,
       contact: contact || null,
-      kind: ["correction", "right_of_reply", "removal"].includes(body?.kind) ? body.kind : "correction",
+      kind: REPORT_KIND_IDS.has(body?.kind) ? body.kind : "correction",
+      context: context || null,
+      source,
     },
   };
 }
@@ -183,6 +208,7 @@ export async function listCorrections() {
     max: MAX_INDEX,
     statuses: CORRECTION_STATUSES,
     items: items.slice(0, MAX_INDEX),
+    kinds: REPORT_KINDS,
   };
 }
 
@@ -241,8 +267,9 @@ export async function correctionsForCheck(checkId) {
       status: item.status,
       updatedAt: item.updatedAt ?? item.at,
       statusLabel: CORRECTION_STATUSES.find((status) => status.id === item.status)?.label ?? item.status,
+      kind: item.kind,
     }));
-  const correctedAt = related.find((item) => item.status === "corrected")?.updatedAt ?? null;
+  const correctedAt = related.find((item) => item.status === "corrected" && !isOperationalReport(item.kind))?.updatedAt ?? null;
   return { ok: true, checkId: id, corrections: related, correctedAt };
 }
 
@@ -259,6 +286,9 @@ export function adminCorrection(record) {
     claim: record.claim,
     evidenceUrl: record.evidenceUrl,
     contact: record.contact,
+    context: record.context ?? null,
+    operational: isOperationalReport(record.kind),
+    source: record.source ?? null,
     history: record.history ?? [],
     persisted: record.persisted !== false,
   };

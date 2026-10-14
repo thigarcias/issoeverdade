@@ -136,11 +136,15 @@ function safeUrl(value) {
 
 async function runMediaExtraction(url, sourceInfo) {
   const limits = media.mediaLimits();
-  const audioResult = await withTimeout(
-    media.downloadAudio(url, "./tmp-dl/source-battery-media", sourceInfo.type),
+  const acquired = await withTimeout(
+    media.downloadMedia(url, "./tmp-dl/source-battery-media", sourceInfo.type),
     limits.workerTimeoutMs + 15_000,
-    "audio-extraction",
-  ).catch((error) => ({ ok: false, reason: error?.message?.split(":")[0] ?? "audio-timeout" }));
+    "media-extraction",
+  ).catch((error) => {
+    const reason = error?.message?.split(":")[0] ?? "media-timeout";
+    return { ok: false, audio: { ok: false, reason }, frameResult: { ok: false, reason }, attempts: [] };
+  });
+  const { audio: audioResult, frameResult } = acquired;
   let audio;
   try {
     if (!audioResult.ok || !audioResult.file) {
@@ -162,12 +166,7 @@ async function runMediaExtraction(url, sourceInfo) {
     if (audioResult.dir) await rm(audioResult.dir, { recursive: true, force: true }).catch(() => {});
   }
 
-  if (sourceInfo.type === "audio") return { applicable: true, audio: { ...audio, applicable: true }, frames: { applicable: false, reason: "audio-only-source" }, attempts: audioResult.attempts ?? [] };
-  const frameResult = await withTimeout(
-    media.downloadFrames(url, sourceInfo.type),
-    limits.workerTimeoutMs + 15_000,
-    "frame-extraction",
-  ).catch((error) => ({ ok: false, reason: error?.message?.split(":")[0] ?? "frames-timeout" }));
+  if (sourceInfo.type === "audio") return { applicable: true, audio: { ...audio, applicable: true }, frames: { applicable: false, reason: "audio-only-source" }, attempts: acquired.attempts ?? [] };
   const frames = media.normalizeWorkerFrames(frameResult.frames);
   const framesBytes = frames.reduce((sum, frame) => sum + Buffer.from(frame.data, "base64").length, 0);
   return {
@@ -182,7 +181,7 @@ async function runMediaExtraction(url, sourceInfo) {
       bytes: framesBytes,
       durationSec: frameResult.seconds ?? null,
     },
-    attempts: [...(audioResult.attempts ?? []), ...(frameResult.attempts ?? [])],
+    attempts: acquired.attempts ?? [],
   };
 }
 

@@ -37,7 +37,7 @@ export default function DetailDialog({ result, onClose, showToast, onShareCard }
       </div>
       <div className="dialog-body">
         {result ? (
-          <ResultCard result={result} showToast={showToast} titleId="dialog-title" onShareCard={onShareCard} />
+          <ResultCard result={result} showToast={showToast} titleId="dialog-title" onShareCard={onShareCard} reportSource="detail" />
         ) : null}
       </div>
     </dialog>

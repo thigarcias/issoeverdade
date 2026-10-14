@@ -61,3 +61,32 @@ test("segunda evidência compatível não é perdida por contexto de rodada ante
   assert.equal(fixed.claims[0].status, "true");
   assert.deepEqual(fixed.claims[0].evidence.map((item) => item.relation), ["context", "supports"]);
 });
+
+test("síntese antiga não sobrevive a mudança de classificação por período", () => {
+  const raw = resultFor("true", [{
+    sourceId: 0, relation: "supports", quote: "Rejeição na rodada anterior: 43%.", referencePeriod: previousPeriod,
+  }]);
+  raw.summary = "O aumento da rejeição foi confirmado pela pesquisa atual.";
+  const { fixed } = validateResult(raw);
+  assert.equal(fixed.claims[0].status, "unproven");
+  assert.ok(fixed.summary.length > 0);
+  assert.ok(!fixed.summary.includes(raw.summary));
+  assert.match(fixed.summary, /A rejeição do candidato aumentou/);
+  assert.ok(fixed.summary.includes(currentPeriod.start));
+  assert.ok(fixed.summary.includes(currentPeriod.end));
+});
+
+test("ajuste só de nota e selo preserva síntese factual", () => {
+  const raw = resultFor("true", [{
+    sourceId: 0, relation: "supports", quote: "A pesquisa atual registra aumento da rejeição.", referencePeriod: currentPeriod,
+  }]);
+  raw.score = 1;
+  raw.verdict = "false";
+  raw.summary = "A pesquisa atual registra aumento da rejeição no mesmo universo de entrevistados.";
+  const { fixed, corrections } = validateResult(raw);
+  assert.match(fixed.summary, /mesmo universo de entrevistados/);
+  assert.equal(fixed.verdict, "true");
+  assert.equal(fixed.score, 95);
+  assert.ok(corrections.length > 0);
+});
+

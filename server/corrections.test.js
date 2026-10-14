@@ -3,9 +3,12 @@
 process.env.IEV_LIMITS_MODE = "memory";
 const {
   CORRECTION_STATUSES,
+  REPORT_KINDS,
+  adminCorrection,
   correctionsMode,
   createCorrection,
   getCorrection,
+  listCorrections,
   normalizeCorrection,
   publicCorrection,
   updateCorrection,
@@ -33,6 +36,77 @@ test("validação do pedido recusa curto, longo, id e URL inválidos", () => {
   assert.equal(ok.value.contact, "pessoa@exemplo.com");
   assert.equal(ok.value.kind, "right_of_reply");
   assert.equal(normalizeCorrection(validBody({ kind: "inventado" })).value.kind, "correction");
+});
+
+test("problemas operacionais aceitam relato sem ID, evidência nem contato", () => {
+  for (const kind of ["technical", "transcription", "download", "slow", "result", "card", "other"]) {
+    const normalized = normalizeCorrection({
+      kind,
+      message: "O download do card falhou e nenhum arquivo foi salvo.",
+      context: "  Chrome no celular.\n1. Gerar card\n2. Baixar PNG  ",
+      source: "detail",
+    });
+    assert.equal(normalized.ok, true);
+    assert.equal(normalized.value.kind, kind);
+    assert.equal(normalized.value.checkId, null);
+    assert.equal(normalized.value.evidenceUrl, null);
+    assert.equal(normalized.value.contact, null);
+    assert.equal(normalized.value.context, "Chrome no celular.\n1. Gerar card\n2. Baixar PNG");
+    assert.equal(normalized.value.source, "detail");
+    assert.ok(REPORT_KINDS.some((entry) => entry.id === kind));
+  }
+  assert.equal(normalizeCorrection(validBody({ context: "x".repeat(1001) })).error, "context_too_long");
+  assert.equal(normalizeCorrection(validBody({ source: "https://private.example?token=segredo" })).value.source, null);
+});
+
+test("relato operacional persiste na fila privada com contexto e consulta pública não o revela", async () => {
+  const guard = createGuard(limitsConfig({ IEV_LIMITS_MODE: "memory" }));
+  const submitted = await handleCorrectionsRequest({
+    method: "POST",
+    body: {
+      kind: "transcription",
+      message: "A transcrição trocou a palavra mencionada no vídeo.",
+      context: "No trecho 00:10, a frase era 'situação privada'.",
+      source: "result",
+      contact: "relator@example.org",
+    },
+    socketAddress: "203.0.113.45",
+    guard,
+    env: {},
+  });
+  assert.equal(submitted.status, 201);
+  const record = await getCorrection(submitted.body.protocol);
+  const queue = await listCorrections();
+  const entry = queue.items.find((item) => item.protocol === record.protocol);
+  assert.equal(entry.kind, "transcription");
+  assert.equal(entry.checkId, null);
+  assert.match(entry.messagePreview, /transcrição/);
+  assert.equal(entry.context, undefined, "contexto completo fica apenas no detalhe privado");
+  const admin = adminCorrection(record);
+  assert.equal(admin.operational, true);
+  assert.equal(admin.context, "No trecho 00:10, a frase era 'situação privada'.");
+  assert.equal(admin.source, "result");
+  assert.equal(admin.contact, "relator@example.org");
+  const response = await handleCorrectionsRequest({ method: "GET", query: { protocol: record.protocol }, guard, env: {} });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.correction.kind, "transcription");
+  assert.doesNotMatch(JSON.stringify(response.body), /situação privada|relator@example|trocou a palavra|context|source/);
+});
+
+test("resolver problema operacional vinculado não anuncia retificação editorial", async () => {
+  const guard = createGuard(limitsConfig({ IEV_LIMITS_MODE: "memory" }));
+  const created = await createCorrection(normalizeCorrection(validBody({
+    checkId: "mv-operational-123",
+    kind: "download",
+    context: "Chrome no celular, falha ao salvar.",
+  })).value);
+  await updateCorrection(created.protocol, { status: "corrected", note: "Download resolvido" });
+  const response = await handleCorrectionsRequest({ method: "GET", query: { checkId: created.checkId }, guard, env: {} });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.correctedAt, null);
+  assert.equal(response.body.corrections[0].status, "corrected");
+  assert.equal(response.body.corrections[0].kind, "download");
+  assert.doesNotMatch(JSON.stringify(response.body), /Chrome|celular|Download resolvido/);
 });
 
 test("produção sem armazenamento durável recusa o canal", () => {

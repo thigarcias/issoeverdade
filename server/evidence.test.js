@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { clip, decodeEntities, locateQuote } from "./text.js";
+import { rebuildResultSummary, validateResult } from "./scoring.js";
 
 const MINIMAL_PDF = (text) => {
   const content = `BT /F1 12 Tf 20 100 Td (${text}) Tj ET`;
@@ -253,4 +254,50 @@ test("prompt de revisão só inclui citações com trecho localizado", () => {
   assert.match(input, /citação localizada/);
   assert.doesNotMatch(input, /citação ausente/);
   assert.equal(evidence.buildReviewInput({ claims: [], citations: [] }), null);
+});
+
+for (const status of ["true", "false"]) {
+  test(`contexto não mantém classificação decisiva ${status}`, () => {
+    const relation = status === "true" ? "supports" : "refutes";
+    const quote = "A pessoa pediu apoio financeiro; a notícia não documenta pagamento.";
+    const claim = {
+      text: "A pessoa recebeu o dinheiro.", status, score: status === "true" ? 95 : 5,
+      sourceIds: [0], note: "O recebimento foi confirmado.", evidence: [{ sourceId: 0, relation, quote }],
+    };
+    const applied = evidence.applyReview({
+      claims: [claim],
+      citations: [{ claimIndex: 0, evidenceIndex: 0, quote, excerpt: quote }],
+      review: { items: [{ id: 1, verdict: "context", note: "A notícia descreve um pedido, mas não documenta recebimento ou transferência." }] },
+    });
+    assert.equal(applied.claims[0].status, "unproven");
+    assert.equal(applied.claims[0].evidence[0].relation, "context");
+    assert.match(applied.claims[0].note, /pedido/);
+    assert.ok(!applied.claims[0].note.includes(claim.note));
+    const raw = {
+      outcome: "checked", claims: applied.claims, sources: [{ outlet: "Notícia", url: "https://example.com/noticia" }],
+      summary: rebuildResultSummary({ claims: applied.claims }),
+    };
+    const { fixed } = validateResult(raw);
+    assert.equal(fixed.verdict, "unproven");
+    assert.ok([35, 45].includes(fixed.score));
+    assert.ok(fixed.summary.length > 0);
+    assert.match(fixed.summary, /recebeu o dinheiro/);
+    assert.match(fixed.summary, /pedido/);
+    assert.ok(!fixed.summary.includes(claim.note));
+  });
+}
+
+test("revisão preserva suporte confirmado e retira suporte de trecho inconclusivo", () => {
+  const quote = "Documento sobre o mesmo evento público.";
+  const applied = evidence.applyReview({
+    claims: [{ status: "true", evidence: [
+      { sourceId: 0, relation: "supports", quote },
+      { sourceId: 1, relation: "supports", quote },
+    ] }],
+    citations: [0, 1].map((evidenceIndex) => ({ claimIndex: 0, evidenceIndex, quote, excerpt: quote })),
+    review: { items: [{ id: 1, verdict: "supports" }, { id: 2, verdict: "unclear" }] },
+  });
+  assert.equal(applied.claims[0].status, "true");
+  assert.deepEqual(applied.claims[0].evidence.map((item) => item.relation), ["supports", "context"]);
+  assert.deepEqual(applied.downgraded, []);
 });

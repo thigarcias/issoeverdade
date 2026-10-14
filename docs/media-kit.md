@@ -1,4 +1,4 @@
-# Kit de mídia — como a IA baixa vídeo de qualquer lugar
+# Kit de mídia — extração de áudio, vídeo e contexto público
 
 Este documento descreve as ferramentas que o backend usa para extrair conteúdo
 de links antes de checar. Tudo roda server-side (`server/media.js`).
@@ -44,35 +44,32 @@ O endpoint expõe essa cobertura em `mediaCoverage.article` e na síntese.
 Conteúdo extraído passa pela moderação antes do julgamento; ordens embutidas na
 página são dados não confiáveis. Inacessibilidade não significa falsidade.
 
-### 2. `downloadAudio(url, outDir)` — MP3 para transcrição futura
+### 2. `downloadMedia(url, outDir, sourceType)` — aquisição da checagem
 
-`yt-dlp -x --audio-format mp3` salva em `./media-tmp/<id>.mp3`. Pronto para
-ligar no Whisper Turbo quando implementarmos transcrição real.
+O `runVerify` adquire uma fonte e extrai áudio MP3 e até 10 frames JPEG (448px)
+do mesmo arquivo. URLs diretas passam por `safeFetch`; páginas sociais usam
+yt-dlp. Com `MEDIA_WORKER_URL`, usa `POST /media` no worker, sem fallback para
+ferramentas locais. Servidor e worker precisam ser implantados juntos; a saúde
+do worker atual informa `protocol: 2`.
 
-### 2b. `downloadFrames(url)` — frames do vídeo para OCR/visão
+O ffprobe exige streams e duração legíveis antes da extração, aplicando
+`IEV_MAX_MEDIA_SECONDS` (900 s por padrão). A extração de frames cobre uma
+amostra temporal, não a leitura integral do vídeo. A transcrição e a visão usam
+os pares selecionados pelo admin, sem troca silenciosa de modelo/provedor.
+Ambas as modalidades são analisadas quando disponíveis, mesmo com narração:
+o texto na tela pode conter afirmações diferentes das faladas. Falha do áudio
+não impede descrever frames legíveis, e ausência de fala não confirma nada.
 
-Vídeos de campanha muitas vezes **não têm fala** — a mensagem está no texto
-queimado na tela, com trilha musical por cima. Nesses casos o Whisper devolve
-só `🎶` e nada do conteúdo é checado.
-
-`downloadFrames` baixa o vídeo (≤480p) e extrai até 10 frames JPEG (448px,
-amostrados ao longo dos primeiros 300s). O `runVerify` então manda os frames
-para o modelo de visão (`describeFrames`, Muse primeiro / Luna como fallback),
-que faz OCR e descreve cada cena. O resultado entra no `mediaContext` como
-"Vídeo sem fala — texto na tela e cenas".
-
-**Quando roda:** só quando o áudio não traz fala (transcrição vazia ou só
-música) — vídeos com narração não pagam o custo extra.
-
-| Camada | O que faz | Requer |
-| ------ | ---------- | ------ |
-| worker `/frames` | yt-dlp + ffmpeg no worker, retorna JPEGs em base64 | `MEDIA_WORKER_URL` |
-| local | yt-dlp + ffmpeg locais, mesma extração | `yt-dlp` + `ffmpeg` |
+`downloadAudio` e `downloadFrames` continuam disponíveis para aquisição de
+uma modalidade pela CLI/integrações. A checagem e a bateria de fontes usam
+`downloadMedia` para evitar downloads duplicados.
 
 ### 3. `hasYtDlp()` — detecção de ambiente
 
-Se o binário não existir (ex.: Vercel), o kit pula automaticamente para os
-fallbacks HTTP. Nada quebra — só degrada.
+Detecta o binário local, mas não garante acesso a uma plataforma. Em serverless,
+processamento audiovisual depende do worker; formato ilegível ou worker
+incompatível gera diagnóstico operacional, nunca um veredito sobre mídia não
+lida.
 
 ## CLI de teste
 
@@ -118,10 +115,14 @@ node scripts/fetch-media.mjs <url> --audio    # + baixa o MP3
 
 ## Transcrição (API da OpenAI)
 
-- `server/transcribe.js` faz upload do MP3 para `whisper-1` (`verbose_json`).
-- Zero binário/modelo local: funciona na Vercel, local, em qualquer lugar.
-- Requer `OPENAI_API_KEY`. Custo: $0.006/minuto (~$0.002 por vídeo de 18s).
-- Áudios > 25MB são rejeitados (limite da API).
+- `server/transcribe.js` envia o modelo OpenAI selecionado na configuração.
+  Whisper usa `verbose_json`/segmentos; os outros adapters suportados usam
+  `json`/texto e indicam timestamp indisponível quando não há segmentação.
+- Requer `OPENAI_API_KEY`; o custo depende do modelo configurado.
+- Áudios > 25 MiB e arquivos vazios são rejeitados antes do upstream.
+- Até três chamadas locais simultâneas, fila FIFO e deduplicação em voo por
+  hash/provedor/modelo. Só sucessos entram no cache. Erros preservam status
+  HTTP e detalhe redigido; não trocam modelo nem viram evidência factual.
 - Legado local: `scripts/transcribe.py` (faster-whisper) mantido para uso
   manual via CLI, fora do pipeline.
 
@@ -129,7 +130,10 @@ node scripts/fetch-media.mjs <url> --audio    # + baixa o MP3
 
 - Posts privados/com login não são acessíveis (yt-dlp sem cookies).
 - Instagram: metadados públicos OK via yt-dlp; oEmbed oficial descontinuado.
-- Na Vercel (sem binário yt-dlp): metadados via oEmbed/OpenGraph; download de
-  áudio tenta `og:video` direto e cai para metadados se indisponível.
-  Pipeline 100% completo (yt-dlp + transcrição de qualquer rede) roda no
-  ambiente local / servidor com yt-dlp instalado.
+- Vercel precisa do worker atual para processar áudio/vídeo. O worker valida
+  duração e conteúdo; worker antigo sem `/media` é identificado como
+  `worker-protocol-incompatible`, sem aceitar áudio sem duração como contorno.
+- Testes locais controlados não medem acesso real a posts privados, ASR/OCR,
+  latência/cold start ou precisão factual de provedores em produção. O diagnóstico
+  por ID e as evidências recentes estão em
+  [Mídia e links sociais](midia-links-sociais.md#diagnóstico-dos-relatos-de-mídia-e-demora-13102026).

@@ -32,7 +32,7 @@ export default function Hero({ onQuickCheck, collapsed }) {
           Isso é verdade<span className="dot">?</span>
         </h1>
         <p className="quick-sub">
-          Cole um link, texto ou envie mídia. A checagem mostra o que as evidências sustentam — e quando não há base suficiente para concluir.
+          Digite ou cole um texto ou link, ou envie mídia no verificador completo. A checagem mostra o que as evidências sustentam — e quando não há base suficiente para concluir.
         </p>
         <form className="quick-form" onSubmit={submit} role="search" aria-label="Checagem rápida">
           <div className="input-box quick-input">
@@ -41,9 +41,9 @@ export default function Hero({ onQuickCheck, collapsed }) {
             </svg>
             <input
               type="text"
-              inputMode="url"
-              placeholder="Cole aqui o link, o texto ou a notícia…"
-              aria-label="Cole aqui o link, o texto ou a notícia"
+              inputMode="text"
+              placeholder="Digite ou cole um texto ou link…"
+              aria-label="Digite ou cole um texto ou link para checar"
               value={quick}
               onChange={(e) => setQuick(e.target.value)}
               autoComplete="off"

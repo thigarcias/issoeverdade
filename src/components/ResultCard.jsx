@@ -93,7 +93,7 @@ function AnimatedScore({ score, color }) {
   return <ScoreRing score={shown} color={color} title={`Nota ${score} de 100`} />;
 }
 
-export default function ResultCard({ result, showToast, titleId, onShareCard }) {
+export default function ResultCard({ result, showToast, titleId, onShareCard, reportSource = "result" }) {
   const verdict = VERDICTS[result.verdict];
   const origin = result.origin;
   const [imgOk, setImgOk] = useState(true);
@@ -109,6 +109,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard }) 
     `Confira você também: ${location.origin}${location.pathname}`,
   ].filter(Boolean).join("\n\n");
   const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+  const reportUrl = `/correcoes.html?source=${encodeURIComponent(reportSource)}${result.id ? `&checkId=${encodeURIComponent(result.id)}` : ""}`;
 
   if (!verdict || result.score == null) {
     return (
@@ -131,11 +132,12 @@ export default function ResultCard({ result, showToast, titleId, onShareCard }) 
           <a className="btn" href={whatsappUrl} target="_blank" rel="noopener noreferrer">
             Compartilhar no WhatsApp
           </a>
-          <a className="btn ghost" href={`/correcoes.html?checkId=${encodeURIComponent(result.id)}`}>
-            Contestar este resultado
+          <a className="btn ghost" href={reportUrl}>
+            Reportar problema ou contestar
           </a>
           <a className="btn ghost" href="/correcoes.html">Política de correções</a>
         </div>
+        <p className="score-legend">Erro, transcrição ruim, lentidão ou download? Conte para nós — não precisa de evidência factual.</p>
       </article>
     );
   }
@@ -303,11 +305,12 @@ export default function ResultCard({ result, showToast, titleId, onShareCard }) 
         <a className="btn" href={whatsappUrl} target="_blank" rel="noopener noreferrer">
           Compartilhar no WhatsApp
         </a>
-        <a className="btn ghost" href={`/correcoes.html?checkId=${encodeURIComponent(result.id)}`}>
-          Contestar este resultado
+        <a className="btn ghost" href={reportUrl}>
+          Reportar problema ou contestar
         </a>
         <a className="btn ghost" href="/correcoes.html">Política de correções</a>
       </div>
+      <p className="score-legend">Algo deu errado no resultado ou no card? Seu relato ajuda a melhorar o serviço.</p>
     </article>
   );
 }

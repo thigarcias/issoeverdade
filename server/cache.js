@@ -67,6 +67,7 @@ export function cacheKey(input, namespace = "legacy") {
   const norm = JSON.stringify({
     kind: input?.kind ?? "",
     text: String(input?.text ?? "").trim().normalize("NFC"),
+    context: input?.kind === "image" ? String(input?.context ?? "").trim().normalize("NFC") : "",
     fileName: input?.fileName ?? "",
     fileHash: input?.fileHash ?? "",
     namespace,

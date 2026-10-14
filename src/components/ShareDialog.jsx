@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { renderShareCard } from "../lib/shareCard.js";
+import { buildShareText, renderShareCard, shareCardContent } from "../lib/shareCard.js";
 import { VERDICTS } from "../data/constants.js";
 
 export default function ShareDialog({ result, onClose, showToast }) {
@@ -8,6 +8,8 @@ export default function ShareDialog({ result, onClose, showToast }) {
   const [blob, setBlob] = useState(null);
   const [busy, setBusy] = useState(false);
   const canShare = typeof navigator !== "undefined" && !!navigator.share;
+  const content = result ? shareCardContent(result) : null;
+  const verdictLabel = result?.score == null ? "sem nota ou veredito factual" : `${VERDICTS[result?.verdict]?.label ?? "Sem veredito"}, nota ${result.score} de 100`;
 
   useEffect(() => {
     const dialog = ref.current;
@@ -57,25 +59,18 @@ export default function ShareDialog({ result, onClose, showToast }) {
     if (!blob) return;
     const a = document.createElement("a");
     a.href = imgUrl;
-    a.download = `isso-e-verdade-nota-${result.score}.png`;
+    a.download = result.score == null ? "isso-e-verdade-sem-nota.png" : `isso-e-verdade-nota-${result.score}.png`;
     a.click();
     showToast("Card salvo. Compartilhe onde quiser.");
   }
 
-  function shareText() {
-    const url = `${location.origin}${location.pathname}`;
-    const label = VERDICTS[result.verdict]?.label ?? "Sem veredito";
-    const nota = result.score == null ? "sem nota ou veredito factual" : `nota ${result.score}/100 (${label.toLowerCase()})`;
-    const id = result.id ? `\nChecagem automática ${result.id}. Confira correções em ${location.origin}/correcoes.html?checkId=${encodeURIComponent(result.id)}` : "\nChecagem automática.";
-    return `🔍 ${result.title} — ${nota}.${id}\n\nViu algo suspeito? Confira você também em ${url}`;
-  }
 
   async function share() {
     if (!blob) return;
-    const file = new File([blob], `nota-${result.score}.png`, { type: "image/png" });
+    const file = new File([blob], result.score == null ? "checagem-sem-nota.png" : `nota-${result.score}.png`, { type: "image/png" });
     const data = {
       title: "isso é verdade?",
-      text: shareText(),
+      text: buildShareText(result, location),
       files: [file],
     };
     try {
@@ -103,7 +98,7 @@ export default function ShareDialog({ result, onClose, showToast }) {
       </div>
       <div className="dialog-body share-body">
         {busy && <p className="verify-hint">Gerando seu card…</p>}
-        {imgUrl && <img src={imgUrl} alt={`Card: nota ${result?.score} de 100`} className="share-preview" />}
+        {imgUrl && <img src={imgUrl} alt={`${content?.title ?? "Checagem"} — ${verdictLabel}. ${content?.summary ?? ""}`} className="share-preview" />}
         <div className="result-actions">
           <button className="btn primary" onClick={download} disabled={!blob}>
             Baixar PNG

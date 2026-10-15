@@ -22,17 +22,49 @@ Crie um `.env` na raiz (já ignorado pelo git). O arquivo
 OPENAI_API_KEY=...            # avaliação factual/visão, transcrição e moderação
 OPENCODE_API=...              # provedor alternativo (OpenCode Go)
 ADMIN_SECRET=...              # habilita /admin
-BLOB_READ_WRITE_TOKEN=...     # opcional: cache/logs/correções/config privados na Vercel Blob
+BLOB_READ_WRITE_TOKEN=...     # opcional: cache/recuperação/correções/config privados na Vercel Blob
+NEXT_PUBLIC_SUPABASE_URL=...  # URL do projeto existente (SUPABASE_URL também é aceita)
+SUPABASE_SERVICE_ROLE_KEY=... # somente servidor: checagens/logs privados
 MEDIA_WORKER_URL=...          # worker remoto para mídia; necessário em serverless
 MEDIA_WORKER_SECRET=...
 UPSTASH_REDIS_REST_URL=...    # opcional: limites compartilhados (obrigatório em produção)
 UPSTASH_REDIS_REST_TOKEN=...
 ```
 
-Sem `BLOB_READ_WRITE_TOKEN`, cache, logs e configuração ficam apenas em memória
-da instância (o código registra isso na interface em vez de fingir persistência).
+Sem `BLOB_READ_WRITE_TOKEN`, cache e configuração ficam efêmeros na instância.
+Os registros de checagem usam Supabase quando configurada; sem Supabase, usam
+Blob privado, ou apenas uma linha mínima no console se nenhum estiver disponível.
+Falha da Supabase configurada não cai silenciosamente para Blob. Uma análise
+válida continua sendo entregue, mas sem promessa de persistência ou link público.
 Sem armazenamento compartilhado de limites, **produção recusa novas checagens**
 (`IEV_LIMITS_MODE=memory` é a única forma de declarar o modo degradado).
+
+### Ativar a Supabase
+
+1. No projeto Supabase existente, execute a migração de
+   [`202610140001_private_checks.sql`](supabase/migrations/202610140001_private_checks.sql)
+   pelo SQL Editor. Ela cria os
+   objetos `iev_` sem modificar as tabelas do catálogo.
+2. Configure `NEXT_PUBLIC_SUPABASE_URL` (ou `SUPABASE_URL`) e
+   `SUPABASE_SERVICE_ROLE_KEY` no ambiente do **servidor**, e reinicie/republique.
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY` pode continuar no ambiente, mas não é usada
+   para escrever checagens nem consultar logs. Não abra políticas públicas de
+   escrita para contornar a ausência da chave privada.
+3. Configure também `ADMIN_SECRET`. Em `/admin`, confira o modo de armazenamento,
+   execute uma checagem e busque seu ID. Publique pelo diálogo de compartilhamento
+   e abra o link em outro navegador; uma checagem não publicada não deve abrir.
+
+A chave service-role nunca deve ter prefixo `NEXT_PUBLIC_` ou `VITE_`.
+As tabelas têm RLS e acesso direto de `anon`/`authenticated` revogado; consultas e
+publicação passam pelos handlers do servidor. A URL pública usa `/?check=<id>`.
+O servidor usa PostgREST, sem SDK no frontend. A migração não importa logs antigos
+do Blob: eles permanecem no armazenamento original; a consulta ativa passa a usar
+Supabase. Não há TTL/exclusão automática dos registros Supabase nesta integração.
+
+Ter apenas URL e chave ANON não ativa a persistência privada. O painel informa
+falha de configuração/armazenamento, em vez de apresentar uma lista vazia como
+sucesso. Cache, recuperação temporária, correções e configuração de IA continuam
+usando seus armazenamentos existentes; esta integração não os migra.
 
 ## Rotas
 
@@ -42,6 +74,9 @@ Sem armazenamento compartilhado de limites, **produção recusa novas checagens*
 | `/admin` | **URL canônica do painel** — `vercel.json` reescreve para o SPA; em Vite dev o fallback de SPA já resolve |
 | `/#/admin` | alias equivalente aceito pelo roteador do app |
 | `POST /api/verify` | execução da checagem com progresso NDJSON incremental (`accepted`/`content`/`activity`/`result`/`error`); admissão recusada continua JSON+status (`api/verify.js` na Vercel, `vite.api-plugin.js` em dev) |
+| `POST /api/checks` | publicação explícita: exige `{checkId, shareToken}` entregue ao navegador da execução; retorna o link somente após confirmação |
+| `GET /api/checks?id=` | resultado publicado por ID, com projeção pública; não retorna logs, transcrição bruta ou capacidades privadas |
+| `/?check=<id>` | abre a checagem publicada, inclusive em outro navegador |
 | `GET /api/health` | limites e modos vigentes, sem segredos (smoke de implantação) |
 | `POST /api/corrections` | contestação pública: cria protocolo e entra na fila de revisão |
 | `GET /api/corrections?protocol=` | estado público de um protocolo |
@@ -51,6 +86,10 @@ Sem armazenamento compartilhado de limites, **produção recusa novas checagens*
 
 Painéis do `/admin`: registros, correções, modelos/provedores, metodologia e
 métricas (volume, latência, abstenção, alertas e estado dos controles).
+Os registros permitem busca por ID/texto de entrada, veredito, estado de execução,
+tipo, período, ordenação e paginação no servidor. Erros destacam código, fase,
+provedor/modelo e dados disponíveis da execução. Os contadores da aba Métricas
+continuam sendo por instância; não são agregações históricas da Supabase.
 
 ## Limites, custo e segurança
 
@@ -118,7 +157,8 @@ Uploads de imagem e vídeo/áudio enviam bytes reais (limite de 3 MiB, validaç�
 por assinatura). Sem worker, desenvolvimento usa `ffprobe`/`ffmpeg` locais;
 serverless sem worker declara indisponibilidade. Worker configurado não tem
 fallback silencioso se falhar. O navegador guarda até 20 resultados em
-`localStorage`; logs/cache no servidor dependem do Blob privado ([privacidade](docs/privacidade-dados-ia.md)).
+`localStorage`; checagens/logs privados usam Supabase ou Blob, e cache continua
+dependendo do Blob privado ([privacidade](docs/privacidade-dados-ia.md)).
 
 O POST de checagem transmite NDJSON: `accepted` entrega o mesmo `checkId`
 usado no registro/resultado e uma capacidade secreta `recoveryToken`.
@@ -137,6 +177,15 @@ GET não executa IA, admissão de POST, reserva de orçamento ou conciliação d
 tokens. Um POST que acerta cache ainda passa pela admissão existente, mas não
 recontabiliza o consumo antigo de IA. Se a cópia recuperável falhar ao persistir,
 o resultado válido ainda é entregue com `recoveryAvailable: false`.
+
+Publicação é separada da recuperação temporária: o resultado persistido recebe
+uma capacidade `shareToken`, cujo hash fica no servidor. Essa capacidade permanece
+com o histórico local para permitir publicação posterior no mesmo navegador;
+não entra no link público ou nas exportações. Publicar libera somente o resultado,
+afirmações, fontes e metadados públicos. Textos derivados podem reproduzir dados
+da entrada: revise conteúdo pessoal antes de publicar. O link publicado não exige
+login e pode ser redistribuído. Não há despublicação automática ou interface de
+revogação nesta entrega.
 
 Na entrada rápida, digite ou cole **texto ou link**: o teclado é de texto e a
 interface identifica links HTTP/HTTPS automaticamente. No verificador completo,

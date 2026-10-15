@@ -206,6 +206,14 @@
 .home-page .share-preview { border: 1px solid var(--home-border); border-radius: 8px; box-shadow: 0 6px 20px #221c120d; }
 .home-page .share-pagination { gap: 10px; width: 100%; }
 .home-page .share-pagination .btn { min-width: 0; padding-inline: 10px; }
+.home-page .share-publication { display: grid; gap: 14px; width: 100%; min-width: 0; padding-bottom: 20px; border-bottom: 1px solid var(--home-border); }
+.home-page .share-publication h3 { font: 400 25px/1.25 var(--serif); }
+.home-page .share-publication .btn { justify-self: start; max-width: 100%; min-height: 44px; white-space: normal; }
+.home-page .share-permalink { color: var(--accent-deep); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; text-decoration: underline; }
+.home-page .shared-check-state { display: grid; gap: 16px; min-width: 0; }
+.home-page .shared-check-state h2 { font: 400 30px/1.2 var(--serif); }
+.home-page .shared-check-state p { color: var(--fg-3); font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; }
+.home-page .shared-check-state .btn { justify-self: start; }
 .home-page #toast { max-width: calc(100vw - 32px); border: 1px solid var(--line-2); border-radius: 8px; box-shadow: 0 8px 32px #221c1226; white-space: normal; }
 
 @media (max-width: 1050px) {

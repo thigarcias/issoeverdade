@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export function useToast() {
   const [message, setMessage] = useState(null);
@@ -6,11 +6,11 @@ export function useToast() {
 
   useEffect(() => () => clearTimeout(timer.current), []);
 
-  function show(msg) {
+  const show = useCallback((msg) => {
     setMessage(msg);
     clearTimeout(timer.current);
     timer.current = setTimeout(() => setMessage(null), 2600);
-  }
+  }, []);
 
   return { message, show };
 }
@@ -18,7 +18,7 @@ export function useToast() {
 export async function copyText(text, show) {
   try {
     await navigator.clipboard.writeText(text);
-    show("Link copiado. Compartilhe com a fonte citada.");
+    show("Conteúdo copiado.");
   } catch {
     show("Não foi possível copiar. Selecione e copie manualmente.");
   }

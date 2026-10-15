@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { buildShareText, renderShareCards } from "../lib/shareCard.js";
+import { buildShareText, publishedCheckUrl, renderShareCards } from "../lib/shareCard.js";
+import { publishCheck } from "../lib/api.js";
 import { copyText } from "../lib/hooks.js";
 
 function cardFilename(result, page, pageCount) {
@@ -7,7 +8,7 @@ function cardFilename(result, page, pageCount) {
   return `${name}${pageCount > 1 ? `-pagina-${page + 1}-de-${pageCount}` : ""}.png`;
 }
 
-export default function ShareDialog({ result, onClose, showToast }) {
+export default function ShareDialog({ result, onClose, showToast, onPublished }) {
   const ref = useRef(null);
   const genRef = useRef(0);
   const [cards, setCards] = useState(null);
@@ -17,11 +18,18 @@ export default function ShareDialog({ result, onClose, showToast }) {
   const [shareError, setShareError] = useState(null);
   const [sharing, setSharing] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [publishedId, setPublishedId] = useState(null);
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState("");
+  const publishRequest = useRef(null);
 
   const shareSupported = typeof navigator !== "undefined" && !!navigator.share;
-  const shareText = result
-    ? buildShareText(result, typeof location !== "undefined" ? location : { origin: "", pathname: "/" })
-    : "";
+  const shareLocation = typeof location !== "undefined" ? location : { origin: "" };
+  const published = !!result && (result.published === true || publishedId === result.id);
+  const sharedResult = result ? { ...result, published } : null;
+  const permalink = publishedCheckUrl(sharedResult, shareLocation);
+  const canPublish = result?.persisted === true && !!result.shareToken && !result.publicView;
+  const shareText = result ? buildShareText(sharedResult, shareLocation) : "";
   const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
 
   const generating = status === "generating";
@@ -45,6 +53,16 @@ export default function ShareDialog({ result, onClose, showToast }) {
     }
   }
   const manualShare = ready && (!filesShareable || shareError === "unsupported" || shareError === "denied");
+
+  useEffect(() => {
+    setPublishedId(null);
+    setPublishError("");
+    setPublishing(false);
+    return () => {
+      publishRequest.current?.abort();
+      publishRequest.current = null;
+    };
+  }, [result]);
 
   useEffect(() => {
     const dialog = ref.current;
@@ -135,6 +153,25 @@ export default function ShareDialog({ result, onClose, showToast }) {
     }
   }
 
+  async function publish() {
+    if (!canPublish || publishing) return;
+    const request = new AbortController();
+    publishRequest.current = request;
+    setPublishing(true);
+    setPublishError("");
+    try {
+      await publishCheck(result, { signal: request.signal });
+      if (request.signal.aborted) return;
+      setPublishedId(result.id);
+      onPublished?.({ ...result, published: true });
+      showToast("Checagem publicada. Qualquer pessoa com o link poderá consultá-la.");
+    } catch (error) {
+      if (!request.signal.aborted) setPublishError(error?.message || "Não foi possível publicar a checagem.");
+    } finally {
+      if (!request.signal.aborted) setPublishing(false);
+    }
+  }
+
 
   return (
     <dialog ref={ref} aria-label="Card de compartilhamento" className="share-dialog">
@@ -147,6 +184,26 @@ export default function ShareDialog({ result, onClose, showToast }) {
         </button>
       </div>
       <div className="dialog-body share-body">
+        <section className="share-publication" aria-labelledby="share-publication-title" aria-busy={publishing}>
+          <h3 id="share-publication-title">{published ? "Link público da checagem" : "Publicar um link desta checagem"}</h3>
+          {published ? (
+            <>
+              <p className="verify-hint">Esta análise está pública. Qualquer pessoa com o link pode consultar o resultado, as afirmações e as fontes, sem entrar em uma conta.</p>
+              <a className="share-permalink" href={permalink}>{permalink}</a>
+              <button className="btn" type="button" onClick={() => copyText(permalink, showToast)}>Copiar link da checagem</button>
+            </>
+          ) : (
+            <>
+              <p className="verify-hint">A checagem não é pública por padrão. Ao publicar, o resultado, as afirmações, as fontes e os dados públicos do conteúdo analisado ficam acessíveis a qualquer pessoa com o link. Revise se a análise contém informações pessoais antes de publicar. Arquivos enviados, transcrição bruta, configurações e logs privados não são publicados.</p>
+              {canPublish
+                ? <button className="btn primary" type="button" onClick={publish} disabled={publishing}>{publishing ? "Publicando…" : "Publicar checagem e gerar link público"}</button>
+                : <p className="verify-hint">Link indisponível: esta checagem não tem uma autorização de publicação válida neste navegador. As exportações de texto e imagem continuam disponíveis.</p>}
+            </>
+          )}
+          {publishing && <p className="verify-hint" role="status">Aguardando confirmação do serviço…</p>}
+          {publishError && <p className="verify-hint" role="alert">{publishError}</p>}
+        </section>
+        <button className="btn" type="button" onClick={() => copyText(shareText, showToast)} disabled={!result}>Copiar texto completo</button>
         {generating && <p className="verify-hint" role="status">Gerando seu parecer…</p>}
         {status === "gen-error" && (
           <>

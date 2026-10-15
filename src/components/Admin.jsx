@@ -144,6 +144,13 @@ function frameTimestamp(value) {
   return `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 }
 
+function FailureSummary({ record }) {
+  const code = record.errorCode ?? record.error;
+  const phase = record.failedPhase ?? record.phases?.find((entry) => entry.ok === false)?.name;
+  if (!code && !phase) return null;
+  return <span className="admin-failure-summary"><b>{typeof code === "string" ? code : "Erro registrado"}</b>{phase && <span>Fase: {phase}</span>}<span>Provedor: {record.provider ?? "não registrado"} · Modelo: {record.model ?? "não registrado"}</span></span>;
+}
+
 function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
   const ref = useRef(null);
   const [tab, setTab] = useState("overview");
@@ -218,6 +225,7 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
               </span>
               <CopyButton text={detail.id} showToast={showToast} label="Copiar ID" />
             </div>
+            <FailureSummary record={detail} />
 
             <div className="admin-tabs" role="tablist" aria-label="Seções do detalhe">
               {tabs.map((t) => (
@@ -972,7 +980,7 @@ function AdminMetrics({ data, loading, error, onReload }) {
           <dt>Limites de mídia</dt>
           <dd>duração máxima {system.media.maxMediaSeconds}s · transferência {fmtBytes(system.media.maxTransferBytes)} · temporários {fmtBytes(system.media.maxTempBytes)} · arquivo enviado {fmtBytes(system.media.maxFileBytes)}.</dd>
           <dt>Registro de checagens</dt>
-          <dd>{system.logs.enabled ? "Registros persistidos em Blob e listados no painel." : "Somente no console desta instância (sem BLOB_READ_WRITE_TOKEN)."}</dd>
+          <dd>{system.logs.enabled ? `Registros privados persistidos · modo ${system.logs.mode ?? "não informado"}.` : "Persistência de registros desabilitada; somente console desta instância."}</dd>
           <dt>Política de URLs</dt>
           <dd>portas permitidas: <code>{system.urlPolicy.ports}</code> · hosts privados {system.urlPolicy.allowPrivateHosts ? "permitidos por configuração explícita" : "bloqueados"}.</dd>
         </dl>
@@ -1055,6 +1063,13 @@ export default function Admin({ showToast }) {
   const [statusFilter, setStatusFilter] = useState(() => adminParam("status", "all"));
   const [kindFilter, setKindFilter] = useState(() => adminParam("kind", "all"));
   const [page, setPage] = useState(() => Math.max(0, Number.parseInt(adminParam("page", "0"), 10) || 0));
+  const [fromDate, setFromDate] = useState(() => adminParam("from"));
+  const [toDate, setToDate] = useState(() => adminParam("to"));
+  const [pageLimit, setPageLimit] = useState(() => {
+    const limit = Number(adminParam("limit", String(PAGE_SIZE)));
+    return [15, 30, 60].includes(limit) ? limit : PAGE_SIZE;
+  });
+  const [listInfo, setListInfo] = useState({ total: 0, mode: "unknown" });
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState("");
@@ -1080,12 +1095,14 @@ export default function Admin({ showToast }) {
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [section, setSection] = useState(currentAdminSection);
   const detailRequest = useRef(0);
+  const listRequest = useRef(0);
   const aiRequest = useRef(0);
   const correctionRequest = useRef(0);
   const loadedOnce = useRef(false);
 
   /** Encerra a sessão local quando o servidor recusa a chave. */
   const expireSession = useCallback(() => {
+    listRequest.current += 1;
     aiRequest.current += 1;
     detailRequest.current += 1;
     correctionRequest.current += 1;
@@ -1108,8 +1125,13 @@ export default function Admin({ showToast }) {
       expireSession();
       throw new Error("Sessão inválida. Entre de novo.");
     }
-    if (!res.ok) throw new Error(`Falha ao carregar (HTTP ${res.status}).`);
-    return res.json();
+    const data = await res.json().catch(() => null);
+    if (!res.ok || data?.error || !data) {
+      const error = new Error(data?.message || data?.error || `Falha ao carregar (HTTP ${res.status}).`);
+      error.data = data;
+      throw error;
+    }
+    return data;
   }, [secret, expireSession]);
 
   const authedPost = useCallback(async (path, body) => {
@@ -1134,16 +1156,26 @@ export default function Admin({ showToast }) {
 
   const load = useCallback(async ({ silent } = {}) => {
     if (!secret) return;
-    if (loadedOnce.current) setRefreshing(true); else setLoading(true);
+    const request = ++listRequest.current;
+    if (loadedOnce.current) setRefreshing(true);
+    setLoading(true);
     setLoadError("");
     try {
-      const data = await authedFetch("/api/admin");
-      if (data.error === "admin_disabled") {
-        setHint("Admin desabilitado no servidor (sem ADMIN_SECRET).");
-        setItems([]);
-        return;
-      }
+      if (fromDate && toDate && fromDate > toDate) throw new Error("A data inicial deve ser anterior ou igual à data final.");
+      const params = new URLSearchParams({ offset: String(page * pageLimit), limit: String(pageLimit), sort });
+      if (query.trim()) params.set("q", query.trim());
+      if (filter !== "all") params.set("filter", filter);
+      if (statusFilter !== "all") params.set("outcome", statusFilter);
+      if (kindFilter !== "all") params.set("kind", kindFilter);
+      if (fromDate) params.set("from", new Date(`${fromDate}T00:00:00`).toISOString());
+      if (toDate) params.set("to", new Date(`${toDate}T23:59:59.999`).toISOString());
+      const data = await authedFetch(`/api/admin?${params}`);
+      if (request !== listRequest.current) return;
       setHint(data.hint ?? "");
+      setListInfo({
+        total: data.total ?? data.available ?? data.items?.length ?? 0,
+        mode: data.mode ?? "unknown",
+      });
       setItems((data.items ?? []).map((entry) => ({
         ...entry,
         verdict: migrateVerdict(entry?.factualVerdict ?? entry?.verdict, entry?.score),
@@ -1151,14 +1183,19 @@ export default function Admin({ showToast }) {
       setUpdatedAt(new Date().toISOString());
       if (!silent) showToast("Lista atualizada.");
     } catch (err) {
+      if (request !== listRequest.current) return;
+      setItems(null);
+      if (err.data?.mode) setListInfo((current) => ({ ...current, mode: err.data.mode }));
       setLoadError(err.message || "Não foi possível carregar as checagens.");
       if (!silent) showToast(err.message);
     } finally {
-      loadedOnce.current = true;
-      setLoading(false);
-      setRefreshing(false);
+      if (request === listRequest.current) {
+        loadedOnce.current = true;
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [secret, authedFetch, showToast]);
+  }, [secret, authedFetch, showToast, page, pageLimit, query, filter, sort, statusFilter, kindFilter, fromDate, toDate]);
 
   const loadAi = useCallback(async ({ refresh = false, preserveDraft = false } = {}) => {
     if (!secret) return;
@@ -1330,12 +1367,15 @@ export default function Admin({ showToast }) {
 
   useEffect(() => {
     load({ silent: true });
+  }, [load]);
+
+  useEffect(() => {
     loadAi();
     const detailId = adminParam("detail");
     if (secret && detailId) openDetail(detailId);
     const correctionProtocol = adminParam("correction");
     if (secret && correctionProtocol) openCorrection(correctionProtocol);
-  }, [secret, load, loadAi, openDetail, openCorrection]);
+  }, [secret, loadAi, openDetail, openCorrection]);
 
   useEffect(() => {
     if (!secret) return;
@@ -1352,6 +1392,10 @@ export default function Admin({ showToast }) {
       setStatusFilter(adminParam("status", "all"));
       setKindFilter(adminParam("kind", "all"));
       setPage(Math.max(0, Number.parseInt(adminParam("page", "0"), 10) || 0));
+      setFromDate(adminParam("from"));
+      setToDate(adminParam("to"));
+      const limit = Number(adminParam("limit", String(PAGE_SIZE)));
+      setPageLimit([15, 30, 60].includes(limit) ? limit : PAGE_SIZE);
       const detailId = adminParam("detail");
       if (detailId && secret) openDetail(detailId);
       else closeDetail();
@@ -1385,46 +1429,16 @@ export default function Admin({ showToast }) {
     // Referência determinística: instante da última carga bem-sucedida, não o relógio do render.
     const reference = updatedAt ? new Date(updatedAt).getTime() : 0;
     return {
-      total: list.length,
       errors: list.length - okay.length,
       medianMs: times.length ? times[Math.floor(times.length / 2)] : null,
       last24h: reference ? list.filter((item) => reference - new Date(item.at).getTime() < 86400000).length : 0,
     };
   }, [items, updatedAt]);
-  const counts = useMemo(() => {
-    const result = { all: (items ?? []).length, error: 0, "no-verdict": 0 };
-    for (const item of items ?? []) {
-      const isError = Boolean(item.error || item.outcome === "error" || item.resultStatus === "error");
-      if (isError) result.error += 1;
-      if (item.verdict == null && !isError) result["no-verdict"] += 1;
-      if (item.verdict != null) result[item.verdict] = (result[item.verdict] ?? 0) + 1;
-    }
-    return result;
-  }, [items]);
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const list = (items ?? []).filter((item) => {
-      const isError = Boolean(item.error || item.outcome === "error" || item.resultStatus === "error");
-      if (filter === "error" ? !isError : filter === "no-verdict" ? item.verdict != null || isError : filter !== "all" && item.verdict !== filter) return false;
-      const status = item.outcome ?? item.resultStatus ?? (isError ? "error" : "legacy");
-      if (statusFilter !== "all" && status !== statusFilter) return false;
-      if (kindFilter !== "all" && (item.kind ?? "legacy") !== kindFilter) return false;
-      return !q || `${item.inputPreview ?? ""} ${item.id} ${item.kind}`.toLowerCase().includes(q);
-    });
-    const compare = {
-      newest: (a, b) => String(b.at).localeCompare(String(a.at)),
-      oldest: (a, b) => String(a.at).localeCompare(String(b.at)),
-      slowest: (a, b) => (b.totalMs ?? -1) - (a.totalMs ?? -1),
-      lowest: (a, b) => (a.score ?? 101) - (b.score ?? 101),
-    }[sort];
-    return list.sort(compare);
-  }, [items, filter, statusFilter, kindFilter, query, sort]);
-  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const safePage = Math.min(page, pages - 1);
-  const visible = filtered.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
-  const hasFilter = query.trim() !== "" || filter !== "all" || statusFilter !== "all" || kindFilter !== "all";
-  const operationalStatuses = [...new Set((items ?? []).map((item) => item.outcome ?? item.resultStatus ?? (item.error ? "error" : null)).filter(Boolean))];
-  const inputKinds = [...new Set((items ?? []).map((item) => item.kind ?? "legacy"))];
+  const pages = Math.max(1, Math.ceil(listInfo.total / pageLimit));
+  const visible = items ?? [];
+  const hasFilter = query.trim() !== "" || filter !== "all" || statusFilter !== "all" || kindFilter !== "all" || !!fromDate || !!toDate;
+  const operationalStatuses = Object.keys(OUTCOME_LABEL);
+  const inputKinds = Object.keys(KIND_LABEL);
 
   if (!secret) return <div className="admin-login"><section className="card">
     <div className="admin-section-heading"><p className="admin-eyebrow">Área restrita</p><h1>Painel administrativo</h1></div>
@@ -1450,39 +1464,44 @@ export default function Admin({ showToast }) {
         <div className="admin-nav-footer"><ShieldCheck size={16} aria-hidden="true" /><span>Acesso administrativo<br /><small>Sessão restrita a este navegador</small></span></div>
       </nav>
       <section className="admin-content" aria-label="Conteúdo administrativo">
+        <p className="admin-storage-mode" role="status">Armazenamento: <b>{({ supabase: "Supabase · registros privados duráveis", blob: "Blob · registros administrativos", disabled: "Desabilitado · sem registros duráveis", unknown: "Aguardando resposta do serviço" })[listInfo.mode] ?? listInfo.mode}</b></p>
         {section === "overview" && <>
           <div className="admin-section-heading"><p className="admin-eyebrow">Operação · registros retidos</p><h1>Visão geral</h1><p>Indicadores calculados somente sobre os registros disponibilizados pela API.</p></div>
           {hint && <p className="admin-notice">{hint}</p>}
           {loadError && <div className="admin-error-state" role="alert"><p>{loadError}</p><button className="btn" type="button" onClick={() => load({})}>Tentar novamente</button></div>}
           <dl className="admin-stats">
-            <div><dt>Registros disponíveis</dt><dd>{loading ? "…" : stats.total}</dd></div>
+            <div><dt>Total que corresponde aos filtros</dt><dd>{loading ? "…" : loadError ? "—" : listInfo.total}</dd></div>
             <div><dt>Últimas 24h · nesta lista</dt><dd>{loading ? "…" : stats.last24h}</dd></div>
-            <div><dt>Mediana · execuções sem erro</dt><dd>{loading ? "…" : fmtMs(stats.medianMs)}</dd></div>
+            <div><dt>Mediana · sem erro nesta página</dt><dd>{loading ? "…" : fmtMs(stats.medianMs)}</dd></div>
             <div className={stats.errors ? "bad" : ""}><dt>Execuções com erro · nesta lista</dt><dd>{loading ? "…" : stats.errors}</dd></div>
           </dl>
-          <p className="admin-mut">A lista é a amostra retida entregue pela API, não um total histórico. Atualização: {updatedAt ? fmtFullTime(updatedAt) : "ainda não carregada"}.</p>
-          <section className="admin-recent"><div className="admin-section-heading"><h2>Checagens recentes</h2><button className="quiet-link" type="button" onClick={() => navigateSection("checks")}>Abrir checagens</button></div>
+          <p className="admin-mut">Durações e contadores operacionais usam apenas a página atual, com os filtros escolhidos em Checagens. Não representam todo o histórico. Atualização: {updatedAt ? fmtFullTime(updatedAt) : "ainda não carregada"}.</p>
+          <section className="admin-recent"><div className="admin-section-heading"><h2>Checagens nesta página</h2><button className="quiet-link" type="button" onClick={() => navigateSection("checks")}>Abrir checagens</button></div>
             {items?.slice(0, 5).map((item) => <button className="admin-recent-row" type="button" key={item.id} onClick={() => openDetail(item.id)}><VerdictChip verdict={item.verdict} error={item.error} outcome={item.outcome} /><span>{item.inputPreview || item.id}</span><time>{fmtTime(item.at)}</time></button>)}
             {items?.length === 0 && !loadError && <p className="admin-mut">A API não retornou registros.</p>}
           </section>
         </>}
         {section === "checks" && <section aria-labelledby="admin-checks-title">
           <div className="admin-section-heading"><p className="admin-eyebrow">Registros retidos</p><h1 id="admin-checks-title">Checagens</h1><p>Explore os resultados, acompanhe execuções e consulte as evidências de cada análise.</p></div>
+          {hint && <p className="admin-notice">{hint}</p>}
           {loadError && <div className="admin-error-state" role="alert"><p>{loadError}</p><button className="btn" type="button" onClick={() => load({})}>Tentar novamente</button></div>}
-          <div className="admin-check-toolbar"><div className="search-box"><Search size={17} aria-hidden="true" /><input type="search" placeholder="Buscar por texto, ID ou tipo…" aria-label="Buscar checagens" value={query} onChange={(e) => { setQuery(e.target.value); setPage(0); updateAdminUrl({ q: e.target.value, page: null }); }} /></div>
-            <label className="admin-sort">Ordenar<AdminSelect value={sort} onValueChange={(value) => { setSort(value); updateAdminUrl({ sort: value }); }}>{SORTS.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}</AdminSelect></label>
+          <div className="admin-check-toolbar"><div className="search-box"><Search size={17} aria-hidden="true" /><input type="search" placeholder="Buscar por texto de entrada ou ID…" aria-label="Buscar checagens no servidor por texto ou ID" value={query} onChange={(e) => { setQuery(e.target.value); setPage(0); updateAdminUrl({ q: e.target.value, page: null }); }} /></div>
+            <label className="admin-sort">Ordenar<AdminSelect value={sort} onValueChange={(value) => { setSort(value); setPage(0); updateAdminUrl({ sort: value, page: null }); }}>{SORTS.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}</AdminSelect></label>
             <label className="admin-sort">Estado da execução<AdminSelect value={statusFilter} onValueChange={(value) => { setStatusFilter(value); setPage(0); updateAdminUrl({ status: value === "all" ? null : value, page: null }); }}><option value="all">Todos</option>{operationalStatuses.map((status) => <option key={status} value={status}>{OUTCOME_LABEL[status] ?? status}</option>)}</AdminSelect></label>
             <label className="admin-sort">Tipo de entrada<AdminSelect value={kindFilter} onValueChange={(value) => { setKindFilter(value); setPage(0); updateAdminUrl({ kind: value === "all" ? null : value, page: null }); }}><option value="all">Todos</option>{inputKinds.map((kind) => <option key={kind} value={kind}>{KIND_LABEL[kind] ?? kind}</option>)}</AdminSelect></label>
+            <label className="admin-sort" htmlFor="admin-from">De (data da execução)<input id="admin-from" type="date" value={fromDate} max={toDate || undefined} onChange={(e) => { setFromDate(e.target.value); setPage(0); updateAdminUrl({ from: e.target.value, page: null }); }} /></label>
+            <label className="admin-sort" htmlFor="admin-to">Até (inclusive)<input id="admin-to" type="date" value={toDate} min={fromDate || undefined} onChange={(e) => { setToDate(e.target.value); setPage(0); updateAdminUrl({ to: e.target.value, page: null }); }} /></label>
+            <label className="admin-sort">Registros por página<AdminSelect value={String(pageLimit)} onValueChange={(value) => { setPageLimit(Number(value)); setPage(0); updateAdminUrl({ limit: value, page: null }); }}>{[15, 30, 60].map((limit) => <option key={limit} value={String(limit)}>{limit}</option>)}</AdminSelect></label>
           </div>
-          <div className="filters" role="group" aria-label="Filtrar checagens">{FILTERS.map((entry) => <button key={entry.id} type="button" aria-pressed={filter === entry.id} onClick={() => { setFilter(entry.id); setPage(0); updateAdminUrl({ filter: entry.id, page: null }); }}>{VERDICTS[entry.id] && <i style={{ background: VERDICTS[entry.id].color }} />}{entry.label}<span className="count">{counts[entry.id] ?? 0}</span></button>)}</div>
-          <div className="results-meta"><p>{filtered.length} {filtered.length === 1 ? "checagem" : "checagens"}{query.trim() && <> para “{query.trim()}”</>}</p>{hasFilter && <button type="button" onClick={() => { setQuery(""); setFilter("all"); setStatusFilter("all"); setKindFilter("all"); setPage(0); updateAdminUrl({ q: null, filter: null, status: null, kind: null, page: null }); }}>Limpar filtros</button>}</div>
-          {loading || !items ? <ul className="admin-skel" aria-label="Carregando checagens"><li /><li /><li /></ul>
-            : filtered.length === 0 ? <div className="empty"><h3>{loadError ? "Lista indisponível" : items.length === 0 ? "Nenhum registro retido" : "Nenhuma checagem encontrada"}</h3><p>{loadError || (items.length === 0 ? "A API não disponibilizou checagens." : "Ajuste a busca ou os filtros.")}</p></div>
+          <div className="filters" role="group" aria-label="Filtrar checagens no servidor">{FILTERS.map((entry) => <button key={entry.id} type="button" aria-pressed={filter === entry.id} onClick={() => { setFilter(entry.id); setPage(0); updateAdminUrl({ filter: entry.id, page: null }); }}>{VERDICTS[entry.id] && <i style={{ background: VERDICTS[entry.id].color }} />}{entry.label}</button>)}</div>
+          <div className="results-meta" aria-live="polite"><p>{loading ? "Consultando o servidor…" : loadError ? "Consulta indisponível" : `${listInfo.total} ${listInfo.total === 1 ? "checagem encontrada" : "checagens encontradas"} · ${visible.length} nesta página`}{query.trim() && <> para “{query.trim()}”</>}</p>{hasFilter && <button type="button" onClick={() => { setQuery(""); setFilter("all"); setStatusFilter("all"); setKindFilter("all"); setFromDate(""); setToDate(""); setPage(0); updateAdminUrl({ q: null, filter: null, status: null, kind: null, from: null, to: null, page: null }); }}>Limpar filtros</button>}</div>
+          {loading || (!items && !loadError) ? <ul className="admin-skel" aria-label="Carregando checagens"><li /><li /><li /></ul>
+            : loadError ? null : visible.length === 0 ? <div className="empty"><h3>Nenhuma checagem encontrada</h3><p>{listInfo.mode === "disabled" ? "O armazenamento de registros está desabilitado." : "Não há registros nesta página para os filtros escolhidos."}</p></div>
               : <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Resultado</th><th>Afirmação / entrada</th><th>Tipo</th><th>Data</th><th>Duração</th><th>Modelo</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id} tabIndex="0" onClick={() => openDetail(item.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(item.id); } }}>
-                <td><div className="admin-result-cell"><VerdictChip verdict={item.verdict} error={item.error} outcome={item.outcome} /><b className="admin-score-value">{item.score == null ? "Sem nota" : `${item.score}/100`}</b></div>{(item.outcome || item.resultStatus || item.error) && <small className="admin-op-status">{OUTCOME_LABEL[item.outcome ?? item.resultStatus] ?? (item.error ? "Erro registrado" : item.resultStatus)}</small>}</td><td className="admin-table-preview" title={item.inputPreview || item.id}>{item.inputPreview || "(sem texto)"}<small>{item.id}</small></td><td>{KIND_LABEL[item.kind] ?? item.kind ?? "—"}</td><td><time title={fmtFullTime(item.at)}>{fmtTime(item.at)}</time></td><td>{fmtMs(item.totalMs)}</td><td>{item.model ?? item.provider ?? "—"}</td>
+                <td><div className="admin-result-cell"><VerdictChip verdict={item.verdict} error={item.error} outcome={item.outcome} /><b className="admin-score-value">{item.score == null ? "Sem nota" : `${item.score}/100`}</b></div>{(item.outcome || item.resultStatus || item.error) && <small className="admin-op-status">{OUTCOME_LABEL[item.outcome ?? item.resultStatus] ?? (item.error ? "Erro registrado" : item.resultStatus)}</small>}<FailureSummary record={item} /></td><td className="admin-table-preview" title={item.inputPreview || item.id}>{item.inputPreview || "(sem texto)"}<small>{item.id}</small></td><td>{KIND_LABEL[item.kind] ?? item.kind ?? "—"}</td><td><time title={fmtFullTime(item.at)}>{fmtTime(item.at)}</time></td><td>{fmtMs(item.totalMs)}</td><td>{item.model ?? "Modelo não registrado"}<small>{item.provider ?? "Provedor não registrado"}</small></td>
               </tr>)}</tbody></table>
-              <ul className="admin-cards">{visible.map((item) => <li key={item.id}><button type="button" className="admin-card-row" onClick={() => openDetail(item.id)}><span className="admin-result-cell"><VerdictChip verdict={item.verdict} error={item.error} outcome={item.outcome}/><b>{item.score == null ? "sem nota" : item.score}</b></span><strong>{item.inputPreview || "(sem texto)"}</strong><span>{KIND_LABEL[item.kind] ?? item.kind ?? "—"} · {fmtTime(item.at)}</span><span>{item.outcome ? OUTCOME_LABEL[item.outcome] ?? item.outcome : "Registro legado"} · {fmtMs(item.totalMs)} · {item.model ?? item.provider ?? "Modelo não registrado"}</span><small>{item.id}</small></button></li>)}</ul></div>}
-          {pages > 1 && <nav className="admin-pages" aria-label="Paginação"><button className="btn ghost" type="button" disabled={!safePage} onClick={() => { const next = safePage - 1; setPage(next); updateAdminUrl({ page: next || null }); }}>← Anterior</button><span>Página {safePage + 1} de {pages}</span><button className="btn ghost" type="button" disabled={safePage >= pages - 1} onClick={() => { const next = safePage + 1; setPage(next); updateAdminUrl({ page: next }); }}>Próxima →</button></nav>}
+              <ul className="admin-cards">{visible.map((item) => <li key={item.id}><button type="button" className="admin-card-row" onClick={() => openDetail(item.id)}><span className="admin-result-cell"><VerdictChip verdict={item.verdict} error={item.error} outcome={item.outcome}/><b>{item.score == null ? "sem nota" : item.score}</b></span><strong>{item.inputPreview || "(sem texto)"}</strong><span>{KIND_LABEL[item.kind] ?? item.kind ?? "—"} · {fmtTime(item.at)}</span><span>{item.outcome ? OUTCOME_LABEL[item.outcome] ?? item.outcome : "Registro legado"} · {fmtMs(item.totalMs)} · {item.provider ?? "Provedor não registrado"} · {item.model ?? "Modelo não registrado"}</span><FailureSummary record={item} /><small>{item.id}</small></button></li>)}</ul></div>}
+          {!loadError && (pages > 1 || page > 0) && <nav className="admin-pages" aria-label="Paginação"><button className="btn ghost" type="button" disabled={!page || loading} onClick={() => { const next = page - 1; setPage(next); updateAdminUrl({ page: next || null }); }}>← Anterior</button><span>Página {page + 1} de {pages}</span><button className="btn ghost" type="button" disabled={page >= pages - 1 || loading} onClick={() => { const next = page + 1; setPage(next); updateAdminUrl({ page: next }); }}>Próxima →</button></nav>}
         </section>}
         {section === "corrections" && <AdminCorrections
           data={corrections}

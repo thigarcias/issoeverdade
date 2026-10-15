@@ -29,7 +29,7 @@ function titleFrom(input) {
 }
 
 /** Normaliza o JSON do modelo para o formato que o ResultCard espera. */
-function normalize(raw, input, origin) {
+function normalize(raw, input, origin, createdAt) {
   const statuses = ["true", "false", "unproven", "context"];
   const clamp = (value, fallback) => {
     if (value == null || value === "") return fallback;
@@ -87,8 +87,9 @@ function normalize(raw, input, origin) {
     title: origin?.title ?? titleFrom(input),
     kind: kindLabel(input),
     author: origin?.author ?? "checagem por IA",
-    publishedAt: new Date().toLocaleDateString("pt-BR"),
-    checkedAt: "agora",
+    createdAt: createdAt ?? new Date().toISOString(),
+    publishedAt: new Date(createdAt ?? Date.now()).toLocaleDateString("pt-BR"),
+    checkedAt: createdAt ? new Date(createdAt).toLocaleString("pt-BR") : "agora",
     summary: String(raw?.summary ?? "Resultado gerado pela checagem."),
     claims,
     notCheckedClaims: Array.isArray(raw?.notCheckedClaims) ? raw.notCheckedClaims.slice(0, 50) : [],
@@ -154,6 +155,10 @@ function recoveredResult(data, input, checkId) {
   const result = normalize({ ...data.result, checkId: id }, input, data.origin ?? null);
   result.cached = Boolean(data.cached);
   result.cachedFrom = data.cachedFrom ?? null;
+  result.persisted = data.storage?.persisted === true;
+  if (result.persisted && typeof data.storage?.shareToken === "string" && data.storage.shareToken) {
+    result.shareToken = data.storage.shareToken;
+  }
   return { result, checkId: id };
 }
 
@@ -282,4 +287,51 @@ export async function verify(input, opts = {}) {
   }
   if (terminal.kind === "error") throw withRecovery(friendlyError(terminal.code, terminal.message), null);
   return recoveredResult(terminal.envelope, input, terminal.checkId);
+}
+
+async function checksResponse(res) {
+  const data = await res.json().catch(() => null);
+  if (!res.ok || data?.error || !data) {
+    const error = new Error(res.status === 404
+      ? "Checagem não encontrada ou não publicada."
+      : data?.message || "O serviço de compartilhamento está indisponível. Tente novamente.");
+    error.code = data?.error ?? "checks_unavailable";
+    error.status = res.status;
+    throw error;
+  }
+  return data;
+}
+
+/** Publica somente com a capacidade privada entregue nesta execução. */
+export async function publishCheck(result, { signal } = {}) {
+  if (!result?.id || !result.persisted || !result.shareToken || result.publicView) {
+    throw new Error("Link indisponível para esta checagem. Você ainda pode exportar o texto e as imagens.");
+  }
+  const data = await checksResponse(await fetch("/api/checks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ checkId: result.id, shareToken: result.shareToken }),
+    signal,
+    cache: "no-store",
+  }));
+  if (data.id !== result.id) throw new Error("O serviço não confirmou a publicação desta checagem.");
+  return { id: data.id, url: `/?check=${encodeURIComponent(data.id)}` };
+}
+
+/** A leitura pública nunca recupera capacidade de publicação ou dados privados. */
+export async function getPublishedCheck(id, { signal } = {}) {
+  const data = await checksResponse(await fetch(`/api/checks?id=${encodeURIComponent(id)}`, {
+    signal,
+    cache: "no-store",
+  }));
+  if (data.checkId !== id || !data.result || typeof data.result !== "object" || Array.isArray(data.result)
+    || !data.createdAt || !Number.isFinite(Date.parse(data.createdAt))) {
+    throw new Error("O serviço retornou uma checagem incompleta. Tente novamente.");
+  }
+  const result = normalize({ ...data.result, checkId: id }, { kind: "", text: "" }, data.origin ?? null, data.createdAt);
+  result.kind = "Checagem compartilhada";
+  result.persisted = true;
+  result.published = true;
+  result.publicView = true;
+  return result;
 }

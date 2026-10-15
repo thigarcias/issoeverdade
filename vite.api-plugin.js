@@ -6,6 +6,7 @@ import { admitVerifyRequest, executeVerifyStream, handleVerifyRecovery, VERIFY_C
 import { handleCorrectionsRequest } from "./server/corrections-endpoint.js";
 import { handleAdminRequest } from "./server/admin-endpoint.js";
 import { handleHealthRequest } from "./server/health-endpoint.js";
+import { handleChecksRequest } from "./server/checks-endpoint.js";
 
 function readBody(req, limit = 200_000) {
   return new Promise((resolve, reject) => {
@@ -34,7 +35,7 @@ export function apiVerifyPlugin() {
     apply: "serve",
     configResolved(config) {
       const full = loadEnv(config.mode, config.root || process.cwd(), "");
-      const allowed = /^(OPENCODE_|OPENAI_|BLOB_|ADMIN_SECRET|MEDIA_|IEV_|MODERATION_|UPSTASH_|KV_REST_API_|VERCEL_ENV|NODE_ENV)/;
+      const allowed = /^(OPENCODE_|OPENAI_|BLOB_|SUPABASE_|NEXT_PUBLIC_SUPABASE_|ADMIN_SECRET|MEDIA_|IEV_|MODERATION_|UPSTASH_|KV_REST_API_|VERCEL_ENV|NODE_ENV)/;
       for (const [key, value] of Object.entries(full)) {
         if (value && allowed.test(key) && !process.env[key]) process.env[key] = value;
       }
@@ -87,6 +88,33 @@ export function apiVerifyPlugin() {
           },
         });
         res.end();
+      });
+      server.middlewares.use("/api/checks", async (req, res) => {
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Cache-Control", "no-store");
+        const send = (status, obj, headers = {}) => {
+          res.statusCode = status;
+          for (const [key, value] of Object.entries(headers)) res.setHeader(key, value);
+          res.end(JSON.stringify(obj));
+        };
+        if (req.method !== "GET" && req.method !== "POST") return send(405, { error: "method_not_allowed" });
+        let body = null;
+        if (req.method === "POST") {
+          try { body = JSON.parse(await readBody(req, 4096)); }
+          catch (error) {
+            return send(error?.message === "payload too large" ? 413 : 400, {
+              error: error?.message === "payload too large" ? "payload_too_large" : "bad_request",
+            });
+          }
+        }
+        const out = await handleChecksRequest({
+          method: req.method,
+          headers: req.headers,
+          query: Object.fromEntries(new URL(req.url, "http://local").searchParams.entries()),
+          body,
+          socketAddress: req.socket?.remoteAddress,
+        });
+        return send(out.status, out.body, out.headers);
       });
       server.middlewares.use("/api/health", async (req, res) => {
         res.setHeader("Content-Type", "application/json");

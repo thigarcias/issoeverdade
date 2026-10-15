@@ -1,7 +1,8 @@
 // Endpoint administrativo compartilhado (Vercel e dev): registros de checagem,
 // catálogo/configuração de IA, fila de correções, métricas operacionais e
 // invalidação de cache. Toda ação exige ADMIN_SECRET.
-import { appendCorrectionToLog, getCheckLog, listCheckLogs, logEnabled } from "./checklog.js";
+import { appendCorrectionToLog, getCheckLog, listCheckLogs, logEnabled, logMode } from "./checklog.js";
+import { reportStorageError, storageFailureMessage } from "./supabase.js";
 import { aiConfigCatalog, getAiConfigState, saveAiConfig } from "./ai-config.js";
 import { invalidateCache } from "./cache.js";
 import { activeGuard } from "./limits.js";
@@ -68,7 +69,7 @@ export function systemState(env = process.env) {
       maxFileBytes: limits.maxFileBytes,
     },
     corrections: { mode: correctionsMode(env), durable: correctionsEnabled() },
-    logs: { enabled: logEnabled() },
+    logs: { enabled: logEnabled(env), mode: logMode(env) },
     urlPolicy: {
       ports: String(env.IEV_HTTP_PORTS ?? "80,443"),
       allowPrivateHosts: env.IEV_ALLOW_PRIVATE_HOSTS === "1",
@@ -182,14 +183,18 @@ export async function handleAdminRequest({ method, headers = {}, query = {}, bod
   }
 
   if (method !== "GET") return jsonError(405, { error: "method_not_allowed" });
-  if (!logEnabled()) {
-    return { status: 200, body: { enabled: false, items: [], hint: "BLOB_READ_WRITE_TOKEN ausente — logs só no console." } };
-  }
   const id = typeof query.id === "string" ? query.id : "";
-  if (id) {
-    const record = await getCheckLog(id);
-    if (!record) return jsonError(404, { error: "not_found" });
-    return { status: 200, body: { record } };
+  try {
+    if (id) {
+      const record = await getCheckLog(id);
+      if (!record) return jsonError(404, { error: "not_found" });
+      return { status: 200, body: { record } };
+    }
+    const listed = await listCheckLogs(query);
+    return { status: listed.error ? 502 : 200, body: listed };
+  } catch (error) {
+    if (error?.code === "invalid_log_query") return jsonError(400, { error: "invalid_log_query" });
+    reportStorageError("admin-read", logMode(), error);
+    return jsonError(502, { error: "logs_storage_failed", enabled: logEnabled(), mode: logMode(), message: storageFailureMessage(logMode(), error) });
   }
-  return { status: 200, body: await listCheckLogs() };
 }

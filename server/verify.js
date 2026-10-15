@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 // Núcleo server-side da checagem — compartilhado entre:
 // - vite.api-plugin.js (dev local)
@@ -8,7 +8,7 @@ import { downloadMedia, fetchImageSource, fetchMediaContext, probeMediaPresence,
 import { mediaPresenceUncertain } from "./source-type.js";
 import { normalizeVerifyInput } from "./uploads.js";
 import { transcribe, transcriptToPrompt } from "./transcribe.js";
-import { saveCheckLog as saveLog } from "./checklog.js";
+import { saveCheckLog as saveLog, saveSuccessfulCheck } from "./checklog.js";
 import { getCached, setCached } from "./cache.js";
 import {
   EVIDENCE_REVIEW_INSTRUCTIONS,
@@ -646,7 +646,12 @@ function makeProgressEmitter(onProgress) {
 }
 
 function makeId() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return randomUUID();
+}
+
+function safeErrorCode(error) {
+  const code = error?.payload?.error ?? error?.code;
+  return typeof code === "string" && /^[a-z][a-z0-9_-]{0,79}$/i.test(code) ? code : "operational_error";
 }
 /**
  * Runs the configured research, media, validation, logging, and cache pipeline.
@@ -661,13 +666,15 @@ export async function runVerify(input, opts = {}) {
   try {
     return await runVerifyInner(normalizedInput, { ...opts, trace, id, startedAt });
   } catch (err) {
-    const code = err?.payload?.error ?? err?.message ?? "unknown";
+    const code = safeErrorCode(err);
     recordCheck({ kind: normalizedInput?.kind, outcome: "error", error: code, totalMs: Date.now() - startedAt });
     await Promise.race([
       saveLog({
         id,
         at: new Date().toISOString(),
         kind: normalizedInput?.kind,
+        inputPreview: String(normalizedInput?.text ?? "").slice(0, 300),
+        fileName: normalizedInput?.fileName ? String(normalizedInput.fileName).slice(0, 200) : null,
         phases: trace.phases,
         totalMs: Date.now() - startedAt,
         model: err?.payload?.model ?? null,
@@ -689,6 +696,8 @@ export async function runVerify(input, opts = {}) {
         moderationReports: trace.moderationReports ?? [],
         corrections: [],
         error: String(code).slice(0, 200),
+        errorStatus: Number.isInteger(err?.status) ? err.status : null,
+        failedPhase: [...trace.phases].reverse().find((phase) => !phase.ok)?.name ?? null,
       }).catch(() => {}),
       new Promise((resolve) => setTimeout(resolve, 8000)),
     ]);
@@ -711,7 +720,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   const hit = await getCached(input, cacheNamespace).catch(() => null);
   if (hit) {
     const elapsed = Date.now() - t0;
-    await saveLog({
+    const storage = await saveSuccessfulCheck({
       id,
       kind: input?.kind,
       inputPreview: String(input?.text ?? "").slice(0, 300),
@@ -741,12 +750,12 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       origin: hit.origin ?? null,
       cachedFrom: hit.checkId ?? null,
       error: null,
-    }).catch(() => {});
+    }, { ...hit, checkId: id }).catch(() => ({ persisted: false }));
     recordCheck({ kind: input?.kind, outcome: hit.result?.outcome ?? "checked", verdict: hit.result?.verdict ?? null, totalMs: elapsed, cached: true });
     progress.content("cached", false, { cached: true, cachedFrom: hit.checkId ?? null });
     progress.activity("cache", "done", null, "Resultado recuperado do cache");
     progress.close();
-    return { ...hit, checkId: id, cached: true, cachedFrom: hit.checkId ?? null };
+    return { ...hit, checkId: id, cached: true, cachedFrom: hit.checkId ?? null, storage };
   }
 
   const phases = trace?.phases ?? [];
@@ -791,7 +800,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       markActivityDone(name, out);
       return out;
     } catch (err) {
-      phases.push({ name, parent, startMs: start - t0, ms: Date.now() - start, ok: false, error: String(err?.payload?.error ?? err?.message ?? err).slice(0, 200) });
+      phases.push({ name, parent, startMs: start - t0, ms: Date.now() - start, ok: false, error: safeErrorCode(err), status: err?.status ?? null, provider: err?.payload?.provider ?? null, model: err?.payload?.model ?? null });
       if (mapping && !activityDone.has(mapping.id)) {
         activityDone.add(mapping.id);
         progress.activity(mapping.id, "failed", mapping.parent);
@@ -1412,10 +1421,6 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     corrections,
     error: null,
   };
-  await Promise.race([
-    saveLog(entry).catch(() => {}),
-    new Promise((resolve) => setTimeout(resolve, 8000)),
-  ]);
   recordCheck({
     kind: input?.kind,
     outcome: fixed.outcome,
@@ -1462,5 +1467,6 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   }
   progress.close();
   setCached(input, out, cacheNamespace).catch(() => {});
-  return out;
+  const storage = await saveSuccessfulCheck(entry, out).catch(() => ({ persisted: false }));
+  return { ...out, storage };
 }

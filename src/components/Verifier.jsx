@@ -52,7 +52,7 @@ function activityDot(state) {
   if (state === "skipped") return <Minus aria-hidden="true" />;
   return <Clock3 aria-hidden="true" />;
 }
-export default function Verifier({ showToast, onChecked, quickInput, onShareCard }) {
+export default function Verifier({ showToast, onChecked, quickInput, onShareCard, publishedCheckId }) {
   const limits = useServerLimits();
   const [tab, setTab] = useState("link");
   const [text, setText] = useState("");
@@ -76,6 +76,11 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
   const resultPane = useRef(null);
   const lastPhase = useRef("idle");
   const recoveryRef = useRef(null);
+
+  useEffect(() => {
+    if (!publishedCheckId) return;
+    setResult((current) => current?.id === publishedCheckId ? { ...current, published: true } : current);
+  }, [publishedCheckId]);
 
   // Checagem rápida do topo: detecta link × texto e dispara sozinha.
   useEffect(() => {

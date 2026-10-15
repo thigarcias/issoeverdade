@@ -246,6 +246,11 @@
   font: 500 11px/1.5 var(--sans);
 }
 .admin-wrap .admin-check-toolbar > .btn { justify-self: start; }
+.admin-wrap .admin-sort input[type="date"] { box-sizing: border-box; width: 100%; min-width: 0; min-height: 42px; padding: 9px 11px; border: 1px solid var(--admin-border); border-radius: 7px; background: var(--admin-surface); color: var(--fg-2); font: 400 13px/1.5 var(--sans); }
+.admin-wrap .admin-sort input[type="date"]:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
+.admin-wrap .admin-storage-mode { margin: 0 0 22px; padding: 12px 16px; border: 1px solid var(--admin-border); border-radius: 8px; color: var(--fg-3); background: var(--panel-2); font: 400 12px/1.7 var(--sans); overflow-wrap: anywhere; }
+:is(.admin-wrap, .admin-dialog) .admin-failure-summary { display: grid; gap: 4px; margin-top: 10px; padding: 9px 11px; border-left: 2px solid var(--accent-deep); background: var(--accent-soft); color: var(--accent-deep); font: 400 11px/1.6 var(--sans); overflow-wrap: anywhere; }
+.admin-wrap .admin-table td:last-child small { display: block; color: var(--fg-4); }
 .admin-wrap .filters { gap: 8px; margin: 0; padding: 0; }
 .admin-wrap .filters button {
   display: inline-flex;

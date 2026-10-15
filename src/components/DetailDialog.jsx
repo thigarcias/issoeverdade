@@ -1,15 +1,15 @@
 import { useEffect, useRef } from "react";
 import ResultCard from "./ResultCard.jsx";
 
-export default function DetailDialog({ result, onClose, showToast, onShareCard }) {
+export default function DetailDialog({ result, state, onRetry, onClose, showToast, onShareCard }) {
   const ref = useRef(null);
 
   useEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
-    if (result && !dialog.open) dialog.showModal();
-    if (!result && dialog.open) dialog.close();
-  }, [result]);
+    if ((result || state) && !dialog.open) dialog.showModal();
+    if (!result && !state && dialog.open) dialog.close();
+  }, [result, state]);
 
   useEffect(() => {
     const dialog = ref.current;
@@ -24,7 +24,7 @@ export default function DetailDialog({ result, onClose, showToast, onShareCard }
   return (
     <dialog ref={ref} aria-labelledby="dialog-title">
       <div className="dialog-bar">
-        <span>Checagem</span>
+        <span id="dialog-title">{state || result?.publicView ? "Checagem compartilhada" : "Checagem"}</span>
         <button
           className="icon-btn"
           aria-label="Fechar"
@@ -36,8 +36,18 @@ export default function DetailDialog({ result, onClose, showToast, onShareCard }
         </button>
       </div>
       <div className="dialog-body">
+        {state?.status === "loading" && <p className="verify-hint" role="status">Carregando checagem publicada…</p>}
+        {state && state.status !== "loading" && (
+          <section className="shared-check-state" role="alert">
+            <h2>{state.status === "not-found" ? "Checagem não encontrada" : "Serviço indisponível"}</h2>
+            <p>{state.message}</p>
+            {state.status === "not-found" && <p>O link pode estar incorreto ou a checagem pode não ter sido publicada. Somente resultados publicados podem ser abertos por aqui.</p>}
+            <button className="btn" type="button" onClick={onRetry}>Tentar novamente</button>
+          </section>
+        )}
+        {result?.publicView && <p className="verify-hint">Resultado público · checagem realizada em {result.checkedAt}. Esta visualização não permite publicar ou acessar registros privados.</p>}
         {result ? (
-          <ResultCard result={result} showToast={showToast} titleId="dialog-title" onShareCard={onShareCard} reportSource="detail" />
+          <ResultCard result={result} showToast={showToast} titleId="dialog-result-title" onShareCard={onShareCard} reportSource="detail" />
         ) : null}
       </div>
     </dialog>

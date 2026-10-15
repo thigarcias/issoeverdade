@@ -1,4 +1,7 @@
-// Registros de checagem e índice administrativo no Blob privado.
+// Registros privados no Supabase; Blob privado quando Supabase não configurado.
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { publicCheckEnvelope } from "./public-check.js";
+import { supabaseConfigured, supabaseRequest, StorageError, reportStorageError, storageFailureMessage } from "./supabase.js";
 const INDEX_KEY = "iev-logs/index.json";
 const MAX_INDEX = 200;
 
@@ -6,8 +9,12 @@ function blobToken() {
   return process.env.BLOB_READ_WRITE_TOKEN || "";
 }
 
-export function logEnabled() {
-  return Boolean(blobToken());
+export function logMode(env = process.env) {
+  return supabaseConfigured(env) ? "supabase" : env.BLOB_READ_WRITE_TOKEN ? "blob" : "disabled";
+}
+
+export function logEnabled(env = process.env) {
+  return logMode(env) !== "disabled";
 }
 
 async function blob() {
@@ -27,11 +34,14 @@ function indexEntry(record) {
     model: record.model,
     provider: record.provider,
     error: record.error,
+    errorCode: record.errorCode,
+    errorStatus: record.errorStatus,
+    failedPhase: record.failedPhase,
     inputPreview: record.inputPreview,
   };
 }
 
-export async function saveCheckLog(entry) {
+export async function saveCheckLog(entry, { sharing = null } = {}) {
   const record = {
     id: entry.id,
     at: entry.at ?? new Date().toISOString(),
@@ -84,9 +94,30 @@ export async function saveCheckLog(entry) {
     evidence: entry.evidence ?? null,
     evidenceVerification: entry.evidenceVerification ?? null,
     error: entry.error ?? null,
+    errorStatus: Number.isInteger(entry.errorStatus) ? entry.errorStatus : null,
+    errorCode: entry.errorCode ?? entry.error ?? null,
+    failedPhase: entry.failedPhase ?? [...(entry.phases ?? [])].reverse().find((phase) => !phase.ok)?.name ?? null,
   };
+  if (sharing) record._sharing = sharing;
+  if (logMode() === "supabase") {
+    try {
+      await supabaseRequest("iev_checks", {
+        method: "POST",
+        body: {
+          id: record.id, at: record.at, kind: record.kind, outcome: record.outcome,
+          input_preview: record.inputPreview, index_entry: indexEntry(record), log: Object.fromEntries(Object.entries(record).filter(([key]) => key !== "_sharing")),
+          public_envelope: sharing?.envelope ?? null, share_token_hash: sharing?.tokenHash ?? null,
+        },
+        prefer: "return=minimal",
+      });
+      return record.id;
+    } catch (error) {
+      reportStorageError("save", "supabase", error);
+      return null;
+    }
+  }
   if (!logEnabled()) {
-    console.log(`[iev-log] ${record.id} ${record.kind} ${record.verdict ?? record.error} ${record.totalMs}ms`);
+    console.log("[iev-log]", JSON.stringify({ id: record.id, kind: record.kind, outcome: record.outcome, totalMs: record.totalMs, mode: "disabled" }));
     return null;
   }
   try {
@@ -101,9 +132,10 @@ export async function saveCheckLog(entry) {
       const item = found.blobs.find((candidate) => candidate.pathname === INDEX_KEY);
       if (item) {
         const response = await fetch(item.url, { headers: { Authorization: `Bearer ${token}` } });
-        if (response.ok) index = (await response.json()) ?? [];
+        if (!response.ok) throw new StorageError("storage_request_failed", response.status);
+        index = (await response.json()) ?? [];
       }
-    } catch { /* índice novo ou indisponível */ }
+    } catch (error) { reportStorageError("index-read", "blob", error); }
     index = [indexEntry(record), ...index.filter((item) => item.id !== record.id)].slice(0, MAX_INDEX);
     try {
       const all = await list({ prefix: "iev-logs/", token });
@@ -131,30 +163,95 @@ export async function saveCheckLog(entry) {
     });
     return record.id;
   } catch (error) {
-    console.error(`[iev-log] falha ao salvar: ${error?.message}`);
+    reportStorageError("save", "blob", error);
     return null;
   }
 }
 
-export async function listCheckLogs() {
-  if (!logEnabled()) return { enabled: false, available: 0, max: MAX_INDEX, items: [], hint: "BLOB_READ_WRITE_TOKEN ausente — logs só no console." };
+export function normalizeLogQuery(query = {}) {
+  const integer = (value, fallback, max) => {
+    if (value === undefined || value === "") return fallback;
+    if (!/^\d+$/.test(String(value)) || Number(value) > max) throw new StorageError("invalid_log_query", 400);
+    return Number(value);
+  };
+  const date = (value) => {
+    if (value === undefined || value === "") return null;
+    const text = String(value);
+    if (!/^\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z)?$/.test(text) || !Number.isFinite(Date.parse(text))) throw new StorageError("invalid_log_query", 400);
+    return new Date(text).toISOString();
+  };
+  const filters = {
+    q: String(query.q ?? "").trim().slice(0, 300),
+    outcome: String(query.outcome ?? "").slice(0, 80),
+    kind: String(query.kind ?? "").slice(0, 40),
+    filter: String(query.filter ?? query.status ?? "all"),
+    sort: String(query.sort ?? "newest"),
+    from: date(query.from), to: date(query.to),
+    offset: integer(query.offset, 0, 1000000), limit: integer(query.limit, 50, 100),
+  };
+  if (filters.limit < 1 || (filters.from && filters.to && filters.from > filters.to)) throw new StorageError("invalid_log_query", 400);
+  if (!["all", "error", "no-verdict", "true", "mostly_true", "partially_true", "distorted", "unproven", "misleading", "false"].includes(filters.filter) || !["newest", "oldest", "slowest", "lowest"].includes(filters.sort)) throw new StorageError("invalid_log_query", 400);
+  if (filters.outcome === "all") filters.outcome = "";
+  if (filters.kind === "all") filters.kind = "";
+  return filters;
+}
+
+export function filterCheckLogIndex(index, filters) {
+  const q = filters.q.toLocaleLowerCase();
+  return index.filter((item) => {
+    const verdict = item.verdict === "mixed" ? Number(item.score) >= 65 ? "partially_true" : "distorted" : item.verdict;
+    const isError = Boolean(item.error || item.outcome === "error");
+    const chip = filters.filter === "all" || (filters.filter === "error" ? isError : filters.filter === "no-verdict" ? verdict == null && !isError : verdict === filters.filter);
+    return chip && (!q || String(item.id).toLocaleLowerCase() === q || String(item.inputPreview ?? "").toLocaleLowerCase().includes(q)) &&
+      (!filters.outcome || item.outcome === filters.outcome) && (!filters.kind || item.kind === filters.kind) &&
+      (!filters.from || item.at >= filters.from) && (!filters.to || item.at <= filters.to);
+  }).sort((a, b) => {
+    const primary = filters.sort === "oldest" ? String(a.at).localeCompare(String(b.at))
+      : filters.sort === "slowest" ? (b.totalMs ?? -1) - (a.totalMs ?? -1)
+        : filters.sort === "lowest" ? (a.score ?? 101) - (b.score ?? 101)
+          : String(b.at).localeCompare(String(a.at));
+    return primary || String(b.at).localeCompare(String(a.at)) || String(b.id).localeCompare(String(a.id));
+  });
+}
+
+export async function listCheckLogs(query = {}) {
+  const filters = normalizeLogQuery(query);
+  const mode = logMode();
+  const base = { enabled: logEnabled(), available: 0, total: 0, max: mode === "supabase" ? null : MAX_INDEX, items: [], offset: filters.offset, limit: filters.limit, mode };
+  if (mode === "disabled") return { ...base, hint: "Armazenamento durável de logs não configurado." };
   try {
+    if (mode === "supabase") {
+      const { data } = await supabaseRequest("rpc/iev_list_checks", {
+        method: "POST",
+        body: { p_q: filters.q, p_outcome: filters.outcome, p_kind: filters.kind, p_from: filters.from, p_to: filters.to, p_offset: filters.offset, p_limit: filters.limit, p_filter: filters.filter, p_sort: filters.sort },
+      });
+      if (!data || !Number.isSafeInteger(data.total) || !Array.isArray(data.items)) throw new StorageError("storage_invalid_response");
+      return { ...base, available: data.total, total: data.total, items: data.items };
+    }
     const token = blobToken();
     const { list } = await blob();
     const found = await list({ prefix: INDEX_KEY, token });
     const item = found.blobs.find((candidate) => candidate.pathname === INDEX_KEY);
-    if (!item) return { enabled: true, available: 0, max: MAX_INDEX, items: [] };
+    if (!item) return base;
     const response = await fetch(item.url, { headers: { Authorization: `Bearer ${token}` } });
-    if (!response.ok) return { enabled: true, available: 0, max: MAX_INDEX, items: [] };
-    const items = (await response.json()) ?? [];
-    return { enabled: true, available: items.length, max: MAX_INDEX, items };
-  } catch {
-    return { enabled: true, available: 0, max: MAX_INDEX, items: [], error: "list-failed" };
+    if (!response.ok) throw new StorageError("storage_request_failed", response.status);
+    const index = await response.json();
+    if (!Array.isArray(index)) throw new StorageError("storage_invalid_response");
+    const items = filterCheckLogIndex(index, filters);
+    return { ...base, available: index.length, total: items.length, items: items.slice(filters.offset, filters.offset + filters.limit) };
+  } catch (error) {
+    reportStorageError("list", mode, error);
+    return { ...base, error: "list_failed", errorCode: error instanceof StorageError ? error.code : "storage_failed", message: storageFailureMessage(mode, error) };
   }
 }
 
-export async function getCheckLog(id) {
-  if (!logEnabled() || !/^[a-z0-9-]+$/i.test(id)) return null;
+async function readCheckRecord(id) {
+  if (!logEnabled() || !validCheckId(id)) return null;
+  if (logMode() === "supabase") {
+    const { data } = await supabaseRequest("iev_checks", { query: { id: `eq.${id}`, select: "log,public_envelope,share_token_hash,published_at", limit: "1" } });
+    const row = data?.[0];
+    return row ? { ...row.log, _sharing: { envelope: row.public_envelope, tokenHash: row.share_token_hash, publishedAt: row.published_at } } : null;
+  }
   try {
     const token = blobToken();
     const { list } = await blob();
@@ -163,11 +260,71 @@ export async function getCheckLog(id) {
     const item = found.blobs.find((candidate) => candidate.pathname === pathname);
     if (!item) return null;
     const response = await fetch(item.url, { headers: { Authorization: `Bearer ${token}` } });
-    if (!response.ok) return null;
+    if (!response.ok) throw new StorageError("storage_request_failed", response.status);
     return await response.json();
-  } catch {
-    return null;
+  } catch (error) {
+    reportStorageError("read", "blob", error);
+    throw new StorageError("storage_read_failed");
   }
+}
+
+export function validCheckId(id) {
+  return typeof id === "string" && /^[a-z0-9-]{1,100}$/i.test(id);
+}
+
+export async function getCheckLog(id) {
+  const record = await readCheckRecord(id);
+  if (!record) return null;
+  const { _sharing, ...privateLog } = record;
+  return privateLog;
+}
+
+export async function saveSuccessfulCheck(entry, envelope) {
+  const shareToken = randomBytes(32).toString("base64url");
+  const at = entry.at ?? new Date().toISOString();
+  const sharing = {
+    tokenHash: createHash("sha256").update(shareToken).digest("hex"),
+    envelope: publicCheckEnvelope(envelope, { checkId: entry.id, createdAt: at }),
+    publishedAt: null,
+  };
+  const id = await saveCheckLog({ ...entry, at }, { sharing });
+  return id ? { persisted: true, ...(entry.outcome === "content_refused" ? {} : { shareToken }) } : { persisted: false };
+}
+
+export async function getPublishedCheck(id) {
+  if (!validCheckId(id) || !logEnabled()) return null;
+  if (logMode() === "supabase") {
+    const { data } = await supabaseRequest("iev_checks", { query: { id: `eq.${id}`, published_at: "not.is.null", outcome: "neq.content_refused", select: "public_envelope", limit: "1" } });
+    return data?.[0]?.public_envelope ? publicCheckEnvelope(data[0].public_envelope) : null;
+  }
+  const record = await readCheckRecord(id);
+  return record?._sharing?.publishedAt && record.outcome !== "content_refused"
+    ? publicCheckEnvelope(record._sharing.envelope) : null;
+}
+
+export async function publishCheck(id, token) {
+  const record = await readCheckRecord(id);
+  const expected = record?._sharing?.tokenHash;
+  const actual = createHash("sha256").update(token).digest();
+  const hash = typeof expected === "string" && /^[a-f0-9]{64}$/.test(expected) ? Buffer.from(expected, "hex") : Buffer.alloc(32);
+  const authorized = timingSafeEqual(actual, hash);
+  if (!authorized || !expected || !record?._sharing?.envelope || record.outcome === "content_refused") return false;
+  if (record._sharing.publishedAt) return true;
+  const publishedAt = new Date().toISOString();
+  if (logMode() === "supabase") {
+    const { data } = await supabaseRequest("iev_checks", {
+      method: "PATCH",
+      query: { id: `eq.${id}`, share_token_hash: `eq.${expected}`, outcome: "neq.content_refused", select: "id" },
+      body: { published_at: publishedAt }, prefer: "return=representation",
+    });
+    if (!data?.length) throw new StorageError("storage_publish_failed");
+  } else {
+    const { put } = await blob();
+    await put(`iev-logs/${id}.json`, JSON.stringify({ ...record, _sharing: { ...record._sharing, publishedAt } }), {
+      access: "private", contentType: "application/json", token: blobToken(), allowOverwrite: true,
+    });
+  }
+  return true;
 }
 
 /**
@@ -176,7 +333,9 @@ export async function getCheckLog(id) {
  */
 export async function appendCorrectionToLog(id, { protocol, note, actor, status } = {}) {
   if (!logEnabled()) return { ok: false, error: "log_disabled" };
-  const record = await getCheckLog(id);
+  let record;
+  try { record = await readCheckRecord(id); }
+  catch { return { ok: false, error: "storage_read_failed" }; }
   if (!record) return { ok: false, error: "not_found" };
   const at = new Date().toISOString();
   const updated = {
@@ -188,13 +347,20 @@ export async function appendCorrectionToLog(id, { protocol, note, actor, status 
     ],
   };
   try {
+    if (logMode() === "supabase") {
+      const { _sharing, ...log } = updated;
+      await supabaseRequest("iev_checks", { method: "PATCH", query: { id: `eq.${id}` }, body: { log, index_entry: indexEntry(log) }, prefer: "return=minimal" });
+      return { ok: true, record: log };
+    }
     const token = blobToken();
     const { put } = await blob();
     await put(`iev-logs/${id}.json`, JSON.stringify(updated), {
       access: "private", contentType: "application/json", token, allowOverwrite: true,
     });
-    return { ok: true, record: updated };
+    const { _sharing, ...log } = updated;
+    return { ok: true, record: log };
   } catch (error) {
-    return { ok: false, error: String(error?.message ?? "write_failed").slice(0, 120) };
+    reportStorageError("correction", logMode(), error);
+    return { ok: false, error: "storage_write_failed" };
   }
 }

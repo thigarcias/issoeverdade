@@ -4,6 +4,42 @@ Execução do [plano](admin-overview-plano.md) nas fases 1–5. Cada linha apont
 evidência verificável no código e a verificação executada. Registros antigos
 continuam sendo evidência da execução preservada, não prova de comportamento atual.
 
+## Supabase, compartilhamento e diagnóstico por ID
+
+- Migração: `supabase/migrations/202610140001_private_checks.sql`. Cria
+  `iev_checks`, índices e RPC `iev_list_checks`; RLS habilitada/forçada e
+  privilégios diretos de `anon`/`authenticated` revogados. Não altera tabelas
+  existentes do catálogo. Acesso privado depende de URL e service-role no servidor.
+- Registros usam Supabase quando configurada; Blob continua como armazenamento
+  existente quando Supabase não está configurada, sem fallback em falhas da Supabase.
+  A interface informa falhas, sem apresentá-las como consulta vazia bem-sucedida.
+- ADMIN consulta ID/texto de entrada, veredito, estado, tipo e período, com
+  ordenação e paginação globais. A consulta SQL retorna total exato dos filtros.
+  Erros destacam código, fase, provedor/modelo e status HTTP disponível; mensagens
+  brutas de falhas de provedor não são gravadas como código de erro.
+- Cada execução, inclusive acerto de cache, recebe ID/capacidade própria.
+  Compartilhamento só ocorre após publicação explícita autorizada; leitura pública
+  usa projeção recursiva de campos permitidos, sem logs, transcrição bruta ou
+  segredos. A capacidade não entra no cache de IA nem no registro administrativo.
+- Verificação: 246 testes passaram no conjunto completo; após substituir um teste
+  de encaminhamento por validação comportamental de consultas inválidas, os nove
+  testes de `server/checks.test.js` passaram novamente. Build concluído; lint sem
+  erros, com dez avisos React em `Admin`, `App`, `Verifier` e `ShareDialog`.
+- Smoke SQL em PostgreSQL embutido (PGlite, fora do repositório): migração aplicada
+  duas vezes, tabela sentinela do catálogo preservada; leitura/escrita/RPC negadas
+  a `anon`/`authenticated`; publicação e consulta pelo backend; busca literal
+  com `%_`, ID, estado/tipo/período/veredito, totais, ordenação e paginação
+  exercitados contra SQL real. O transporte REST foi adaptado localmente ao banco;
+  isso não verifica a implantação PostgREST/Supabase em nuvem.
+- Smoke no Vite/navegador: configuração sem service-role mostrou indisponibilidade
+  real. Com respostas de API simuladas e isoladas, publicação explícita, abertura
+  pública com data preservada, 404 privado, busca/paginação e falha visível do
+  ADMIN foram exercitados; cards de erro em 390px sem overflow horizontal.
+- **Ativação real pendente:** aplicar migração no projeto Supabase e configurar
+  `SUPABASE_SERVICE_ROLE_KEY` somente no servidor. URL e ANON existentes não bastam.
+  Não foi alegada nem realizada persistência no projeto remoto nesta verificação.
+
+
 ## Remodelação visual do painel
 
 O admin usa `src/admin.css`, com estilos restritos ao painel, login, diálogo

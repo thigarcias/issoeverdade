@@ -200,7 +200,14 @@ function claimLabel(claim, index) {
   return `${index + 1}. ${CLAIM_ICON[claim.status] ?? "?"} ${status.label.toUpperCase()} · ${claim.score == null ? "SEM NOTA" : `${claim.score}/100`}`;
 }
 
-export function buildShareText(result, { origin, pathname = "/" }) {
+/** Nunca usa a página inicial como se fosse o link de um resultado privado. */
+export function publishedCheckUrl(result, { origin = "" } = {}) {
+  return result?.published === true && result?.id
+    ? `${origin}/?check=${encodeURIComponent(result.id)}`
+    : null;
+}
+
+export function buildShareText(result, { origin = "" } = {}) {
   const content = shareCardContent(result);
   const label = VERDICTS[result?.verdict]?.label ?? "Sem veredito";
   const sections = [content.title, result?.score == null ? `${label} · nota indisponível` : `${label} · nota ${result.score}/100`];
@@ -213,7 +220,8 @@ export function buildShareText(result, { origin, pathname = "/" }) {
   sections.push(content.sources.length ? ["FONTES CONSULTADAS (não são comprovação por si só)", ...content.sources.map(sourceText)].join("\n") : "Nenhuma fonte documental disponível no resultado.");
   sections.push(result?.score == null ? "Checagem automática · nota indisponível não significa falsidade." : "Checagem automática · a nota não é probabilidade calibrada.");
   if (result?.id) sections.push(`ID ${result.id} · confira correções em ${origin}/correcoes.html?checkId=${encodeURIComponent(result.id)}`);
-  sections.push(`Confira você também em ${origin}${pathname}`);
+  const permalink = publishedCheckUrl(result, { origin });
+  if (permalink) sections.push(`Confira esta checagem em ${permalink}`);
   return sections.join("\n\n");
 }
 

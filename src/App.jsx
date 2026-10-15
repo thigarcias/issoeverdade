@@ -9,6 +9,7 @@ import Admin from "./components/Admin.jsx";
 import HowItWorks from "./components/HowItWorks.jsx";
 import { VERDICTS, migrateVerdict } from "./data/constants.js";
 import { useToast } from "./lib/hooks.js";
+import { getPublishedCheck } from "./lib/api.js";
 import { ArrowUpRight, BookOpen, ChevronDown, History, LockKeyhole } from "lucide-react";
 import "./home.css";
 const HISTORY_KEY = "iev-history-v2";
@@ -30,9 +31,13 @@ export default function App() {
   const { message, show } = useToast();
   const [openResult, setOpenResult] = useState(null);
   const [shareResult, setShareResult] = useState(null);
+  const [publishedCheckId, setPublishedCheckId] = useState(null);
   const [history, setHistory] = useState(loadHistory);
   const [quickInput, setQuickInput] = useState(null);
   const [heroCollapsed, setHeroCollapsed] = useState(false);
+  const [sharedCheckId, setSharedCheckId] = useState(() => new URLSearchParams(location.search).get("check"));
+  const [sharedState, setSharedState] = useState(null);
+  const [sharedRetry, setSharedRetry] = useState(0);
   const aboutRef = useRef(null);
   const howRef = useRef(null);
 
@@ -62,6 +67,28 @@ export default function App() {
       : "Checagem concluída sem veredito factual.");
   }
 
+  function handlePublished(result) {
+    setPublishedCheckId(result.id);
+    setHistory((items) => items.map((item) => item.id === result.id ? { ...item, published: true } : item));
+    setOpenResult((item) => item?.id === result.id ? { ...item, published: true } : item);
+  }
+
+  function openShare(result) {
+    const stored = history.find((item) => item.id === result.id);
+    setShareResult(stored?.published ? { ...result, published: true } : result);
+  }
+
+  function closeResult() {
+    setOpenResult(null);
+    setSharedState(null);
+    if (sharedCheckId) {
+      const url = new URL(location.href);
+      url.searchParams.delete("check");
+      window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+      setSharedCheckId(null);
+    }
+  }
+
   function handleQuickCheck(value) {
     setHeroCollapsed(true);
     setQuickInput(value);
@@ -71,6 +98,7 @@ export default function App() {
   useEffect(() => {
     function onLocation() {
       setIsAdmin(location.pathname === "/admin" || location.hash.startsWith("#/admin"));
+      setSharedCheckId(new URLSearchParams(location.search).get("check"));
     }
     window.addEventListener("hashchange", onLocation);
     window.addEventListener("popstate", onLocation);
@@ -79,6 +107,27 @@ export default function App() {
       window.removeEventListener("popstate", onLocation);
     };
   }, []);
+
+  useEffect(() => {
+    if (!sharedCheckId || isAdmin) return;
+    const controller = new AbortController();
+    setOpenResult(null);
+    setSharedState({ status: "loading" });
+    getPublishedCheck(sharedCheckId, { signal: controller.signal })
+      .then((result) => {
+        if (controller.signal.aborted) return;
+        setOpenResult(result);
+        setSharedState(null);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setSharedState({
+          status: error.status === 404 ? "not-found" : "error",
+          message: error.message || "Não foi possível carregar a checagem compartilhada.",
+        });
+      });
+    return () => controller.abort();
+  }, [sharedCheckId, sharedRetry, isAdmin]);
 
   if (isAdmin) {
     return (
@@ -103,7 +152,7 @@ export default function App() {
               <div><p className="section-kicker">01 / Verificar</p><h2>O contexto faz a diferença.</h2></div>
               <p className="section-blurb">Escolha o formato e envie o material. A análise separa afirmações, evidências e o que ainda não pode ser concluído.</p>
             </div>
-            <Verifier showToast={show} onChecked={handleChecked} quickInput={quickInput} onShareCard={setShareResult} />
+            <Verifier showToast={show} onChecked={handleChecked} quickInput={quickInput} onShareCard={openShare} publishedCheckId={publishedCheckId} />
           </section>
 
           <section className="section" id="recentes" aria-label="Suas checagens">
@@ -112,7 +161,7 @@ export default function App() {
               <span className="section-count"><History size={15} aria-hidden="true" />{history.length} neste navegador</span>
             </div>
             <p className="section-blurb">
-              Seu histórico fica só neste navegador. Abra uma checagem para rever as afirmações, as fontes e os limites da análise.
+              A lista do seu histórico fica neste navegador. Checagens podem ser armazenadas de forma privada no servidor quando a persistência está disponível; só ficam públicas quando você escolhe publicar um link. Abra uma checagem para rever as afirmações, as fontes e os limites da análise.
             </p>
             <div style={{ marginTop: 14 }}>
               <Feed items={history} onOpen={setOpenResult} />
@@ -161,8 +210,8 @@ export default function App() {
           <p className="footer-note">Checagem automática, não apuração independente. Consulte as evidências e os limites de cada resultado.</p>
         </div>
       </footer>
-      <DetailDialog result={openResult} onClose={() => setOpenResult(null)} showToast={show} onShareCard={setShareResult} />
-      <ShareDialog result={shareResult} onClose={() => setShareResult(null)} showToast={show} />
+      <DetailDialog result={openResult} state={sharedState} onRetry={() => setSharedRetry((value) => value + 1)} onClose={closeResult} showToast={show} onShareCard={openShare} />
+      <ShareDialog result={shareResult} onClose={() => setShareResult(null)} showToast={show} onPublished={handlePublished} />
       <div id="toast" role="status" className={message ? "show" : ""}>
         {message}
       </div>

@@ -269,17 +269,24 @@ test("comparação calculada exige suporte do grupo e só então promove unprove
   }
 });
 
-test("mistura de claim comprovado com desconhecidos nunca cria score agregado", () => {
-  for (const unknownCount of [1, 3, 49]) {
+test("nota geral exige pelo menos metade das afirmações com nota", () => {
+  for (const unknownCount of [1, 2, 3, 49]) {
     const raw = resultFor("true");
     raw.claims.push(...Array.from({ length: unknownCount }, () => resultFor("unproven", []).claims[0]));
     const { fixed } = validateResult(raw);
     assert.equal(fixed.claims[0].score, 95);
-    assertUnknown(fixed, { total: unknownCount + 1, assessed: 1, unproven: unknownCount, omitted: 0 });
+    if (unknownCount === 1) {
+      assert.equal(fixed.score, 95);
+      assert.equal(fixed.verdict, "true");
+      assert.equal(fixed.claims[1].score, null);
+      assert.deepEqual(validateResult(fixed).fixed, fixed);
+    } else {
+      assertUnknown(fixed, { total: unknownCount + 1, assessed: 1, unproven: unknownCount, omitted: 0 });
+    }
   }
 });
 
-test("média arredondada só é calculada com todos os claims avaliados", () => {
+test("média arredondada preserva notas individuais e exclui opiniões", () => {
   const raw = resultFor("true");
   raw.claims.push(resultFor("context", [evidenceFor("supports")]).claims[0]);
   raw.notCheckedClaims = [{ text: "Acho isso bom.", reason: "Opinião" }];
@@ -298,7 +305,7 @@ test("claim refutado impede selo de confirmação em cobertura completa", () => 
   assert.equal(fixed.verdict, "distorted");
   assert.deepEqual(fixed.coverage, { total: 4, assessed: 4, unproven: 0, omitted: 0 });
   raw.claims.push(resultFor("unproven", []).claims[0]);
-  assertUnknown(validateResult(raw).fixed, { total: 5, assessed: 4, unproven: 1, omitted: 0 });
+  assert.equal(validateResult(raw).fixed.score, 64);
 });
 
 test("limite de cinquenta claims mantém omissões separadas e revalidação coerente", () => {
@@ -310,8 +317,8 @@ test("limite de cinquenta claims mantém omissões separadas e revalidação coe
     assert.equal(fixed.omittedClaimsCount, count - 50);
     assert.deepEqual(fixed.coverage, { total: count, assessed: 50, unproven: 0, omitted: count - 50 });
     assert.equal(fixed.outcome, count === 50 ? "checked" : "partial_coverage");
-    assert.equal(fixed.score, count === 50 ? 95 : null);
-    assert.equal(fixed.verdict, count === 50 ? "true" : "unproven");
+    assert.equal(fixed.score, 95);
+    assert.equal(fixed.verdict, "true");
     assert.deepEqual(validateResult(fixed).fixed, fixed);
   }
 });
@@ -321,7 +328,8 @@ test("omissões declaradas somam-se ao limite sem duplicação na revalidação"
   raw.claims = Array.from({ length: 51 }, () => resultFor("true").claims[0]);
   raw.omittedClaimsCount = 3;
   const { fixed } = validateResult(raw);
-  assertUnknown(fixed, { total: 54, assessed: 50, unproven: 0, omitted: 4 });
+  assert.equal(fixed.score, 95);
+  assert.deepEqual(fixed.coverage, { total: 54, assessed: 50, unproven: 0, omitted: 4 });
   assert.equal(fixed.omittedClaimsCount, 4);
   assert.equal(fixed.outcome, "partial_coverage");
   assert.deepEqual(validateResult(fixed).fixed, fixed);
@@ -335,7 +343,8 @@ test("partial_coverage aceito não descarta claims já avaliados", () => {
     const { fixed } = validateResult(raw);
     assert.equal(fixed.outcome, "partial_coverage");
     assert.equal(fixed.claims[0].status, "true");
-    assertUnknown(fixed, { total: 1 + omitted, assessed: 1, unproven: 0, omitted });
+    if (omitted === 0) assert.equal(fixed.score, 95);
+    else assertUnknown(fixed, { total: 1 + omitted, assessed: 1, unproven: 0, omitted });
     assert.deepEqual(validateResult(fixed).fixed, fixed);
   }
 });

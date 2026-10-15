@@ -132,7 +132,7 @@ continuam sendo por instância; não são agregações históricas da Supabase.
   Os quadros selecionados são moderados individualmente (uma imagem por
   requisição), agregando categorias e o maior score observado. Falha mantém
   bloqueio em modo obrigatório; os motivos ficam no registro de erro do Admin.
-- **Pesquisa e auditoria opcional** (`fact-check-16`, `server/evidence.js`): a
+- **Pesquisa e auditoria opcional** (`fact-check-18`, `server/evidence.js`): a
   avaliação principal usa busca web com proveniência de URLs, vínculos por
   afirmação e validação determinística. **O coletor documental fica desativado
   por padrão**; somente `IEV_EVIDENCE_FETCH=1` ativa obtenção HTML/PDF, localização
@@ -284,7 +284,7 @@ captcha, streams protegidos e conteúdo removido continuam limitações externas
 
 ## Metodologia e avaliação
 
-As novas checagens usam `fact-check-16`: investigam alegações implícitas em
+As novas checagens usam `fact-check-18`: desmentidos fundamentados do mesmo rumor sobre medida futura podem refutá-lo sem exigir certeza sobre decisões futuras; negativa isolada não basta. A nota geral exige ao menos 50% das afirmações pontuadas (incluindo omitidas no total), com média apenas das notas disponíveis. Investigam alegações implícitas em
 perguntas e justaposições, preservando comparação factual, atribuição e escopo.
 O fluxo principal executa avaliação com busca (`judge`), pesquisa direcionada
 condicional de notícias (`article-research`), saneamento e validação

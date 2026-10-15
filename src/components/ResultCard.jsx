@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowUpRight, BookOpen, ChevronDown, Copy, Flag, Link2, Play, Share2 } from "lucide-react";
+import { ArrowUpRight, BookOpen, ChevronDown, Copy, Flag, Link2, Share2 } from "lucide-react";
 import { ASSESSMENT_BASIS, CLAIM_STATUS, EVIDENCE_SUPPORT, VERDICTS, evidenceReviewLabel, evidenceVerificationLabel } from "../data/constants.js";
 import ScoreRing from "./ScoreRing.jsx";
 import { copyText } from "../lib/hooks.js";
@@ -98,6 +98,24 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
   const verdict = VERDICTS[result.verdict];
   const origin = result.origin;
   const [imgOk, setImgOk] = useState(true);
+  useEffect(() => setImgOk(true), [origin?.thumbnail]);
+  const title = result.title?.replace(/^Checagem:\s*/i, "").trim();
+  const contentTitle = title && !/^https?:\/\//i.test(title)
+    ? title
+    : result.claims?.[0]?.text || origin?.title || "Conteúdo enviado para análise";
+  const original = origin?.url && (
+    <a className="origin-card" href={origin.url} target="_blank" rel="noreferrer">
+      {origin.thumbnail && imgOk && (
+        <img src={origin.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setImgOk(false)} />
+      )}
+      <span className="origin-meta">
+        <b><Link2 size={16} aria-hidden="true" /> Ver postagem original</b>
+        <small>{origin.url}</small>
+        {(origin.author || origin.platform) && <small>{[origin.author, origin.platform].filter(Boolean).join(" · ")}</small>}
+      </span>
+      <ArrowUpRight className="out" size={18} aria-hidden="true" />
+    </a>
+  );
   const shareText = buildShareText(result, typeof location !== "undefined" ? location : { origin: "", pathname: "/" });
   const reportUrl = `/correcoes.html?source=${encodeURIComponent(reportSource)}${result.id ? `&checkId=${encodeURIComponent(result.id)}` : ""}`;
 
@@ -105,7 +123,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
     return (
       <article aria-live="polite" className="result-anim">
         <span className="result-eyebrow">LEITURA DA ANÁLISE</span>
-        {origin?.title && <h3 className="no-verdict-title" id={titleId}>{origin.title}</h3>}
+        <h3 className="no-verdict-title" id={titleId}>{contentTitle}</h3>
         <span className="chip tint-info"><i /> {NO_VERDICT_LABEL[result.outcome] ?? "Sem veredito"}</span>
         {result.summary?.trim() && <p className="result-summary">{result.summary}</p>}
         <MediaCoverageNote result={result} />
@@ -118,7 +136,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
         )}
         <p className="score-legend">Nenhuma nota ou conclusão factual foi atribuída; o motivo e os limites estão descritos acima.</p>
         <EvidenceNote result={result} />
-        {result.origin?.url && <a className="original-link" href={result.origin.url} target="_blank" rel="noreferrer"><Link2 size={16} aria-hidden="true" /> Abrir conteúdo original <ArrowUpRight size={15} aria-hidden="true" /></a>}
+        {original}
         <div className="result-actions">
           <button className="btn primary" onClick={() => onShareCard?.(result)}>
             <Share2 size={16} aria-hidden="true" /> Compartilhar card
@@ -143,34 +161,6 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
 
   return (
     <article aria-live="polite" className="result-anim">
-      {origin && (origin.thumbnail || origin.title) && (
-        <a
-          className="origin-card"
-          href={origin.url}
-          target="_blank"
-          rel="noreferrer"
-          aria-label={`Abrir conteúdo original: ${origin.title ?? origin.url}`}
-        >
-          {origin.thumbnail && imgOk ? (
-            <img
-              src={origin.thumbnail}
-              alt=""
-              loading="lazy"
-              referrerPolicy="no-referrer"
-              onError={() => setImgOk(false)}
-            />
-          ) : (
-            <span className="origin-play" aria-hidden="true"><Play size={24} /></span>
-          )}
-          <span className="origin-meta">
-            <b>{origin.title ?? "Conteúdo original"}</b>
-            <small>
-              {[origin.author, origin.platform].filter(Boolean).join(" · ")}
-            </small>
-          </span>
-          <ArrowUpRight className="out" size={18} aria-hidden="true" />
-        </a>
-      )}
 
       <div className="result-head">
         {result.score != null && <AnimatedScore score={result.score} color={verdict.color} />}
@@ -181,11 +171,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
             </span>
           </span>
           <h3 id={titleId} style={{ marginTop: 8 }}>
-            {origin?.title ? (
-              <>É {verdict.label.toLowerCase()}.</>
-            ) : (
-              result.title
-            )}
+            {contentTitle}
           </h3>
           <p className="meta">
             <span>{result.kind}</span>
@@ -196,6 +182,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
           </p>
         </div>
       </div>
+      {original}
       <p className="score-legend">
         {result.score == null
           ? "Nota indisponível: há afirmações sem comprovação ou sem análise. Falta de evidência não significa falsidade."

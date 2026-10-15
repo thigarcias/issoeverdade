@@ -22,10 +22,11 @@ function kindLabel(input) {
   return "Texto";
 }
 
-function titleFrom(input) {
-  const raw = (input.text || input.fileName || "conteúdo enviado").trim();
-  const short = raw.length > 90 ? `${raw.slice(0, 90)}…` : raw;
-  return `Checagem: ${short}`;
+function titleFrom(input, raw, origin) {
+  const candidates = [origin?.title, raw?.claims?.[0]?.text, input.kind === "text" ? input.text : "", input.fileName];
+  const title = candidates.find((value) => typeof value === "string" && value.trim() && !/^https?:\/\//i.test(value.trim()));
+  const text = title?.trim() || "Conteúdo enviado para análise";
+  return text.length > 200 ? `${text.slice(0, 197)}…` : text;
 }
 
 /** Normaliza o JSON do modelo para o formato que o ResultCard espera. */
@@ -86,7 +87,7 @@ function normalize(raw, input, origin, createdAt) {
     outcome: raw?.outcome ?? "legacy",
     outcomeLabel: OUTCOME_LABEL[raw?.outcome] ?? null,
     score: clamp(raw?.score, null),
-    title: origin?.title ?? titleFrom(input),
+    title: titleFrom(input, raw, origin),
     kind: kindLabel(input),
     author: origin?.author ?? "checagem por IA",
     createdAt: createdAt ?? new Date().toISOString(),
@@ -98,7 +99,7 @@ function normalize(raw, input, origin, createdAt) {
     omittedClaimsCount: Number(raw?.omittedClaimsCount) || 0,
     coverage: raw?.coverage ?? null,
     sources,
-    origin: origin ?? null,
+    origin: origin ?? (/^https?:\/\//i.test(input.text?.trim() ?? "") ? { url: input.text.trim() } : null),
     cached: Boolean(raw?.cached),
     cachedFrom: raw?.cachedFrom ?? null,
     modelsUsed: raw?.modelsUsed ?? {},

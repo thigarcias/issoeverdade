@@ -5,6 +5,12 @@ imagem ou vídeo/áudio e receba um resultado com afirmações, evidências vinc
 limites explícitos e, quando houver base, uma nota 0–100. A nota **não** é
 probabilidade calibrada e o sistema pode não atribuir veredito.
 
+O cabeçalho do resultado prioriza o título original da postagem; quando ele não
+está disponível, usa a primeira afirmação analisada, sem o prefixo “Checagem:”
+ou uma URL como título. Links enviados têm um bloco clicável com a URL original
+visível e thumbnail quando fornecida pela extração. Sem imagem ou se ela falhar,
+o link permanece disponível, sem miniatura artificial.
+
 ## Rodar localmente
 
 ```bash

@@ -726,8 +726,7 @@ main {
   gap: 16px;
 }
 
-.verify-result-mode .origin-card img,
-.verify-result-mode .origin-play {
+.verify-result-mode .origin-card img {
   width: 160px;
   height: 96px;
 }
@@ -2012,20 +2011,9 @@ textarea.input-plain {
 .origin-meta small {
   font: 400 var(--t-micro) / 1.4 var(--sans);
   color: var(--fg-4);
+  overflow-wrap: anywhere;
 }
 
-.origin-play {
-  width: 88px;
-  height: 64px;
-  border-radius: 8px;
-  border: 1px solid var(--line-2);
-  background: var(--ink);
-  color: var(--bg);
-  display: grid;
-  place-items: center;
-  font-size: 20px;
-  flex: none;
-}
 
 .origin-card .out {
   color: var(--fg-4);
@@ -2612,8 +2600,7 @@ dialog::backdrop {
     height: 54px;
   }
 
-  .verify-result-mode .origin-card img,
-  .verify-result-mode .origin-play {
+  .verify-result-mode .origin-card img {
     width: 72px;
     height: 54px;
   }

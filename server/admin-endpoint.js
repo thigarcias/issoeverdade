@@ -70,27 +70,34 @@ function secretMatches(authorization, secret) {
 }
 
 /**
- * Cobra a falha de autenticação na trava por origem e devolve o `Retry-After`
- * quando o limite foi esgotado. Só é chamada depois de uma chave recusada, então
- * nunca consome tentativas legítimas nem permite bloquear o acesso com a chave
- * correta.
+ * Consulta o bloqueio antes de comparar credenciais; só incrementa nas falhas.
+ * Uma origem bloqueada não pode testar nem mesmo a chave correta até o TTL.
  */
-async function noteAuthFailure({ headers, socketAddress, env }) {
+async function authLimit({ headers, socketAddress, env }, failed = false) {
   const identity = clientIp(headers, socketAddress, env);
   const options = { bucket: AUTH_BUCKET, max: AUTH_FAILURE_LIMIT, windowSec: AUTH_FAILURE_WINDOW_SEC };
+  const check = async (guard) => {
+    if (failed) {
+      const rate = await guard.rateLimit(identity, options);
+      return rate.allowed ? null : rate.retryAfterSec ?? AUTH_FAILURE_WINDOW_SEC;
+    }
+    const key = `iev:limits:v1:rate:${AUTH_BUCKET}:${identity}`;
+    const hits = Number(await guard.store.get(key));
+    if (hits < AUTH_FAILURE_LIMIT) return null;
+    const ttl = await guard.store.ttl(key);
+    return ttl > 0 ? ttl : AUTH_FAILURE_WINDOW_SEC;
+  };
   const guard = activeGuard(env);
   if (guard.store) {
     try {
-      const rate = await guard.rateLimit(identity, options);
-      return rate.allowed ? null : rate.retryAfterSec ?? AUTH_FAILURE_WINDOW_SEC;
+      return await check(guard);
     } catch (error) {
       // Contador compartilhado indisponível: cai no contador local em vez de
       // liberar tentativas sem trava.
       reportStorageError("admin-auth-limit", logMode(), error);
     }
   }
-  const local = await localAuthGuard.rateLimit(identity, options);
-  return local.allowed ? null : local.retryAfterSec ?? AUTH_FAILURE_WINDOW_SEC;
+  return check(localAuthGuard);
 }
 
 /** Estado operacional exibido no painel: modos e limites, sem segredos. */
@@ -126,9 +133,10 @@ export async function handleAdminRequest({ method, headers = {}, query = {}, bod
   const secret = env.ADMIN_SECRET || "";
   if (!secret) return jsonError(503, { error: "admin_disabled" });
   if (secret.length < MIN_SECRET_CHARS) return jsonError(503, { error: "admin_secret_too_weak", minLength: MIN_SECRET_CHARS, message: `ADMIN_SECRET tem menos de ${MIN_SECRET_CHARS} caracteres. O painel fica desabilitado até configurar um segredo aleatório maior (openssl rand -hex 32).` });
+  const retryAfterSec = await authLimit({ headers, socketAddress, env });
+  if (retryAfterSec) return { status: 429, body: { error: "too_many_attempts", message: `Origem temporariamente bloqueada após falhas de autenticação. Tente novamente em ${retryAfterSec}s.` }, headers: { "Retry-After": String(retryAfterSec) } };
   if (!secretMatches(headers.authorization, secret)) {
-    const retryAfterSec = await noteAuthFailure({ headers, socketAddress, env });
-    if (retryAfterSec) return { status: 429, body: { error: "too_many_attempts", message: `Chave recusada repetidamente desta origem. Tente novamente em ${retryAfterSec}s.` }, headers: { "Retry-After": String(retryAfterSec) } };
+    await authLimit({ headers, socketAddress, env }, true);
     return jsonError(401, { error: "unauthorized" });
   }
 

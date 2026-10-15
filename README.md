@@ -112,10 +112,13 @@ continuam sendo por instância; não são agregações históricas da Supabase.
   `Authorization: Bearer ADMIN_SECRET` com mínimo de 32 caracteres — abaixo disso
   o endpoint responde `503 admin_secret_too_weak` em vez de aceitar a chave.
   A comparação é em tempo constante (SHA-256 + `timingSafeEqual`) e as falhas por
-  origem entram numa trava de 10 tentativas a cada 15 minutos (`429
+  origem entram numa trava após 10 falhas na janela de 15 minutos (`429
   too_many_attempts` com `Retry-After`), no armazenamento compartilhado quando
-  configurado ou por instância quando não há backend. A chave viaja em header
-  (imune a CSRF), fica em `sessionStorage` e nunca no bundle.
+  configurado ou por instância quando não há backend. O bloqueio é consultado
+  antes da comparação e recusa também a chave correta nessa origem até a janela
+  expirar; requisições bloqueadas não renovam o prazo. Chaves corretas fora do
+  bloqueio não consomem tentativas. A chave viaja em header (imune a CSRF), fica
+  em `sessionStorage` e nunca no bundle.
 - **Moderação** (`server/moderation.js`): triagem de propósito, moderação de
   texto e de imagens/frames, recusa só de conteúdo que não pode ser processado
   (abuso sexual infantil, sexual explícito) e cobertura de vídeo declarada

@@ -37,7 +37,7 @@ test("segredo abaixo do mínimo é recusado (fail-closed) em vez de aceito", asy
   assert.equal(aceito.status, 200);
 });
 
-test("falhas de chave são limitadas por origem e não bloqueiam a chave correta", async () => {
+test("dez falhas bloqueiam qualquer credencial apenas na origem afetada", async () => {
   const origem = { "x-forwarded-for": "203.0.113.9" };
   const errada = { authorization: "Bearer chave-errada", ...origem };
   for (let i = 0; i < AUTH_FAILURE_LIMIT; i++) {
@@ -50,8 +50,8 @@ test("falhas de chave são limitadas por origem e não bloqueiam a chave correta
   // Outra origem continua apenas recusada: a trava é por IP, não global.
   const outraOrigem = await handleAdminRequest({ method: "GET", headers: { authorization: "Bearer chave-errada", "x-forwarded-for": "198.51.100.7" }, query: {} });
   assert.equal(outraOrigem.status, 401);
-  // A chave correta nunca entra na contagem: queimar tentativas não derruba o painel.
-  assert.equal((await handleAdminRequest({ method: "GET", headers: { ...auth, ...origem }, query: { metrics: "1" } })).status, 200);
+  assert.equal((await handleAdminRequest({ method: "GET", headers: { ...auth, ...origem }, query: { metrics: "1" } })).status, 429);
+  assert.equal((await handleAdminRequest({ method: "GET", headers: { ...auth, "x-forwarded-for": "198.51.100.7" }, query: { metrics: "1" } })).status, 200);
 });
 
 test("sem backend compartilhado a trava vale por instância", async () => {
@@ -61,7 +61,27 @@ test("sem backend compartilhado a trava vale por instância", async () => {
     assert.equal((await handleAdminRequest({ method: "GET", headers: errada, query: {}, env })).status, 401);
   }
   assert.equal((await handleAdminRequest({ method: "GET", headers: errada, query: {}, env })).status, 429);
-  assert.equal((await handleAdminRequest({ method: "GET", headers: { ...errada, ...auth }, query: { metrics: "1" }, env })).status, 200);
+  assert.equal((await handleAdminRequest({ method: "GET", headers: { ...errada, ...auth }, query: { metrics: "1" }, env })).status, 429);
+});
+
+test("credenciais válidas não gastam tentativas e o bloqueio expira sem renovação", async (t) => {
+  const inicio = Date.now();
+  t.mock.method(Date, "now", () => inicio);
+  const origem = { "x-forwarded-for": "203.0.113.42" };
+  const request = (authorization) => handleAdminRequest({ method: "GET", headers: { ...origem, authorization }, query: { metrics: "1" } });
+  for (let i = 0; i < AUTH_FAILURE_LIMIT + 1; i++) {
+    assert.equal((await request(auth.authorization)).status, 200);
+  }
+  for (let i = 0; i < AUTH_FAILURE_LIMIT; i++) {
+    assert.equal((await request("Bearer errada")).status, 401);
+  }
+  t.mock.method(Date, "now", () => inicio + 899_000);
+  const bloqueada = await request(auth.authorization);
+  assert.equal(bloqueada.status, 429);
+  assert.equal(bloqueada.headers["Retry-After"], "1");
+  t.mock.method(Date, "now", () => inicio + 900_000);
+  assert.equal((await request(auth.authorization)).status, 200);
+  assert.equal((await request("Bearer errada")).status, 401);
 });
 
 test("métricas somam desfechos e trazem estado do sistema", async () => {

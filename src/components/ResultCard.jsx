@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ArrowUpRight, BookOpen, ChevronDown, Copy, Flag, Link2, Play, Share2 } from "lucide-react";
 import { CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, VERDICTS } from "../data/constants.js";
 import ScoreRing from "./ScoreRing.jsx";
 import { copyText } from "../lib/hooks.js";
@@ -18,9 +19,7 @@ function SourceRow({ source }) {
   return (
     <a href={source.url} target="_blank" rel="noreferrer">
       {body}
-      <span className="out" aria-hidden="true">
-        ↗
-      </span>
+      <ArrowUpRight className="out" size={17} aria-hidden="true" />
     </a>
   );
 }
@@ -105,7 +104,8 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
   if (!verdict || (result.score == null && !result.claims?.length)) {
     return (
       <article aria-live="polite" className="result-anim">
-        {origin?.title && <h3>{origin.title}</h3>}
+        <span className="result-eyebrow">LEITURA DA ANÁLISE</span>
+        {origin?.title && <h3 className="no-verdict-title" id={titleId}>{origin.title}</h3>}
         <span className="chip tint-info"><i /> {NO_VERDICT_LABEL[result.outcome] ?? "Sem veredito"}</span>
         {result.summary?.trim() && <p className="result-summary">{result.summary}</p>}
         <MediaCoverageNote result={result} />
@@ -118,16 +118,16 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
         )}
         <p className="score-legend">Nenhuma nota ou conclusão factual foi atribuída; o motivo e os limites estão descritos acima.</p>
         <EvidenceNote result={result} />
-        {result.origin?.url && <a href={result.origin.url} target="_blank" rel="noreferrer">Abrir conteúdo original ↗</a>}
+        {result.origin?.url && <a className="original-link" href={result.origin.url} target="_blank" rel="noreferrer"><Link2 size={16} aria-hidden="true" /> Abrir conteúdo original <ArrowUpRight size={15} aria-hidden="true" /></a>}
         <div className="result-actions">
           <button className="btn primary" onClick={() => onShareCard?.(result)}>
-            Compartilhar card
+            <Share2 size={16} aria-hidden="true" /> Compartilhar card
           </button>
           <button className="btn" onClick={() => copyText(shareText, showToast)}>
-            Copiar texto
+            <Copy size={16} aria-hidden="true" /> Copiar texto
           </button>
           <a className="btn ghost" href={reportUrl}>
-            Reportar problema ou contestar
+            <Flag size={16} aria-hidden="true" /> Reportar problema ou contestar
           </a>
           <a className="btn ghost" href="/correcoes.html">Política de correções</a>
         </div>
@@ -160,7 +160,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
               onError={() => setImgOk(false)}
             />
           ) : (
-            <span className="origin-play" aria-hidden="true">▶</span>
+            <span className="origin-play" aria-hidden="true"><Play size={24} /></span>
           )}
           <span className="origin-meta">
             <b>{origin.title ?? "Conteúdo original"}</b>
@@ -168,9 +168,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
               {[origin.author, origin.platform].filter(Boolean).join(" · ")}
             </small>
           </span>
-          <span className="out" aria-hidden="true">
-            ↗
-          </span>
+          <ArrowUpRight className="out" size={18} aria-hidden="true" />
         </a>
       )}
 
@@ -208,6 +206,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
       <MediaCoverageNote result={result} />
       <EvidenceNote result={result} />
 
+      <h4 className="sec-label result-section-label">Afirmações analisadas <span>{result.claims.length}</span></h4>
       <ol className="claims">
         {result.claims.map((claim, i) => {
           const st = CLAIM_STATUS[claim.status] ?? CLAIM_STATUS.unproven;
@@ -229,6 +228,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
                         : `${linked.length} fonte${linked.length > 1 ? "s" : ""} vinculada${linked.length > 1 ? "s" : ""}`}
                     </small>
                   </span>
+                  <ChevronDown className="claim-chevron" size={17} aria-hidden="true" />
                 </summary>
                 <div className="claim-body">
                   <p>{claim.note}</p>
@@ -285,7 +285,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
 
       <div className="sources">
         <span className="sec-label">
-          Fontes encontradas · {result.sources.length}
+          <BookOpen size={16} aria-hidden="true" /> Fontes encontradas <span>{result.sources.length}</span>
         </span>
         <ul className="source-list">
           {result.sources.map((s) => (
@@ -298,13 +298,13 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
 
       <div className="result-actions">
         <button className="btn primary" onClick={() => onShareCard?.(result)}>
-          Compartilhar card
+          <Share2 size={16} aria-hidden="true" /> Compartilhar card
         </button>
         <button className="btn" onClick={share}>
-          Copiar texto
+          <Copy size={16} aria-hidden="true" /> Copiar texto
         </button>
         <a className="btn ghost" href={reportUrl}>
-          Reportar problema ou contestar
+          <Flag size={16} aria-hidden="true" /> Reportar problema ou contestar
         </a>
         <a className="btn ghost" href="/correcoes.html">Política de correções</a>
       </div>

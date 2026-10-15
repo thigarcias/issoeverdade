@@ -286,9 +286,51 @@ vazamento e `--require chave>=valor` para gates) e
 
 ## Design
 
-Creme `#F2ECDC`, tinta `#1A140C`, vermelho `#D9341F`, serifada Faustina + Geist,
-bordas duras e sombra offset. O shell administrativo reusa a identidade com
-tipografia sans para dados/controles e navegação lateral no desktop.
+Creme `#F2ECDC`, tinta `#1A140C`, vermelho `#D9341F`, serifada Faustina + Geist.
+Home e admin compartilham superfícies claras, bordas sutis, botões consistentes e
+ícones Lucide. O admin mantém navegação lateral no desktop. A home preserva a
+orientação original: bloco centralizado com “Isso é verdade?”, descrição e
+checagem rápida juntos, sem painel lateral. O campo e o botão ficam lado a lado
+no desktop e empilhados no celular; após o envio, o topo fica compacto.
+Verificador completo e histórico local mantêm o visual refinado.
+
+O topo centralizado foi conferido no navegador em 360, 390, 768, 1280 e 1568px,
+sem overflow horizontal. O envio de texto e o colapso do hero foram exercitados
+com resposta de API simulada; o build foi concluído.
+
+Os estilos da home ficam em `src/home.css` e `src/verifier.css`, escopados em
+`.home-page` para não alterar o admin. A apresentação cobre abas, uploads,
+progresso, erros, resultados, fontes, compartilhamento e transparência. Títulos
+longos do histórico têm prévia de até três linhas; o detalhe mantém o conteúdo.
+O texto da interface não promete tempo fixo nem conclusão factual quando falta
+evidência.
+Campos dentro de `.input-box` e `.search-box` usam o destaque de foco do
+contêiner, sem uma segunda borda no input. O foco por teclado permanece visível.
+
+Verificação da remodelação no Chromium/Vite: **360, 390, 768, 1280 e 1536 px**,
+com as quatro abas e resultados/histórico sem overflow horizontal da página.
+Foram exercitados checagem rápida de texto, entrada de link inválida, seleção e
+remoção de imagem, cancelamento, erro de serviço, resultado com evidências,
+resultado sem nota/veredito, busca no histórico, detalhe, prévia de
+compartilhamento, menu móvel e seções expansíveis. Respostas de checagem foram
+simuladas somente no navegador; não houve chamada de IA ou validação de
+persistência/upload no servidor. Build concluído; lint sem erros, com seis
+avisos de efeitos/renderização em `Admin.jsx`, `Verifier.jsx` e `ShareDialog.jsx`.
+
+As páginas estáticas `metodologia.html`, `correcoes.html` e `privacidade.html`
+compartilham `public/transparencia.css`: cabeçalho e rodapé no mesmo padrão,
+índice por âncoras, tipografia de leitura e layout responsivo. Políticas e textos
+técnicos permanecem integrais; não dependem de React ou JavaScript para leitura.
+O formulário de correções mantém os controles nativos, os contratos de
+`correcoes.js` e as regiões de status acessíveis. Há acesso direto à consulta de
+protocolo no topo da página.
+
+As três páginas foram conferidas no Chromium entre **360 e 1536 px** (incluindo
+390, 768 e 1280), sem overflow horizontal e sem âncoras internas quebradas.
+No canal de correções, respostas simuladas somente no navegador cobriram
+pré-preenchimento por URL, validação de mensagem curta, envio pendente,
+confirmação com protocolo, falha de gravação, consulta e protocolo inexistente.
+Nenhum pedido real foi registrado nessa verificação.
 
 No mobile, cabeçalhos, selos, controles e navegação administrativa quebram
 linha sem esconder conteúdo horizontalmente. URLs e autoria sem separadores
@@ -297,7 +339,7 @@ remoção. Os diálogos usam a largura disponível, e tabelas de comparação e 
 matriz de modelos empilham os campos com rótulos visíveis, mantendo os cabeçalhos
 para leitores de tela. Resumos ausentes não geram um parágrafo vazio.
 
-Prova visual em Chromium/Vite realizada em **320, 375 e 390 px**: formulário
+Verificação mobile anterior em Chromium/Vite realizada em **320, 375 e 390 px**:
 com nome de arquivo longo, progresso, resultado com fontes/URLs/autoria longas,
 comparações, detalhe do histórico, compartilhamento com e sem Web Share e
 checagens/modelos/detalhes do Admin ficaram com `scrollWidth` igual à largura

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { VERDICTS } from "../data/constants.js";
+import { ArrowRight, History, Search } from "lucide-react";
 
 const FILTERS = [
   { id: "all", label: "Todas" },
@@ -36,9 +37,11 @@ export default function Feed({ items: allItems, onOpen }) {
 
   if (allItems.length === 0) {
     return (
-      <div className="empty">
-        <h3>Nenhuma checagem ainda</h3>
-        <p>Cole um link, texto ou vídeo acima — suas checagens aparecem aqui.</p>
+      <div className="empty history-empty">
+        <span className="empty-icon"><History size={25} aria-hidden="true" /></span>
+        <h3>Sua próxima dúvida começa uma checagem.</h3>
+        <p>Ainda não há análises salvas neste navegador. Envie um texto, link ou mídia para começar.</p>
+        <a className="btn" href="#verificar">Fazer minha primeira checagem<ArrowRight size={16} aria-hidden="true" /></a>
       </div>
     );
   }
@@ -47,10 +50,7 @@ export default function Feed({ items: allItems, onOpen }) {
     <div>
       <div className="search-panel">
         <div className="search-box">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-            <circle cx="7" cy="7" r="4.5" />
-            <path d="m10.5 10.5 3 3" />
-          </svg>
+          <Search size={18} aria-hidden="true" />
           <input
             type="search"
             placeholder="Buscar nas suas checagens…"
@@ -142,7 +142,7 @@ export default function Feed({ items: allItems, onOpen }) {
                     <span className="meta">
                       {item.claims.length} {item.claims.length === 1 ? "afirmação" : "afirmações"} · {item.sources.length} {item.sources.length === 1 ? "fonte" : "fontes"}
                     </span>
-                    <span className="quiet-link">Ler checagem</span>
+                    <span className="quiet-link">Ler checagem<ArrowRight size={15} aria-hidden="true" /></span>
                   </div>
                 </article>
               </li>

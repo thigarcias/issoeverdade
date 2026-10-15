@@ -8,7 +8,7 @@ const STEPS = [
     text: "Áudio pode ser transcrito e quadros podem ser amostrados; isso não garante cobertura integral do vídeo nem autenticidade da imagem.",
   },
   {
-    title: "Separar afirmações e evidências",
+    title: "Relacionamos afirmações e evidências",
     text: "Cada afirmação verificável é comparada com evidências vinculadas. Uma fonte sobre o mesmo tema não basta para comprová-la.",
   },
   {

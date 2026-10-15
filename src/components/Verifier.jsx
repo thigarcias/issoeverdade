@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
+import { ArrowRight, BookOpen, Check, CircleAlert, CircleMinus, Clock3, FileCheck, FileText, Image as ImageIcon, Link2, ListChecks, LoaderCircle, Minus, RotateCcw, Scale, SearchCheck, UploadCloud, Video, X } from "lucide-react";
 import { ACTIVITY_STATE_LABEL, ACTIVITY_TEXT, VERDICTS, modalitySummary } from "../data/constants.js";
 import { verify } from "../lib/api.js";
 import { useServerLimits } from "../lib/hooks.js";
 import ResultCard from "./ResultCard.jsx";
+import "../verifier.css";
 
 const TABS = [
-  { id: "link", label: "Link" },
-  { id: "text", label: "Texto" },
-  { id: "video", label: "Vídeo / áudio" },
-  { id: "image", label: "Imagem" },
+  { id: "link", label: "Link", icon: Link2 },
+  { id: "text", label: "Texto", icon: FileText },
+  { id: "video", label: "Vídeo / áudio", icon: Video },
+  { id: "image", label: "Imagem", icon: ImageIcon },
 ];
 
 const PLACEHOLDERS = {
@@ -43,12 +45,12 @@ function fileFingerprint(file) {
 }
 const ACTIVITY_ORDER = ["source-classification", "media-probe", "media-acquisition", "media-upload", "media-metadata", "media-transcription", "media-vision", "judge", "article-research", "evidence", "evidence-review", "cache"];
 function activityDot(state) {
-  if (state === "done") return "✓";
-  if (state === "running") return "…";
-  if (state === "failed") return "!";
-  if (state === "limited") return "◐";
-  if (state === "skipped") return "–";
-  return "·";
+  if (state === "done") return <Check aria-hidden="true" />;
+  if (state === "running") return <LoaderCircle className="verifier-spinner" aria-hidden="true" />;
+  if (state === "failed") return <CircleAlert aria-hidden="true" />;
+  if (state === "limited") return <CircleMinus aria-hidden="true" />;
+  if (state === "skipped") return <Minus aria-hidden="true" />;
+  return <Clock3 aria-hidden="true" />;
 }
 export default function Verifier({ showToast, onChecked, quickInput, onShareCard }) {
   const limits = useServerLimits();
@@ -272,12 +274,12 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
   }
 
   return (
-    <div>
+    <div className="verifier-workspace">
       <div className={`verify-grid${result && !running && !expanded ? " verify-result-mode" : ""}${running && !result ? " verify-processing-mode" : ""}`}>
         <form className={`card${result && !running && !expanded ? " form-collapsed" : ""}${running && !result ? " form-hidden" : ""}`} onSubmit={handleSubmit} aria-label="Enviar conteúdo para checagem">
           <div className="hd">
             <h3>{result && !running ? "Checagem concluída" : "O que você quer checar?"}</h3>
-            <span className="aside">{result && !running ? (result.score != null ? `nota ${result.score}/100` : result.verdict ? "sem nota global" : "sem veredito") : "link · texto · vídeo · foto"}</span>
+            <span className="aside">{result && !running ? (result.score != null ? `nota ${result.score}/100` : result.verdict ? "sem nota global" : "sem veredito") : "Escolha um formato"}</span>
           </div>
 
           <div className="tabs" role="tablist" aria-label="Tipo de conteúdo">
@@ -301,6 +303,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                   document.getElementById(`tab-${next.id}`)?.focus();
                 }}
               >
+                <t.icon size={16} aria-hidden="true" />
                 {t.label}
               </button>
             ))}
@@ -313,9 +316,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                   Link da notícia, post ou vídeo
                 </label>
                 <div className="input-box">
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-                    <path d="M6.5 9.5a3 3 0 0 0 4.2 0l2-2a3 3 0 0 0-4.2-4.2l-1 1M9.5 6.5a3 3 0 0 0-4.2 0l-2 2a3 3 0 0 0 4.2 4.2l1-1" />
-                  </svg>
+                  <Link2 aria-hidden="true" />
                   <input
                     id="verify-input"
                     type="text"
@@ -365,9 +366,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                       Ou cole o link do vídeo
                     </label>
                     <div className="input-box">
-                      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-                        <path d="M6.5 9.5a3 3 0 0 0 4.2 0l2-2a3 3 0 0 0-4.2-4.2l-1 1M9.5 6.5a3 3 0 0 0-4.2 0l-2 2a3 3 0 0 0 4.2 4.2l1-1" />
-                      </svg>
+                      <Link2 aria-hidden="true" />
                       <input
                         id="verify-input"
                         type="text"
@@ -399,7 +398,11 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                     aria-labelledby="file-label"
                     onClick={() => fileInput.current?.click()}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") fileInput.current?.click();
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        fileInput.current?.click();
+                      }
                     }}
                     onDragOver={(e) => {
                       e.preventDefault();
@@ -414,6 +417,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                   >
                     {file ? (
                       <span className="file-pill">
+                        <FileCheck aria-hidden="true" />
                         <span>
                           {file.name} · {formatBytes(file.size)}
                         </span>
@@ -427,14 +431,15 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
                             clearRecovery();
                           }}
                         >
-                          ✕
+                          <X size={16} aria-hidden="true" />
                         </button>
                       </span>
                     ) : (
                       <>
+                        <span className="upload-icon"><UploadCloud size={26} aria-hidden="true" /></span>
                         <b>Arraste o arquivo ou clique para escolher</b>
                         <span>
-                          {tab === "video" ? "MP4, MOV, WebM ou áudio compatível" : "PNG, JPEG ou WebP"} · até 3 MB
+                          {tab === "video" ? "MP4, MOV, WebM ou áudio compatível" : "PNG, JPEG ou WebP"} · até {formatBytes(limits.maxUploadBytes)}
                         </span>
                       </>
                     )}
@@ -483,35 +488,36 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
           <div className="verify-actions">
             {result && !running && !expanded ? (
               <button className="btn big" type="button" onClick={() => setExpanded(true)}>
-                Checar outra coisa
+                <RotateCcw size={16} aria-hidden="true" /> Checar outra coisa
               </button>
             ) : (
               <>
                 <button className="btn primary big" type="submit" disabled={!canSubmit}>
+                  {running ? <LoaderCircle className="verifier-spinner" size={17} aria-hidden="true" /> : <ArrowRight size={17} aria-hidden="true" />}
                   {running ? "Checando…" : "Checar agora"}
                 </button>
                 {running && (
                   <button className="btn ghost" type="button" onClick={reset}>
-                    Cancelar
+                    <X size={16} aria-hidden="true" /> Cancelar
                   </button>
                 )}
                 {(result || text || imageContext || file) && !running && (
                   <button className="btn ghost" type="button" onClick={reset}>
-                    Limpar
+                    <RotateCcw size={16} aria-hidden="true" /> Limpar
                   </button>
                 )}
               </>
             )}
           </div>
           <p className="verify-hint" style={{ marginTop: 10 }}>
-            Grátis, sem conta. Mostramos o que é verdade e de onde veio a informação.
+            Sem cadastro. A análise reúne evidências e explicita o que não pôde ser verificado.
           </p>
         </form>
 
         <div className="card result-pane" aria-label="Resultado da checagem" ref={resultPane}>
           <div className="hd">
-            <h3>{result ? "Resultado" : running ? "Analisando…" : error ? "Algo deu errado" : "Seu resultado aparece aqui"}</h3>
-            <span className="aside">{result ? (result.score == null ? (result.verdict ? "sem nota global" : "sem veredito") : `nota ${result.score}/100`) : running ? "a IA está trabalhando" : "leva segundos"}</span>
+            <h3>{result ? "Resultado da análise" : running ? "Checagem em andamento" : error ? "Não foi possível concluir" : "Da dúvida ao contexto"}</h3>
+            <span className="aside">{result ? (result.score == null ? (result.verdict ? "sem nota global" : "sem veredito") : `nota ${result.score}/100`) : running ? "Etapas em tempo real" : error ? "Revise e tente novamente" : "Sua leitura, com evidências"}</span>
           </div>
           {result && !running && expanded && checkedInput &&
             ((tab === "image" ? "" : text.trim()) !== checkedInput.text || (tab === "image" ? imageContext.trim() : "") !== checkedInput.context || tab !== checkedInput.kind || fileFingerprint(file) !== checkedInput.fileFingerprint) && (
@@ -525,15 +531,14 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
 
           {running && !result && (
             <div className="processing-hero">
+              <span className="processing-symbol" aria-hidden="true"><SearchCheck size={30} /></span>
               <p className="thinking thinking-big" aria-live="polite">
-                <span className="thinking-dots" aria-hidden="true">
-                  <i /><i /><i />
-                </span>
+                <LoaderCircle className="verifier-spinner" size={22} aria-hidden="true" />
                 {modalitySummary(content, { hasUpload: Boolean(file) })}
               </p>
               <p className="eta-line">
                 {formatDuration(elapsedMs)} decorridos
-                {tab === "video" && <> · vídeos e arquivos enviados podem levar alguns minutos; o upload aceita até 3 MB</>}
+                {tab === "video" && <> · vídeos e arquivos enviados podem levar alguns minutos; o upload aceita até {formatBytes(limits.maxUploadBytes)}</>}
               </p>
               <ol className="pipeline">
                 {ACTIVITY_ORDER.filter((id) => activities.has(id)).map((id, i) => {
@@ -557,7 +562,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
               </ol>
               <div className="processing-actions">
                 <button className="btn ghost" type="button" onClick={reset}>
-                  Cancelar checagem
+                  <X size={16} aria-hidden="true" /> Cancelar checagem
                 </button>
               </div>
             </div>
@@ -565,21 +570,27 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
 
           {!running && !result && !error && (
             <div className="result-empty">
-              <h3>Uma checagem com limites explícitos.</h3>
+              <span className="result-empty-icon"><SearchCheck size={30} aria-hidden="true" /></span>
+              <span className="result-eyebrow">O QUE A ANÁLISE ENTREGA</span>
+              <h3>Mais contexto.<br />Menos conclusões apressadas.</h3>
               <p>
                 Envie texto, link ou mídia. O sistema apresenta afirmações, evidências e limitações; se faltar base suficiente, pode não atribuir veredito.
               </p>
-              <span className="chip tint-info">
-                <i /> toque num exemplo abaixo do formulário para testar
-              </span>
+              <ul className="result-expectations" aria-label="Elementos da análise">
+                <li><ListChecks size={17} aria-hidden="true" /> Afirmações verificáveis</li>
+                <li><BookOpen size={17} aria-hidden="true" /> Fontes vinculadas</li>
+                <li><Scale size={17} aria-hidden="true" /> Limites da análise</li>
+              </ul>
             </div>
           )}
 
           {error && !running && !result && (
-            <div className="result-empty" role="alert">
+            <div className="result-empty result-error" role="alert">
+              <span className="result-empty-icon"><CircleAlert size={30} aria-hidden="true" /></span>
               <h3>{recoveryAvailable ? "Resultado ainda indisponível" : "Não consegui checar"}</h3>
               <p>{error}</p>
               <button className="btn" type="button" onClick={handleSubmit} disabled={!canSubmit}>
+                <RotateCcw size={16} aria-hidden="true" />
                 {recoveryAvailable ? "Recuperar resultado" : "Tentar de novo"}
               </button>
             </div>

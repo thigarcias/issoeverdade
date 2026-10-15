@@ -5,37 +5,45 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Reporte problemas técnicos, transcrição, lentidão, downloads, cards ou conteste uma informação. Acompanhe seu protocolo.">
 <title>Reportar problema e correções — Isso é Verdade?</title>
-<style>
-:root{color-scheme:light;--ink:#26231f;--muted:#625d55;--paper:#faf8f2;--line:#ded8cb;--accent:#a83227}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:1rem/1.7 system-ui,-apple-system,"Segoe UI",sans-serif}header,main,footer{width:min(100% - 2rem,54rem);margin-inline:auto}header{padding:1.5rem 0;border-bottom:1px solid var(--line)}nav{display:flex;flex-wrap:wrap;gap:.5rem 1.25rem}a{color:#84271f;text-underline-offset:.18em}a:focus-visible{outline:3px solid var(--accent);outline-offset:3px;border-radius:2px}.current{font-weight:700;text-decoration:none}main{padding:2rem 0 3rem}h1,h2{line-height:1.2}h1{font-size:clamp(2rem,7vw,3rem);margin:.35rem 0 1rem}h2{margin:2rem 0 .5rem;font-size:1.4rem}.date,.note{color:var(--muted)}.note{border-left:4px solid var(--accent);padding:.8rem 1rem;background:#f0ece2}footer{border-top:1px solid var(--line);padding:1rem 0 2rem;color:var(--muted)}@media(min-width:42rem){main{padding-top:3rem}}
-</style>
-<style>
-form{margin:1.5rem 0 2.5rem}
-.field{margin-bottom:1.1rem;display:flex;flex-direction:column;gap:.35rem}
-label{font-weight:600}
-input,select,textarea{font:inherit;color:inherit;background:#fff;border:1px solid var(--line);border-radius:6px;padding:.6rem .7rem;width:100%}
-textarea{resize:vertical;min-height:8rem}
-input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
-.help,.status{margin:0;color:var(--muted);font-size:.92rem}
-button{font:inherit;font-weight:600;color:#fff;background:var(--accent);border:0;border-radius:6px;padding:.7rem 1.2rem;cursor:pointer}
-button[disabled]{opacity:.6;cursor:progress}
-.status[data-tone="error"]{color:#8a1f16;font-weight:600}
-.status[data-tone="ok"]{color:#1f5c3a;font-weight:600}
-.status[data-tone="warning"]{color:#7a5b1e;font-weight:600}
-.hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
-</style>
+<meta name="theme-color" content="#f2ecdc">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Faustina:ital,wght@0,300..600;1,300..600&amp;family=Geist:wght@400..600&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/transparencia.css">
 </head>
-<body>
-<header><nav aria-label="Transparência"><a href="metodologia.html">Metodologia</a><a class="current" aria-current="page" href="correcoes.html">Correções</a><a href="privacidade.html">Privacidade</a></nav></header>
-<main>
-<p class="date">Canal público de reportes e correções</p>
-<h1>Encontrou um problema? Conte para nós</h1>
-<p class="note">As análises são automatizadas e não substituem revisão profissional, apuração ou verificação independente. Não declaramos certificação nem afiliação ao IFCN.</p>
-<p>Seu relato ajuda a melhorar o serviço. Você pode avisar sobre erro técnico, transcrição, download, lentidão, resultado confuso ou card — mesmo sem uma checagem concluída.</p>
+<body class="transparency-page">
+<a class="skip-link" href="#main-content">Pular para o conteúdo</a>
+<header class="site-header">
+  <div class="header-inner">
+    <a class="brand" href="/">isso é verdade<span>?</span><small>INFORMAÇÃO COM CONTEXTO</small></a>
+    <nav class="site-nav" aria-label="Transparência">
+      <a href="metodologia.html">Metodologia</a>
+      <a aria-current="page" href="correcoes.html">Correções</a>
+      <a href="privacidade.html">Privacidade</a>
+    </nav>
+    <a class="button-link" href="/">Voltar ao site <span aria-hidden="true">↗</span></a>
+  </div>
+</header>
+<main class="page-main" id="main-content">
+<div class="page-intro">
+  <p class="eyebrow">Canal público de reportes e correções</p>
+  <h1>Encontrou um problema? Conte para nós</h1>
+  <p class="lead">As análises são automatizadas e não substituem revisão profissional, apuração ou verificação independente. Não declaramos certificação nem afiliação ao IFCN.</p>
+  <p class="intro-copy">Seu relato ajuda a melhorar o serviço. Você pode avisar sobre erro técnico, transcrição, download, lentidão, resultado confuso ou card — mesmo sem uma checagem concluída.</p>
+  <a class="index-back" href="#acompanhar-pedido">Já tem protocolo? Acompanhar pedido <span aria-hidden="true">↓</span></a>
+</div>
+<div class="corrections-layout">
+<div class="corrections-main">
 <h2>Canal público</h2>
 <p id="check-status" class="status" role="status" aria-live="polite"></p>
 <p>Descreva o que aconteceu no formulário abaixo. <b>Para problemas de funcionamento, não é preciso provar uma informação falsa nem enviar evidência.</b> Cada relato recebe um protocolo e entra na fila privada do administrador, com acompanhamento de estado.</p>
 <p>Não há alteração automática nem prazo garantido de resposta. Não envie senhas, dados sensíveis, documentos de terceiros ou material ilegal. Inclua apenas o contexto necessário; mensagem, contexto e contato não são publicados.</p>
-<form id="corrections-form" novalidate>
+<form id="corrections-form" class="form-card" novalidate>
+  <div class="form-card-header">
+    <h2 id="enviar-relato">Enviar relato</h2>
+  </div>
+  <div class="form-grid">
   <div class="field">
     <label for="checkId">ID da checagem (opcional)</label>
     <input id="checkId" name="checkId" type="text" maxlength="80" inputmode="text" autocomplete="off" placeholder="ex.: mv6y75tx-3qqrxr">
@@ -55,6 +63,7 @@ button[disabled]{opacity:.6;cursor:progress}
       <option value="right_of_reply">Direito de resposta</option>
       <option value="removal">Remoção de conteúdo</option>
     </select>
+  </div>
   </div>
   <div class="field">
     <label for="message">O que aconteceu? (obrigatório)</label>
@@ -80,26 +89,56 @@ button[disabled]{opacity:.6;cursor:progress}
     <label for="website">Não preencha este campo</label>
     <input id="website" name="website" type="text" tabindex="-1" autocomplete="off">
   </div>
-  <button type="submit" id="submit-button">Enviar relato</button>
-  <p id="form-status" class="status" role="status" aria-live="polite"></p>
+  <div class="form-actions">
+    <button type="submit" id="submit-button">Enviar relato <span aria-hidden="true">↗</span></button>
+    <p id="form-status" class="status" role="status" aria-live="polite"></p>
+  </div>
 </form>
-<h2>Acompanhar um pedido</h2>
+</div>
+<aside class="corrections-sidebar" aria-label="Nesta página">
+  <div class="page-index">
+    <p class="index-label">NESTA PÁGINA</p>
+    <nav class="toc" aria-label="Seções de correções">
+      <a href="#enviar-relato">Enviar relato</a>
+      <a href="#acompanhar-pedido">Acompanhar pedido</a>
+      <a href="#sobre-correcoes">Sobre as correções</a>
+    </nav>
+  </div>
+<section class="lookup-card" aria-labelledby="acompanhar-pedido">
+<h2 id="acompanhar-pedido">Acompanhar um pedido</h2>
 <form id="status-form" novalidate>
   <div class="field">
     <label for="protocol">Protocolo</label>
     <input id="protocol" name="protocol" type="text" autocomplete="off" placeholder="corr-...">
   </div>
-  <button type="submit">Consultar estado</button>
-  <p id="status-result" class="status" role="status" aria-live="polite"></p>
+  <div class="form-actions">
+    <button type="submit">Consultar estado <span aria-hidden="true">↗</span></button>
+    <p id="status-result" class="status" role="status" aria-live="polite"></p>
+  </div>
 </form>
-<h2>Ajustes registrados pelo sistema</h2>
+</section>
+</aside>
+</div>
+<article class="policy-notes document-content" aria-labelledby="sobre-correcoes">
+<h2 id="sobre-correcoes">Ajustes registrados pelo sistema</h2>
 <p>O servidor valida estrutura, vínculo de evidências, status e coerência de score/veredito. Algumas incompatibilidades são corrigidas automaticamente e registradas no log interno. Isso não é revisão editorial humana, comunicação ao usuário nem reanálise de todos os históricos.</p>
 <p>Registros antigos descrevem a execução preservada. Não são reexecutados automaticamente com a metodologia atual. Um registro sem versão metodológica pode ser identificado como legado.</p>
 <h2>Limites</h2>
 <p>O relato é registrado em armazenamento privado; mensagem, contexto, contato e notas internas não são publicados. Se o registro estiver indisponível, o formulário avisa em vez de confirmar um protocolo que não foi gravado. Problemas operacionais podem ser resolvidos sem mudar o resultado. Para uma correção editorial aplicada a uma informação, a versão vigente é marcada e o cache é invalidado, preservando a execução original.</p>
 <p>Leia também <a href="metodologia.html">Metodologia</a> e <a href="privacidade.html">Privacidade</a>.</p>
+</article>
 </main>
-<footer><p>Esta descrição reflete o comportamento implementado no código; não representa um compromisso de atendimento ou uma revisão independente.</p></footer>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <a class="brand" href="/">isso é verdade<span>?</span></a>
+    <nav aria-label="Links do rodapé">
+      <a href="metodologia.html">Metodologia</a>
+      <a aria-current="page" href="correcoes.html">Correções</a>
+      <a href="privacidade.html">Privacidade</a>
+    </nav>
+    <p class="footer-disclaimer">Esta descrição reflete o comportamento implementado no código; não representa um compromisso de atendimento ou uma revisão independente.</p>
+  </div>
+</footer>
 <script src="correcoes.js" defer></script>
 </body>
 </html>

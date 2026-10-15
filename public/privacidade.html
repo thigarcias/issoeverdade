@@ -5,24 +5,48 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Dados enviados à checagem, processamento por IA, uploads, armazenamento e limites conhecidos.">
 <title>Privacidade — Isso é Verdade?</title>
-<style>
-:root{color-scheme:light;--ink:#26231f;--muted:#625d55;--paper:#faf8f2;--line:#ded8cb;--accent:#a83227}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:1rem/1.7 system-ui,-apple-system,"Segoe UI",sans-serif}header,main,footer{width:min(100% - 2rem,54rem);margin-inline:auto}header{padding:1.5rem 0;border-bottom:1px solid var(--line)}nav{display:flex;flex-wrap:wrap;gap:.5rem 1.25rem}a{color:#84271f;text-underline-offset:.18em}a:focus-visible{outline:3px solid var(--accent);outline-offset:3px;border-radius:2px}.current{font-weight:700;text-decoration:none}main{padding:2rem 0 3rem}h1,h2{line-height:1.2}h1{font-size:clamp(2rem,7vw,3rem);margin:.35rem 0 1rem}h2{margin:2rem 0 .5rem;font-size:1.4rem}.date,.note{color:var(--muted)}.note{border-left:4px solid var(--accent);padding:.8rem 1rem;background:#f0ece2}footer{border-top:1px solid var(--line);padding:1rem 0 2rem;color:var(--muted)}@media(min-width:42rem){main{padding-top:3rem}}
-</style>
+<meta name="theme-color" content="#f2ecdc">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Faustina:ital,wght@0,300..600;1,300..600&amp;family=Geist:wght@400..600&amp;display=swap">
+<link rel="stylesheet" href="/transparencia.css">
 </head>
-<body>
-<header><nav aria-label="Transparência"><a href="metodologia.html">Metodologia</a><a href="correcoes.html">Correções</a><a class="current" aria-current="page" href="privacidade.html">Privacidade</a></nav></header>
-<main>
-<p class="date">Informações sobre processamento</p>
+<body class="transparency-page">
+<a class="skip-link" href="#main-content">Pular para o conteúdo</a>
+<header class="site-header">
+<div class="header-inner">
+<a class="brand" href="/">isso é verdade<span>?</span><small>INFORMAÇÃO COM CONTEXTO</small></a>
+<nav class="site-nav" aria-label="Transparência"><a href="metodologia.html">Metodologia</a><a href="correcoes.html">Correções</a><a aria-current="page" href="privacidade.html">Privacidade</a></nav>
+<a class="button-link" href="/">Voltar ao site <span aria-hidden="true">↗</span></a>
+</div>
+</header>
+<main class="page-main" id="main-content">
+<div class="page-intro">
+<p class="eyebrow">Informações sobre processamento</p>
 <h1>Privacidade e processamento de dados por IA</h1>
-<p class="note">Esta página descreve o código do repositório; não é aconselhamento jurídico nem garantia sobre práticas de terceiros. A configuração ativa e a implantação em produção não foram verificadas nesta atualização. Não envie conteúdo que você não esteja autorizado a compartilhar.</p>
-<h2>O que pode ser processado</h2>
+<p class="lead">Esta página descreve o código do repositório; não é aconselhamento jurídico nem garantia sobre práticas de terceiros. A configuração ativa e a implantação em produção não foram verificadas nesta atualização. Não envie conteúdo que você não esteja autorizado a compartilhar.</p>
+</div>
+<div class="document-layout">
+<aside class="page-index" aria-label="Nesta página">
+<p class="index-label">NESTA PÁGINA</p>
+<nav class="toc" aria-label="Seções da política de privacidade">
+<a href="#o-que-pode-ser-processado">O que pode ser processado</a>
+<a href="#provedores-e-midia">Provedores e mídia</a>
+<a href="#armazenamento">Armazenamento no navegador e no serviço</a>
+<a href="#recuperacao">Segredo e consulta de recuperação</a>
+<a href="#retencao-e-acesso">Limites de retenção e acesso</a>
+</nav>
+</aside>
+<article class="document-content">
+<h2 id="o-que-pode-ser-processado">O que pode ser processado</h2>
 <p>Uma checagem pode incluir texto, URL, nome/hash de arquivo, metadados, afirmações, fontes, consultas e citações de busca, transcrição, OCR/descrição visual, resultado, modelo e dados técnicos da execução. O texto submetido pode conter dados pessoais ou sensíveis.</p>
-<h2>Provedores e mídia</h2>
+<h2 id="provedores-e-midia">Provedores e mídia</h2>
 <p>O servidor envia a entrada e o contexto necessário ao provedor/modelo selecionado no painel para avaliação factual, visão ou transcrição; não há seletor de segunda avaliação <code>final</code>. Os padrões de avaliação factual e visão são OpenCode Go / GPT-6 Luna; preferências persistidas válidas prevalecem. A busca web é solicitada pela API do provedor. Não há troca automática de provedor se a etapa falhar. Uploads de imagem/vídeo enviam bytes reais (teto configurável, padrão 3 MiB) após validação de tipo. A imagem pode ser enviada ao modelo de visão; o áudio pode ser enviado à transcrição OpenAI. Vídeo/áudio pode ser encaminhado ao worker configurado para extração e depois os textos/frames necessários podem ser enviados aos modelos selecionados. Link, metadados e mídia podem ser tratados por serviços de terceiros.</p>
 <p><b>Moderação:</b> quando ativa, o texto enviado, a transcrição e imagens/frames amostrados passam pelo endpoint de moderação da OpenAI antes da análise factual; do resultado guardamos apenas resumo de categoria/estado, sem o conteúdo. Se o serviço de moderação estiver indisponível em modo obrigatório, a checagem é recusada em vez de liberada.</p>
 <p><b>Documentos de evidência:</b> para conferir as citações, o servidor busca o documento público de cada fonte vinculada (limite de documentos e de bytes por checagem), extrai o texto e procura o trecho. O texto extraído não é gravado integralmente no log: ficam registrados URL, status, tipo, tamanho, hash e trechos localizados. A revisão recebe grupos por afirmação com trechos e cálculo comparativo quando presente; por padrão usa JEV via OpenCode/SystemOne, ou o provedor de avaliação factual explicitamente configurado. Localização de uma citação não é confirmação semântica independente. PDFs sem texto extraível aparecem como limitação. A síntese do resultado é determinística, sem envio a chamadas editoriais adicionais.</p>
 <p>O código inclui OpenAI e OpenCode Go como provedores possíveis. A seleção ativa em produção é desconhecida. Adequação do serviço, retenção, treinamento e região devem ser conferidos nos termos de cada fornecedor; não afirmamos que os dados não sejam retidos ou usados para treinamento.</p>
-<h2>Armazenamento no navegador e no serviço</h2>
+<h2 id="armazenamento">Armazenamento no navegador e no serviço</h2>
 <p>O navegador guarda até 20 resultados recentes em <code>localStorage</code>, incluindo partes do resultado, afirmações e referências, até que sejam substituídos ou o armazenamento seja limpo.</p>
 <ul>
 <li>O cache do serviço é privado quando o Blob está configurado e deixa de ser servido após 24 horas. Esse prazo não apaga fisicamente objetos expirados. Sem Blob, o cache é de memória.</li>
@@ -33,13 +57,21 @@
 <li>Pedidos de correção enviados pelo formulário público são gravados em armazenamento privado (mensagem, vínculo com a checagem, link de evidência e contato opcional). A consulta pública por protocolo devolve apenas estado e datas; contato, mensagem integral e notas internas ficam no painel administrativo. Sem Blob configurado em produção, o canal recusa o pedido.</li>
 <li>Os controles de abuso guardam apenas contadores com prazo curto (janela de taxa, vagas de concorrência e orçamento diário) e tratam o IP como identificador temporário, sem perfil de usuário nem rastreamento entre checagens.</li>
 </ul>
-<h2>Segredo e consulta de recuperação</h2>
+<h2 id="recuperacao">Segredo e consulta de recuperação</h2>
 <p>O evento de aceitação entrega um segredo de 32 bytes criptograficamente aleatórios. A interface o mantém apenas em memória para a mesma entrada/contexto e identidade de arquivo, nunca em <code>localStorage</code>, histórico, compartilhamento, URL ou logs administrativos. A consulta usa <code>GET /api/verify?checkId=...</code> com cabeçalho <code>X-Verify-Recovery</code> e resposta <code>Cache-Control: no-store</code>. O ID sozinho não autoriza acesso. Quem obtiver a capacidade pode consultar o resultado durante sua validade; trate-a como segredo. Logs de infraestrutura e práticas de terceiros não foram auditados.</p>
 <p>Após perda da conexão sem resultado terminal, o cliente faz uma única consulta, sem polling nem nova inferência. Pendência ou erro transitório permite nova tentativa explícita; falha definitiva/expiração descarta a capacidade. O GET não consulta logs administrativos, executa IA, reserva orçamento/vaga de POST ou concilia tokens. Um POST com cache ainda passa pela admissão e pelos controles existentes, mas não recontabiliza tokens antigos. A interface identifica o resultado recuperado.</p>
-<h2>Limites de retenção e acesso</h2>
+<h2 id="retencao-e-acesso">Limites de retenção e acesso</h2>
 <p>TTL de cache ou recuperação não é prazo de exclusão física. A limpeza da antiga área pública do cache é best-effort; logs, envelopes recuperáveis, cópias, backups, logs de plataforma e retenção dos provedores não são cobertos por uma garantia de exclusão. A configuração de Blob, worker, credenciais, retenção e região efetivamente ativa em produção não foi verificada. Arquivos podem falhar ao serem processados e mídia parcial não significa cobertura integral.</p>
 <p>Consulte também <a href="metodologia.html">Metodologia</a> e <a href="correcoes.html">Correções</a>.</p>
+</article>
+</div>
 </main>
-<footer><p>Descrição limitada ao comportamento do código analisado; não constitui auditoria jurídica ou confirmação dos contratos upstream e da configuração de produção.</p></footer>
+<footer class="site-footer">
+<div class="footer-inner">
+<a class="brand" href="/">isso é verdade<span>?</span></a>
+<nav aria-label="Links do rodapé"><a href="metodologia.html">Metodologia</a><a href="correcoes.html">Correções</a><a href="privacidade.html">Privacidade</a></nav>
+<p class="footer-disclaimer">Descrição limitada ao comportamento do código analisado; não constitui auditoria jurídica ou confirmação dos contratos upstream e da configuração de produção.</p>
+</div>
+</footer>
 </body>
 </html>

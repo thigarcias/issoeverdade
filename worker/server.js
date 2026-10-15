@@ -117,12 +117,21 @@ function ytdlpArgs(extra, url) {
   ];
 }
 
-async function probe(url) {
+async function probe(url, { timeoutMs = 60_000, signal } = {}) {
   const run = await runLimited("yt-dlp", ytdlpArgs(["--dump-json"], url), {
-    timeoutMs: 60_000,
+    timeoutMs,
+    signal,
     maxOutputBytes: 8 * 1024 * 1024,
   });
-  if (!run.ok) return { ok: false, reason: run.reason === "timeout" ? "probe-timeout" : "probe-failed", detail: safeDetail(run.stderr) };
+  if (!run.ok) {
+    // "Post sem áudio/vídeo" é conclusivo e não deve ser confundido com falha operacional.
+    const noMedia = /no video could be found|no video formats|no media found/i.test(run.stderr ?? "");
+    return {
+      ok: false,
+      reason: noMedia ? "no-media" : run.reason === "timeout" ? "probe-timeout" : "probe-failed",
+      detail: safeDetail(run.stderr),
+    };
+  }
   const info = JSON.parse(run.stdout);
   const desc = [info.description, info.title].find((s) => typeof s === "string" && s.trim()) ?? "";
   const media = {
@@ -386,11 +395,19 @@ const server = createServer(async (req, res) => {
         return send(res, 200, { ok: false, reason: `blocked:${error?.code ?? "url_policy"}` });
       }
       if (req.url === "/fetch") {
+        const controller = new AbortController();
+        const onClose = () => controller.abort();
+        res.once("close", onClose);
+        if (res.destroyed) controller.abort(); // conexão pode ter fechado durante guardUrl()
         try {
-          const out = await probe(url);
+          // Limite enviado pelo cliente só pode reduzir o teto do worker.
+          const timeoutMs = Math.max(1, Math.min(60_000, intEnv(body?.timeout_ms, 60_000)));
+          const out = await probe(url, { timeoutMs, signal: controller.signal });
           return send(res, 200, { ...out, attempts: [out.ok ? "worker:yt-dlp:ok" : `worker:yt-dlp:${out.reason}`] });
         } catch (err) {
           return send(res, 200, { ok: false, reason: "probe-failed", detail: safeDetail(err?.message ?? err) });
+        } finally {
+          res.removeListener("close", onClose);
         }
       }
       if (req.url === "/media") return send(res, 200, await fetchMedia(url, body?.source_type));

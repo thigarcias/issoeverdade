@@ -4,7 +4,8 @@ import { rm } from "node:fs/promises";
 // - vite.api-plugin.js (dev local)
 // - api/verify.js (serverless Vercel)
 // Keys (OpenAI + OpenCode) NUNCA chegam ao browser.
-import { downloadMedia, fetchImageSource, fetchMediaContext, processUploadedMedia, resolveSourceType } from "./media.js";
+import { downloadMedia, fetchImageSource, fetchMediaContext, probeMediaPresence, processUploadedMedia, resolveSourceType } from "./media.js";
+import { mediaPresenceUncertain } from "./source-type.js";
 import { normalizeVerifyInput } from "./uploads.js";
 import { transcribe, transcriptToPrompt } from "./transcribe.js";
 import { saveCheckLog as saveLog } from "./checklog.js";
@@ -523,6 +524,38 @@ async function enrichWithMedia(maybeUrl, opts = {}) {
   const measure = opts.phase ?? ((_name, fn) => fn());
   const sourceInfo = opts.sourceInfo ?? null;
   const mediaUrl = opts.mediaUrl ?? sourceInfo?.finalUrl ?? maybeUrl;
+  if (opts.textOnly) {
+    // Probe de presença já confirmou que não há áudio/vídeo: lê só o texto
+    // disponível, sem anunciar nem executar aquisição de mídia.
+    const media = await measure("media-metadata", () => fetchMediaContext(maybeUrl, { sourceInfo }));
+    const postText = [
+      media.media?.postText,
+      media.media?.linkedContext && `Conteúdo vinculado extraído:\n${media.media.linkedContext}`,
+    ].filter(Boolean).join("\n\n");
+    const metadataGate = media.ok && media.context && opts.moderateText
+      ? await opts.moderateText(media.context).catch(() => null)
+      : null;
+    const origin = toOrigin(media.ok ? media.media : null, maybeUrl);
+    const mediaContext = media.ok ? `Metadados da origem:\n${media.context}` : "";
+    return {
+      mediaContext,
+      transcript: null,
+      vision: null,
+      visionResult: null,
+      frameTimes: [],
+      frameCount: 0,
+      moderationBlocked: metadataGate && !metadataGate.allowed ? [metadataGate] : [],
+      moderationReports: metadataGate?.report ? [metadataGate.report] : [],
+      origin,
+      durationSec: null,
+      postText,
+      debug: [
+        ...(media.attempts ?? []),
+        "attachments:none",
+        ...(metadataGate && !metadataGate.allowed ? ["moderation-metadata:refused"] : []),
+      ],
+    };
+  }
   const directAsset = ["audio", "video"].includes(sourceInfo?.type);
   const canExtractFrames = sourceInfo?.type !== "audio";
   const [media, downloaded] = await Promise.all([
@@ -822,6 +855,9 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     ? await phase("source-classification", () => resolveSourceType(maybeUrl))
     : null;
   const socialMediaCandidate = input?.kind === "link" && sourceInfo?.type === "social" && sourceInfo?.mediaCandidate;
+  // Em hosts de post ambíguo (ex.: X), o path não diz se existe áudio/vídeo:
+  // a aquisição só é anunciada após o probe de presença confirmar mídia.
+  const socialPresenceGate = socialMediaCandidate && mediaPresenceUncertain(sourceInfo?.host);
   const videoTarget = input?.kind === "video" || (input?.kind === "link" && sourceInfo?.type === "video");
   const audioTarget = input?.kind === "link" && sourceInfo?.type === "audio";
   const mediaTarget = videoTarget || audioTarget || socialMediaCandidate;
@@ -845,14 +881,16 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   if (input?.fileBuffer) {
     // Upload nunca é apresentado como download: a aquisição é o processamento local.
     progress.activity("media-upload", "pending", null, "Arquivo enviado");
-  } else if (mediaTarget || imageTarget) {
+  } else if ((mediaTarget || imageTarget) && !socialPresenceGate) {
     progress.activity("media-acquisition", "pending", null, "Aquisição da mídia");
   }
-  if (mediaTarget) {
-    progress.activity("media-transcription", "pending", "media-acquisition");
-    if (videoTarget || socialMediaCandidate || (!audioTarget && input?.kind === "video")) progress.activity("media-vision", "pending", "media-acquisition");
-  } else if (imageTarget) {
-    progress.activity("media-vision", "pending", null);
+  if (!socialPresenceGate) {
+    if (mediaTarget) {
+      progress.activity("media-transcription", "pending", "media-acquisition");
+      if (videoTarget || socialMediaCandidate || (!audioTarget && input?.kind === "video")) progress.activity("media-vision", "pending", "media-acquisition");
+    } else if (imageTarget) {
+      progress.activity("media-vision", "pending", null);
+    }
   }
   const tokenUsage = { input: 0, output: 0 };
   const addUsage = (response) => {
@@ -1002,6 +1040,18 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
 
   if (mediaTarget && !blockedResult) {
     let enriched = null;
+    let mediaTextOnly = false;
+    if (socialPresenceGate) {
+      // O path do post é ambíguo: confirma áudio/vídeo antes de anunciar ou baixar mídia.
+      const presence = await phase("media-presence", () => probeMediaPresence(sourceInfo?.finalUrl ?? maybeUrl)).catch(() => null);
+      mediaDebug.push(...(presence?.attempts ?? []));
+      mediaTextOnly = presence?.hasMedia === false;
+      if (!mediaTextOnly) {
+        progress.activity("media-acquisition", "pending", null, "Aquisição da mídia");
+        progress.activity("media-transcription", "pending", "media-acquisition");
+        progress.activity("media-vision", "pending", "media-acquisition");
+      }
+    }
     // Notas de espera por vaga vs chamada real; emite running sem duplicar o done/failed do phase().
     const transcribeProgressNote = (stage) => {
       if (stage === "waiting-for-slot") progress.activity("media-transcription", "running", "media-acquisition", "Aguardando vaga do transcritor");
@@ -1015,7 +1065,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
         return null;
       });
     } else if (isUrl) {
-      enriched = await phase("enrich", () =>
+      enriched = await phase(mediaTextOnly ? "media-text-context" : "enrich", () =>
         enrichWithMedia(maybeUrl, {
           sourceInfo,
           mediaUrl: sourceInfo?.finalUrl ?? maybeUrl,
@@ -1028,6 +1078,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
           checkVideoCoverage: () => checkVideoCoverage(modCfg),
           phase: (name, fn) => phase(name, fn, "enrich"),
           onTranscribeProgress: transcribeProgressNote,
+          textOnly: mediaTextOnly,
         }),
       ).catch((error) => {
         mediaDebug.push(`enrich-failed:${String(error?.code ?? "processing-failed").slice(0, 80)}`);
@@ -1065,7 +1116,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       const via = enriched.via
         ?? (enriched.debug ?? []).map((entry) => String(entry).match(/(?:^|:)(worker|yt-dlp|direct|local-upload|og-video)(?::|$)/)?.[1]).find(Boolean)
         ?? null;
-      if (enriched.ok !== false) markActivityDone("media-download", { ok: true }, via ? `via ${via}` : undefined);
+      if (enriched.ok !== false && !mediaTextOnly) markActivityDone("media-download", { ok: true }, via ? `via ${via}` : undefined);
       progress.content(videoTarget ? "video" : audioTarget ? "audio" : "social-post", false, {
         kind: input?.kind ?? null,
         hasAudio: transcript?.ok === true,
@@ -1073,7 +1124,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
         hasVision: Boolean(vision),
         via: via ?? undefined,
       });
-    } else {
+    } else if (!mediaTextOnly) {
       markActivityDone("media-download", { ok: false });
     }
     if (!blockedResult && !transcript?.ok && !vision && enriched?.postText) {

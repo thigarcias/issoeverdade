@@ -40,6 +40,7 @@ export function mediaLimits(env = process.env) {
     maxDocBytes: int(env.IEV_MAX_DOC_BYTES, 8 * 1024 * 1024),
     ytdlpTimeoutMs: int(env.IEV_YTDLP_TIMEOUT_MS, 150_000),
     workerTimeoutMs: int(env.IEV_WORKER_TIMEOUT_MS, 180_000),
+    presenceTimeoutMs: int(env.IEV_MEDIA_PRESENCE_TIMEOUT_MS, 30_000),
   };
 }
 
@@ -325,12 +326,14 @@ export async function processUploadedMedia(fileBuffer, mime) {
 
 let ytdlpAvailable = null;
 
-export async function hasYtDlp() {
+export async function hasYtDlp({ timeoutMs = 4_000 } = {}) {
   if (ytdlpAvailable !== null) return ytdlpAvailable;
   try {
-    await execFileAsync("yt-dlp", ["--version"], { timeout: 4_000 });
+    await execFileAsync("yt-dlp", ["--version"], { timeout: Math.min(4_000, timeoutMs) });
     ytdlpAvailable = true;
-  } catch {
+  } catch (error) {
+    // Um orçamento curto não prova que o executável está ausente.
+    if (error?.killed) return false;
     ytdlpAvailable = false;
   }
   return ytdlpAvailable;
@@ -344,12 +347,16 @@ function pickText(...candidates) {
 }
 
 /** Camada 1: metadados completos via yt-dlp (sem baixar o arquivo). */
-export async function probeWithYtDlp(url) {
-  if (!(await hasYtDlp())) return { ok: false, reason: "no-ytdlp" };
+export async function probeWithYtDlp(url, { timeoutMs = 60_000 } = {}) {
+  const startedAt = Date.now();
+  const available = await hasYtDlp({ timeoutMs });
+  const remainingMs = timeoutMs - (Date.now() - startedAt);
+  if (remainingMs <= 0) return { ok: false, reason: "ytdlp-timeout" };
+  if (!available) return { ok: false, reason: "no-ytdlp" };
   const run = await runLimited(
     "yt-dlp",
     ["--no-playlist", "--dump-json", "--no-warnings", "--socket-timeout", "20", "--retries", "1", url],
-    { timeoutMs: 60_000, maxOutputBytes: 8 * 1024 * 1024 },
+    { timeoutMs: remainingMs, maxOutputBytes: 8 * 1024 * 1024 },
   );
   if (!run.ok) {
     return { ok: false, reason: run.reason === "timeout" ? "ytdlp-timeout" : "ytdlp-failed", detail: sanitizeDiagnostic(run.stderr, 200) };
@@ -377,6 +384,48 @@ export async function probeWithYtDlp(url) {
   } catch (err) {
     return { ok: false, reason: "ytdlp-bad-json", detail: clip(err?.message ?? err, 300) };
   }
+}
+
+/**
+ * Sinais definitivos do yt-dlp de que o alvo não tem áudio/vídeo (não é falha
+ * operacional). O worker novo também devolve reason "no-media"; o padrão no
+ * detalhe sanitizado cobre worker antigo durante a transição de implantação.
+ */
+const NO_MEDIA_PATTERN = /no video could be found|no video formats|no media found/i;
+
+/**
+ * Confirma presença de áudio/vídeo antes de anunciar a aquisição. `hasMedia`
+ * `true`/`false` são conclusivos; `null` é indeterminado (falha operacional) e
+ * nunca bloqueia o fluxo normal de download.
+ */
+export async function probeMediaPresence(url, { timeoutMs = mediaLimits().presenceTimeoutMs } = {}) {
+  const attempts = [];
+  if (WORKER_URL) {
+    // O subprocesso deve terminar e liberar a vaga antes do timeout HTTP.
+    const workerBudgetMs = Math.max(1, Math.floor(timeoutMs - Math.min(1000, timeoutMs / 5)));
+    const data = await workerPost("/fetch", { url, timeout_ms: workerBudgetMs }, { timeoutMs });
+    if (data?.ok) {
+      const media = data.media ?? {};
+      const hasMedia = media.hasVideo === true || media.hasAudio === true;
+      const none = media.hasVideo === false && media.hasAudio === false;
+      attempts.push(`worker-presence:ok:${hasMedia ? "media" : none ? "no-media" : "unknown"}`);
+      return { ok: true, hasMedia: hasMedia ? true : none ? false : null, media, attempts };
+    }
+    const noMedia = data?.reason === "no-media" ||
+      (data?.reason !== "worker-timeout" && NO_MEDIA_PATTERN.test(String(data?.detail ?? "")));
+    attempts.push(diagnosticAttempt("worker-presence", data));
+    return { ok: false, hasMedia: noMedia ? false : null, reason: data?.reason ?? "worker-presence-failed", attempts };
+  }
+  const yt = await probeWithYtDlp(url, { timeoutMs });
+  if (yt.ok) {
+    const hasMedia = yt.hasVideo === true || yt.hasAudio === true;
+    const none = yt.hasVideo === false && yt.hasAudio === false;
+    attempts.push(`yt-dlp-presence:ok:${hasMedia ? "media" : none ? "no-media" : "unknown"}`);
+    return { ok: true, hasMedia: hasMedia ? true : none ? false : null, media: yt, attempts };
+  }
+  const noMedia = NO_MEDIA_PATTERN.test(String(yt.detail ?? ""));
+  attempts.push(diagnosticAttempt("yt-dlp-presence", yt));
+  return { ok: false, hasMedia: noMedia ? false : null, reason: yt.reason, attempts };
 }
 
 /**

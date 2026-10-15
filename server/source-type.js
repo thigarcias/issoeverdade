@@ -41,6 +41,18 @@ function isSocialMediaCandidate(host, path) {
   if (host === "spotify.com") return /\/episode\//.test(path);
   return false;
 }
+/** Hosts cujo mediaCandidate de path é frágil: posts de texto/foto sem vídeo são comuns. */
+const PRESENCE_CHECKED_MEDIA_HOSTS = ["x.com", "twitter.com"];
+
+/**
+ * Indica que a presença de áudio/vídeo deve ser confirmada antes de anunciar
+ * ou baixar mídia: aqui o path do post não revela se existe anexo audiovisual.
+ */
+export function mediaPresenceUncertain(host) {
+  const normalized = String(host ?? "").toLowerCase().replace(/\.$/, "");
+  return PRESENCE_CHECKED_MEDIA_HOSTS.some((domain) => normalized === domain || normalized.endsWith(`.${domain}`));
+}
+
 function mediaTypeFromContent(value) {
   const bytes = Buffer.isBuffer(value) ? value : Buffer.alloc(0);
   if (bytes.length >= 5 && bytes.subarray(0, 5).toString("ascii") === "%PDF-") return "pdf";

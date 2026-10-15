@@ -167,8 +167,16 @@ e o status de limitação, mas a nota indisponível nunca é convertida em zero.
 Links sociais usam texto disponível em oEmbed, worker, yt-dlp ou OpenGraph e
 seguem até três links documentais presentes nesse texto, dentro de limites. Texto
 do post e anexos são cobertos separadamente; metadados não são transcrição.
-Áudio sem vídeo não exige frames; vídeo só é analisado após validar duração e
-trilhas, com transcrição/OCR parciais. Sem conteúdo lido, não há score/veredito.
+Em hosts de post ambíguo (X/Twitter), a presença de áudio/vídeo é confirmada
+antes de anunciar a aquisição: post sem anexo audiovisual não exibe "Baixando a
+mídia" e segue apenas com o texto disponível; falha do probe não bloqueia o
+fluxo normal de download. `IEV_MEDIA_PRESENCE_TIMEOUT_MS` limita o probe tanto
+localmente quanto no worker. O servidor envia um orçamento menor que o timeout
+HTTP para o worker encerrar o subprocesso e liberar a vaga antes da continuação;
+desconexões também cancelam o probe. Implante o worker junto com o servidor para
+ativar esse contrato de timeout. Áudio sem vídeo não exige frames; vídeo só é analisado
+após validar duração e trilhas, com transcrição/OCR parciais. Sem conteúdo lido,
+não há score/veredito.
 Links diretos são encaminhados por modalidade: PDF textual ao `unpdf`, JPEG/PNG/WebP
 à moderação e visão, áudio/vídeo ao processador audiovisual. A revisão de extração
 `article-content-v4` invalida cache anterior; as regras de perguntas e ações futuras introduzidas em `fact-check-5` permanecem em `fact-check-10`.

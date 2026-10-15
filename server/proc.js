@@ -67,7 +67,9 @@ export async function runLimited(file, args, opts = {}) {
     maxOutputBytes = 4 * 1024 * 1024,
     cwd = undefined,
     env = undefined,
+    signal = undefined,
   } = opts;
+  if (signal?.aborted) return { ok: false, code: null, stdout: "", stderr: "", killed: false, reason: "aborted", peakBytes: 0 };
   return new Promise((resolve) => {
     const child = spawn(file, args, {
       cwd,
@@ -88,6 +90,8 @@ export async function runLimited(file, args, opts = {}) {
       reason = why;
       killTree(child);
     };
+    const onAbort = () => stop("aborted");
+    signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => stop("timeout"), timeoutMs);
     const watcher = watchDir && maxDirBytes > 0
       ? setInterval(async () => {
@@ -110,11 +114,13 @@ export async function runLimited(file, args, opts = {}) {
       stderr += chunk;
     });
     child.on("error", (error) => {
+      signal?.removeEventListener("abort", onAbort);
       clearTimeout(timer);
       clearInterval(watcher);
       resolve({ ok: false, code: null, stdout: "", stderr: String(error?.message ?? error), killed, reason: reason ?? "spawn_failed", peakBytes });
     });
     child.on("close", (code) => {
+      signal?.removeEventListener("abort", onAbort);
       clearTimeout(timer);
       clearInterval(watcher);
       resolve({

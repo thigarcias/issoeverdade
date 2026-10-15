@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowUpRight, BookOpen, ChevronDown, Copy, Flag, Link2, Play, Share2 } from "lucide-react";
-import { CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, VERDICTS } from "../data/constants.js";
+import { ASSESSMENT_BASIS, CLAIM_STATUS, EVIDENCE_SUPPORT, VERDICTS, evidenceReviewLabel, evidenceVerificationLabel } from "../data/constants.js";
 import ScoreRing from "./ScoreRing.jsx";
 import { copyText } from "../lib/hooks.js";
 import { buildShareText } from "../lib/shareCard.js";
@@ -199,7 +199,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
       <p className="score-legend">
         {result.score == null
           ? "Nota indisponível: há afirmações sem comprovação ou sem análise. Falta de evidência não significa falsidade."
-          : "Revisão documental: confirmação 95 · refutação 5 · contexto insuficiente ou inconclusão sem nota. A escala anterior é preservada nos registros históricos; a nota não é probabilidade calibrada."}
+          : "Pesquisa com fontes citadas ou revisão documental opcional: confirmação 95 · refutação 5 · contexto insuficiente ou inconclusão sem nota. A base de cada afirmação aparece abaixo; pesquisa não é conferência documental independente. A escala anterior é preservada nos registros históricos; a nota não é probabilidade calibrada."}
       </p>
 
       {result.summary?.trim() && <p className="result-summary">{result.summary}</p>}
@@ -232,9 +232,10 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
                 </summary>
                 <div className="claim-body">
                   <p>{claim.note}</p>
+                  {ASSESSMENT_BASIS[claim.assessmentBasis] && <p className="score-legend">Base da avaliação: {ASSESSMENT_BASIS[claim.assessmentBasis]}.{claim.assessmentNote ? ` ${claim.assessmentNote}` : ""}</p>}
                   {claim.evidenceSupport && <p className="score-legend">Suporte da evidência: {EVIDENCE_SUPPORT[claim.evidenceSupport] ?? claim.evidenceSupport}.</p>}
-                  {claim.evidenceReview && <p className="score-legend">Revisão do conjunto: {EVIDENCE_SUPPORT[claim.evidenceReview.verdict] ?? "Inconclusiva"}{claim.evidenceReview.incomplete ? " · cobertura incompleta" : ""}.</p>}
-                  <ComparisonDetails comparison={claim.comparison} />
+                  {claim.evidenceReview && <p className="score-legend">{evidenceReviewLabel(claim)}</p>}
+                  <ComparisonDetails comparison={claim.comparison} assessmentBasis={claim.assessmentBasis} />
                   {claim.evidence?.length > 0 && (
                     <ul className="claim-evidence">
                       {claim.evidence.map((item, evidenceIndex) => {
@@ -244,7 +245,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
                         return (
                           <li key={`${item.sourceId}-${evidenceIndex}`}>
                             <span>{relation} · {source.outlet}</span>
-                            {item.verification && <span>{claim.evidenceReview && item.verification === "verified" ? "Trecho do conjunto revisado" : EVIDENCE_VERIFICATION[item.verification] ?? item.verification}</span>}
+                            {item.verification && <span>{evidenceVerificationLabel(claim, item)}</span>}
                             <blockquote>“{item.quote}”</blockquote>
                           </li>
                         );

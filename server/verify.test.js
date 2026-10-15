@@ -180,7 +180,7 @@ test("duas evidências da mesma URL preservam os dois operandos da comparação"
   }
 });
 
-test("limites documentais removem confirmações preliminares e preservam todas as alegações identificadas", async () => {
+test("limitação documental preserva pesquisa citada sem promover alegações sem evidência", async () => {
   await withControlledModels(async () => {
     const url = "https://www.youtube.com/shorts/controlled-image-claim";
     const originals = [
@@ -214,12 +214,174 @@ test("limites documentais removem confirmações preliminares e preservam todas 
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
     const out = await runVerify({ kind: "image", fileBuffer: png, fileMime: "image/png" });
     assert.deepEqual(out.result.claims.map((claim) => claim.text), originals);
-    assert.ok(out.result.claims.every((claim) => claim.status === "unproven"));
+    assert.deepEqual(out.result.claims.map((claim) => claim.status), ["true", "true", "unproven", "unproven", "unproven", "unproven"]);
+    assert.equal(out.result.claims[0].assessmentBasis, "web_research");
+    assert.equal(out.result.claims[0].evidence[0].verification, "research");
     assert.equal(out.result.score, null);
     assert.deepEqual(out.result.notCheckedClaims.map((claim) => claim.text), ["Duas caras"]);
-    assert.match(out.result.claims[0].note, /não forneceram transcrição/);
-    assert.doesNotMatch(out.result.claims.map((claim) => claim.note).join(" "), /está provado|foram confirmadas/);
-    assert.match(out.result.summary, /Sem comprovação/);
-    assert.doesNotMatch(out.result.summary, /foram confirmados/);
   });
+});
+
+async function withRequiredModeration(fn) {
+  const names = ["OPENCODE_API", "OPENAI_API_KEY", "BLOB_READ_WRITE_TOKEN", "MODERATION_MODE", "IEV_EVIDENCE_FETCH"];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  const previousFetch = globalThis.fetch;
+  process.env.OPENCODE_API = "test-key";
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  process.env.MODERATION_MODE = "required";
+  process.env.IEV_EVIDENCE_FETCH = "1";
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    if (String(url).endsWith("/models")) {
+      return new Response(JSON.stringify({ data: [{ id: "muse-spark-1.3-contributor" }] }), { status: 200 });
+    }
+    requests.push({ url: String(url), body: options && options.body });
+    if (String(url).includes("/moderations")) {
+      return new Response(JSON.stringify({ results: [{ categories: {}, category_scores: {} }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({ outcome: "no_verifiable_claims", verdict: null, score: null, claims: [], sources: [], summary: "Nenhuma alegação verificável identificada." }) }] }] }), { status: 200 });
+  };
+  try {
+    await fn(requests);
+  } finally {
+    globalThis.fetch = previousFetch;
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
+
+test("moderação obrigatória indisponível bloqueia a checagem antes do modelo", async () => {
+  await withRequiredModeration(async (requests) => {
+    let error;
+    try {
+      await runVerify({ kind: "text", text: "O índice caiu 2%." });
+    } catch (err) {
+      error = err;
+    }
+    assert.ok(error, "a checagem deveria ser rejeitada");
+    assert.equal(error.status, 503);
+    assert.equal(error.payload.error, "moderation_unavailable");
+    assert.equal(requests.filter((request) => request.url.includes("/responses")).length, 0, "o modelo não é acionado quando a moderação falha");
+  });
+});
+
+test("moderação considera o texto além do caractere 4.000 antes de seguir para o modelo", async () => {
+  await withRequiredModeration(async (requests) => {
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    let moderationInput = null;
+    let modelCalled = false;
+    globalThis.fetch = async (url, options) => {
+      if (String(url).endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "muse-spark-1.3-contributor" }] }), { status: 200 });
+      }
+      requests.push({ url: String(url), body: options && options.body });
+      if (String(url).includes("/moderations")) {
+        moderationInput = JSON.parse(options.body).input;
+        const proibido = moderationInput.includes("proibido");
+        return new Response(JSON.stringify({ results: [{ categories: { "sexual/minors": proibido }, category_scores: { "sexual/minors": 0.95 } }] }), { status: 200 });
+      }
+      modelCalled = true;
+      return new Response(JSON.stringify({ output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({ outcome: "checked", claims: [], sources: [], summary: "ok" }) }] }] }), { status: 200 });
+    };
+    const texto = "frase benigna de teste. ".repeat(300) + " conteúdo proibido no final do texto.";
+    const resultado = await runVerify({ kind: "text", text: texto });
+    assert.equal(moderationInput, texto, "o texto integral deve ser enviado à moderação");
+    assert.equal(resultado.result.outcome, "content_refused");
+    assert.equal(resultado.moderationCoverage.text, true);
+    assert.equal(modelCalled, false, "o modelo não é acionado após recusa de moderação");
+  });
+});
+
+test("menção jornalística a tema sensível não recusa e segue para a avaliação", async () => {
+  await withRequiredModeration(async () => {
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    globalThis.fetch = async (url, options) => {
+      if (String(url).endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "muse-spark-1.3-contributor" }] }), { status: 200 });
+      }
+      if (String(url).includes("/moderations")) {
+        const input = JSON.parse(options.body).input;
+        return new Response(JSON.stringify({ results: [{ categories: { violence: input.includes("violência") }, category_scores: { violence: 0.9 } }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({ outcome: "no_verifiable_claims", verdict: null, score: null, claims: [], sources: [], summary: "sem alegações" }) }] }] }), { status: 200 });
+    };
+    const texto = "contexto de reportagem. ".repeat(300) + " houve violência no protesto, afirma a reportagem.";
+    const resultado = await runVerify({ kind: "text", text: texto });
+    assert.equal(resultado.result.outcome, "no_verifiable_claims");
+    assert.ok(resultado.moderationCoverage.text, "cobertura de texto declarada");
+    assert.ok(resultado.moderation.some((entry) => String(entry).includes("violence")), "sinal de sensibilidade registrado, não recusa");
+  });
+});
+
+test("OCR da visão passa pela moderação textual obrigatória antes do juiz", async (t) => {
+  for (const unavailable of [false, true]) {
+    await t.test(unavailable ? "503 impede juiz" : "recusa impede juiz", async () => {
+      await withControlledModels(async () => {
+        process.env.MODERATION_MODE = "required";
+        process.env.OPENAI_API_KEY = "test-moderation-key";
+        const ocr = "Texto exclusivo extraído pelo modelo de visão.";
+        const events = [];
+        globalThis.fetch = async (url, options) => {
+          if (String(url).endsWith("/models")) return new Response(JSON.stringify({ data: [{ id: "muse-spark-1.3-contributor" }] }));
+          const body = JSON.parse(options.body);
+          if (String(url).endsWith("/moderations")) {
+            if (typeof body.input === "string" && body.input.includes(ocr)) {
+              events.push("ocr-moderation");
+              if (unavailable) return new Response("unavailable", { status: 503 });
+              return new Response(JSON.stringify({ results: [{ flagged: true, categories: { sexual: true }, category_scores: { sexual: 0.99 } }] }));
+            }
+            events.push("image-moderation");
+            return new Response(JSON.stringify({ results: [{ flagged: false, categories: {}, category_scores: {} }] }));
+          }
+          if (/Examine a imagem/.test(body.instructions)) {
+            events.push("vision");
+            return new Response(JSON.stringify({ output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({ visible_text: ocr, visual_observation: "Cartaz com texto.", legibility: "clear" }) }] }] }));
+          }
+          events.push("judge");
+          throw new Error("O juiz não pode receber OCR recusado ou sem moderação.");
+        };
+        const input = { kind: "image", context: unavailable ? "Cenário de indisponibilidade da moderação OCR." : "Cenário de recusa da moderação OCR.", fileMime: "image/png", fileBuffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64") };
+        if (unavailable) {
+          await assert.rejects(runVerify(input), (error) => error.status === 503 && error.payload?.error === "moderation_unavailable");
+        } else {
+          const out = await runVerify(input);
+          assert.equal(out.result.outcome, "content_refused");
+        }
+        assert.ok(events.indexOf("vision") >= 0);
+        assert.ok(events.indexOf("ocr-moderation") > events.indexOf("vision"));
+        assert.ok(!events.includes("judge"));
+      });
+    });
+  }
+});
+
+test("vídeo modera texto e nome de arquivo antes de encaminhar ao juiz", async (t) => {
+  for (const field of ["text", "fileName"]) {
+    await t.test(field, async () => {
+      await withControlledModels(async () => {
+        process.env.MODERATION_MODE = "required";
+        process.env.OPENAI_API_KEY = "test-moderation-key";
+        const marker = field === "text" ? "Contexto textual exclusivo do vídeo" : "nome-exclusivo-do-video.mp4";
+        const moderated = [];
+        let judgeCalls = 0;
+        globalThis.fetch = async (url, options) => {
+          if (String(url).endsWith("/models")) return new Response(JSON.stringify({ data: [{ id: "muse-spark-1.3-contributor" }] }));
+          const body = JSON.parse(options.body);
+          if (String(url).endsWith("/moderations")) {
+            moderated.push(body.input);
+            return new Response(JSON.stringify({ results: [{ flagged: true, categories: { sexual: true }, category_scores: { sexual: 0.99 } }] }));
+          }
+          judgeCalls += 1;
+          throw new Error("Entrada de vídeo recusada não pode chegar ao modelo.");
+        };
+        const out = await runVerify({ kind: "video", [field]: marker });
+        assert.equal(out.result.outcome, "content_refused");
+        assert.ok(moderated.some((value) => typeof value === "string" && value.includes(marker)));
+        assert.equal(judgeCalls, 0);
+      });
+    });
+  }
 });

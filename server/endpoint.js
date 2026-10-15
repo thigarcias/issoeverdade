@@ -120,7 +120,24 @@ export async function admitVerifyRequest({ method, headers = {}, body, socketAdd
  * `onEvent` recebe eventos NDJSON (`accepted`/`content`/`activity`/`result`/`error`);
  * exatamente um terminal (`result` ou `error`) é emitido, com `seq` crescente.
  */
-export async function executeVerifyStream({ input, slot, guard, checkId = null, onEvent, recoveryStore = RECOVERY } = {}) {
+const RECOVERY_TIMEOUT_MS = 5_000;
+
+/** Executa a operação com prazo próprio; no estouro, resolve `onTimeout()`. */
+function withTimeout(operation, ms, onTimeout) {
+  let timer;
+  return Promise.race([
+    Promise.resolve().then(operation).then(
+      (value) => { clearTimeout(timer); return value; },
+      (error) => { clearTimeout(timer); throw error; },
+    ),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(onTimeout()), ms);
+      if (typeof timer?.unref === "function") timer.unref();
+    }),
+  ]);
+}
+
+export async function executeVerifyStream({ input, slot, guard, checkId = null, onEvent, recoveryStore = RECOVERY, recoveryStartTimeoutMs = RECOVERY_TIMEOUT_MS, recoverySettlementTimeoutMs = RECOVERY_TIMEOUT_MS } = {}) {
   const emit = typeof onEvent === "function" ? onEvent : () => {};
   let seq = 0;
   let terminal = false;
@@ -134,8 +151,22 @@ export async function executeVerifyStream({ input, slot, guard, checkId = null, 
   };
   const id = typeof checkId === "string" && checkId ? checkId : randomUUID();
   try {
-    capability = await recoveryStore.start(id);
-    send({ type: "accepted", ...capability, contract: VERIFY_CONTRACT });
+    // A recuperação é complementar: falha ou prazo excedido do registro inicial
+    // não impede a checagem permitida, apenas deixa de prometer recuperação.
+    try {
+      capability = await withTimeout(() => recoveryStore.start(id), recoveryStartTimeoutMs, () => null);
+    } catch {
+      capability = null;
+    }
+    if (!capability?.checkId || typeof capability.recoveryToken !== "string") capability = null;
+    const recoveryCreated = Boolean(capability);
+    send({
+      type: "accepted",
+      checkId: id,
+      contract: VERIFY_CONTRACT,
+      recoveryAvailable: recoveryCreated,
+      ...(recoveryCreated ? { recoveryToken: capability.recoveryToken } : {}),
+    });
     const out = await runVerify(input, {
       checkId: id,
       onProgress: (event) => {
@@ -144,17 +175,30 @@ export async function executeVerifyStream({ input, slot, guard, checkId = null, 
       },
     });
     tokens = out?.cached ? 0 : out?.tokenUsage?.total ?? 0;
-    let recoveryAvailable = true;
-    try {
-      await recoveryStore.complete(capability, out);
-    } catch {
-      recoveryAvailable = false;
-      try {
-        await recoveryStore.fail(capability, {
-          code: "recovery_unavailable",
-          message: "A análise concluiu, mas não foi possível guardar uma cópia recuperável.",
-        });
-      } catch { /* The valid result is still delivered; recovery is not promised. */ }
+    let recoveryAvailable = false;
+    if (recoveryCreated) {
+      // Complete e a eventual marcação de falha compartilham um único prazo.
+      // Uma rejeição tardia é observada, mas não inicia outra gravação após ele.
+      let expired = false;
+      recoveryAvailable = await withTimeout(async () => {
+        try {
+          await recoveryStore.complete(capability, out);
+          return true;
+        } catch {
+          if (!expired) {
+            try {
+              await recoveryStore.fail(capability, {
+                code: "recovery_unavailable",
+                message: "A análise concluiu, mas não foi possível guardar uma cópia recuperável.",
+              });
+            } catch { /* The valid result is still delivered; recovery is not promised. */ }
+          }
+          return false;
+        }
+      }, recoverySettlementTimeoutMs, () => {
+        expired = true;
+        return false;
+      });
     }
     send({ type: "result", checkId: id, recoveryAvailable, envelope: out });
   } catch (err) {
@@ -168,11 +212,10 @@ export async function executeVerifyStream({ input, slot, guard, checkId = null, 
       message = "Não foi possível guardar o resultado para recuperação.";
     }
     if (capability) {
-      try { await recoveryStore.fail(capability, { code, message }); }
-      catch {
-        code = "recovery_unavailable";
-        message = "O armazenamento da checagem está indisponível.";
-      }
+      // A gravação do erro é best-effort e limitada: preserva o erro primário.
+      try {
+        await withTimeout(() => recoveryStore.fail(capability, { code, message }), recoverySettlementTimeoutMs, () => null);
+      } catch { /* primary error preserved */ }
     }
     send({ type: "error", checkId: id, code, message: String(message).slice(0, 500) });
   } finally {

@@ -20,7 +20,37 @@ function blobToken() {
  * Época do cache: resultados gravados antes de uma invalidação (correção
  * editorial, incidente) deixam de ser servidos como versão vigente.
  */
+let epochLoader = null;
+
+/** Injeção usada por testes; `null` restaura a leitura real do Blob. */
+export function __setCacheEpochLoader(loader) {
+  epochLoader = typeof loader === "function" ? loader : null;
+}
+
+/** Valida a resposta HTTP real; apenas a ausência do objeto permite bootstrap. */
+export async function readCacheEpochResponse(response) {
+  if (!response?.ok) throw new Error("cache_epoch_unavailable");
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error("cache_epoch_unavailable");
+  }
+  if (typeof body?.epoch !== "string" || !body.epoch.trim()) {
+    throw new Error("cache_epoch_unavailable");
+  }
+  return body.epoch;
+}
+
 export async function currentEpoch() {
+  if (epochLoader) {
+    try {
+      return await epochLoader();
+    } catch {
+      epochMemory = { value: null, at: Date.now() };
+      throw new Error("cache_epoch_unavailable");
+    }
+  }
   if (!blobToken()) return "local";
   if (epochMemory.value && Date.now() - epochMemory.at < EPOCH_TTL_MS) return epochMemory.value;
   try {
@@ -32,11 +62,14 @@ export async function currentEpoch() {
       return "initial";
     }
     const response = await fetch(item.url, { headers: { Authorization: `Bearer ${blobToken()}` } });
-    const body = response.ok ? await response.json() : null;
-    epochMemory = { value: String(body?.epoch ?? "initial"), at: Date.now() };
+    const epoch = await readCacheEpochResponse(response);
+    epochMemory = { value: epoch, at: Date.now() };
     return epochMemory.value;
   } catch {
-    return epochMemory.value ?? "initial";
+    // Outage da leitura da época: não reutilizar silenciosamente a época
+    // anterior nem a "initial". Chamadores tratam como cache miss.
+    epochMemory = { value: null, at: Date.now() };
+    throw new Error("cache_epoch_unavailable");
   }
 }
 
@@ -106,12 +139,21 @@ function reusable(value) {
     claim.evidenceReview?.verification !== "verified");
 }
 
-export async function getCached(input, namespace) {
+export async function getCached(input, namespace, policy) {
   const key = cacheKey(input, namespace);
-  const epoch = await currentEpoch();
+  let epoch;
+  try {
+    epoch = await currentEpoch();
+  } catch {
+    // Outage da época: não é possível provar a validade atual do cache.
+    return null;
+  }
   const mem = memory.get(key);
-  if (mem && reusable(mem.value) && Date.now() - mem.savedAt < TTL_MS && mem.epoch === epoch) return { ...mem.value, cached: true, cachedFrom: mem.value.checkId ?? null };
-  memory.delete(key);
+  if (mem) {
+    const usable = reusable(mem.value) && Date.now() - mem.savedAt < TTL_MS && mem.epoch === epoch;
+    if (usable && (!policy || mem.policy === policy)) return { ...mem.value, cached: true, cachedFrom: mem.value.checkId ?? null };
+    if (!usable) memory.delete(key);
+  }
   const token = blobToken();
   if (!token) return null;
   try {
@@ -126,22 +168,30 @@ export async function getCached(input, namespace) {
     const body = await response.json();
     if (body?.namespace !== namespace || !body?.value || !reusable(body.value)) return null;
     if ((body?.epoch ?? "initial") !== epoch) return null;
-    memory.set(key, { value: body.value, savedAt: Date.now(), epoch });
+    if (policy && body.policy !== policy) return null;
+    memory.set(key, { value: body.value, savedAt: Date.now(), epoch, policy: body.policy });
     return { ...body.value, cached: true, cachedFrom: body.value.checkId ?? null };
   } catch {
     return null;
   }
 }
 
-export async function setCached(input, value, namespace) {
+export async function setCached(input, value, namespace, policy) {
   const key = cacheKey(input, namespace);
   // Uma falha documental/revisão inconclusiva não deve congelar a abstenção por 24h.
   if (!reusable(value)) {
     memory.delete(key);
     return;
   }
-  const epoch = await currentEpoch();
-  const entry = { value, namespace, savedAt: Date.now(), epoch };
+  let epoch;
+  try {
+    epoch = await currentEpoch();
+  } catch {
+    // Não é possível provar a época atual: não grava registro sem identidade de época válida.
+    memory.delete(key);
+    return;
+  }
+  const entry = { value, namespace, savedAt: Date.now(), epoch, policy };
   memory.set(key, entry);
   if (memory.size > MAX_MEMORY) memory.delete(memory.keys().next().value);
   const token = blobToken();

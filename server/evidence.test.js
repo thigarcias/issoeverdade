@@ -126,6 +126,7 @@ test("extrai entidades latinas preservando caixa e localiza citação no HTML", 
   const located = await evidence.collectEvidence({
     sources: [{ url: "https://example.test/artigo" }],
     claims: [{ evidence: [{ sourceId: 0, relation: "supports", quote }] }],
+    config: evidence.evidenceConfig({ IEV_EVIDENCE_FETCH: "1" }),
     fetchImpl: async (url) => ({ ok: true, url, kind: "html", text: extracted.text }),
   });
   assert.equal(located.citations[0].locator.found, true);
@@ -338,6 +339,7 @@ test("localização editorial não junta fragmentos de fontes distintas", async 
   const dossier = await evidence.collectEvidence({
     sources,
     claims: [{ status: "unproven", evidence: sources.map((_, sourceId) => ({ sourceId, relation: "supports", quote })) }],
+    config: evidence.evidenceConfig({ IEV_EVIDENCE_FETCH: "1" }),
     fetchImpl: async (url) => ({ ok: true, url, kind: "html", text: texts[sources.findIndex((source) => source.url === url)] }),
   });
   assert.equal(dossier.citations.length, 2);
@@ -350,7 +352,7 @@ test("dossiê conserva intervalo editorial maior que a janela e não apaga ressa
   const dossier = await evidence.collectEvidence({
     sources: [{ url: "https://a.example/apuracao" }],
     claims: [{ status: "unproven", evidence: [{ sourceId: 0, relation: "context", quote }] }],
-    config: evidence.evidenceConfig({ IEV_EVIDENCE_EXCERPT_CHARS: "20" }),
+    config: evidence.evidenceConfig({ IEV_EVIDENCE_FETCH: "1", IEV_EVIDENCE_EXCERPT_CHARS: "20" }),
     fetchImpl: async (url) => ({ ok: true, url, kind: "html", text: sourceSpan }),
   });
   assert.equal(dossier.citations[0].locator.found, true);
@@ -378,7 +380,7 @@ test("prioriza fontes de claims decididos e coleta trechos localizados", async (
   const dossier = await evidence.collectEvidence({
     sources,
     claims,
-    config: evidence.evidenceConfig({ IEV_EVIDENCE_MAX_DOCS: "4" }),
+    config: evidence.evidenceConfig({ IEV_EVIDENCE_FETCH: "1", IEV_EVIDENCE_MAX_DOCS: "4" }),
     fetchImpl: async (url) => ({ ok: true, url, kind: "html", text: documentos[url], bytes: 100 }),
   });
   assert.equal(dossier.summary.documents, 2);
@@ -399,7 +401,7 @@ test("dossiê respeita teto de documentos e orçamento de bytes", async () => {
   const dossier = await evidence.collectEvidence({
     sources,
     claims,
-    config: evidence.evidenceConfig({ IEV_EVIDENCE_MAX_DOCS: "2" }),
+    config: evidence.evidenceConfig({ IEV_EVIDENCE_FETCH: "1", IEV_EVIDENCE_MAX_DOCS: "2" }),
     fetchImpl: async (url) => { chamadas++; return { ok: false, url, reason: "blocked:private_address" }; },
   });
   assert.equal(chamadas, 2);
@@ -552,7 +554,8 @@ test("páginas de vídeo sem transcrição preservam impossibilidade e não part
   const url = "https://www.youtube.com/shorts/fixture";
   const claims = [{ text: "A senadora anunciou a revisão.", status: "true", sourceIds: [0],
     evidence: [{ sourceId: 0, quote: "A senadora anunciou a revisão da proposta.", relation: "supports" }] }];
-  const dossier = await evidence.collectEvidence({ sources: [{ url, outlet: "Vídeo" }], claims });
+  const dossier = await evidence.collectEvidence({ sources: [{ url, outlet: "Vídeo" }], claims,
+    config: evidence.evidenceConfig({ IEV_EVIDENCE_FETCH: "1" }) });
   assert.equal(dossier.documents[0].ok, false);
   assert.equal(dossier.documents[0].reason, "media-transcript-unavailable");
   assert.equal(dossier.summary.located, 0);
@@ -685,4 +688,148 @@ test("tags inline não tornam uma citação longa literal apenas um prefixo parc
   assert.ok(match.excerpt.includes(second));
   assert.ok(extracted.text.includes("10 , 5"), "normalização não junta números separados em decimal");
   assert.equal(locateQuote(extracted.text, quote.replace("sem provar adoção", "com adoção comprovada")).found, false);
+});
+
+function researchFixture(status = "true") {
+  return {
+    sources: [{ outlet: "Instituto", url: "https://example.test/pesquisa" }],
+    claims: [{
+      text: "O instituto divulgou o resultado.", status, sourceIds: [0],
+      note: "O trecho citado informa o resultado do instituto.",
+      evidence: [{ sourceId: 0, evidenceId: "e1", relation: status === "false" ? "refutes" : "supports",
+        quote: "O instituto divulgou o resultado final da pesquisa." }],
+    }],
+  };
+}
+
+test("coleta só ocorre com opt-in explícito, sem chamadas quando desativada", async () => {
+  for (const value of [undefined, "0", "true", "false", ""]) {
+    const config = evidence.evidenceConfig({ IEV_EVIDENCE_FETCH: value });
+    assert.equal(config.enabled, false);
+    const dossier = await evidence.collectEvidence({ ...researchFixture(), config,
+      fetchImpl: async () => assert.fail("coleta desativada acessou HTTP") });
+    assert.equal(dossier.summary.enabled, false);
+    assert.deepEqual(dossier.citations, []);
+  }
+  assert.equal(evidence.evidenceConfig({ IEV_EVIDENCE_FETCH: "1" }).enabled, true);
+});
+
+test("citações da pesquisa preservam proveniência e trecho sem inventar localização", () => {
+  const data = researchFixture();
+  const [citation] = evidence.buildResearchCitations(data);
+  assert.equal(citation.basis, "web_research");
+  assert.equal(citation.excerpt, data.claims[0].evidence[0].quote);
+  assert.equal(citation.quote, citation.excerpt);
+  assert.equal(citation.sourceId, 0);
+  assert.equal(citation.evidenceId, "e1");
+  assert.equal(citation.locator, undefined);
+  assert.equal(citation.document, undefined);
+  for (const mutate of [
+    (input) => { input.sources = []; },
+    (input) => { input.claims[0].sourceIds = []; },
+    (input) => { input.claims[0].evidence[0].sourceId = "0"; },
+    (input) => { input.claims[0].evidence[0].relation = "unknown"; },
+    (input) => { input.claims[0].evidence[0].quote = "curto"; },
+  ]) {
+    const invalid = structuredClone(data); mutate(invalid);
+    assert.deepEqual(evidence.buildResearchCitations(invalid), []);
+  }
+});
+
+for (const status of ["true", "false"]) {
+  for (const scenario of ["disabled", "http403", "outage", "unclear", "missing-group", "truncated", "shell"]) {
+    test(`pesquisa ${status} permanece avaliação primária com auditoria ${scenario}`, async () => {
+      const data = researchFixture(status);
+      const config = evidence.evidenceConfig({ IEV_EVIDENCE_FETCH: scenario === "disabled" ? "0" : "1" });
+      const quote = data.claims[0].evidence[0].quote;
+      const dossier = await evidence.collectEvidence({ ...data, config, fetchImpl: async () =>
+        scenario === "http403" ? { ok: false, reason: "http-403" }
+          : scenario === "shell" ? { ok: false, reason: "document-shell" }
+            : { ok: true, text: scenario === "truncated" ? "Apenas o começo do documento foi obtido; o corpo não está disponível." : quote,
+              truncated: scenario === "truncated" } });
+      const review = scenario === "unclear" ? { claims: [{ claimIndex: 0, verdict: "unclear", note: "Sem conclusão." }] }
+        : scenario === "missing-group" ? { claims: [] } : null;
+      const assessed = evidence.applyEvidenceAssessment({ ...data, citations: dossier.citations, review, config });
+      const claim = validateResult({ ...data, outcome: "checked", claims: assessed.claims }).fixed.claims[0];
+      assert.equal(claim.status, status);
+      assert.equal(claim.assessmentBasis, "web_research");
+      assert.equal(claim.evidence[0].verification, "research");
+      assert.equal(claim.note, data.claims[0].note);
+      assert.match(claim.assessmentNote, /sem conferência documental independente/);
+      assert.equal(claim.score, status === "true" ? 95 : 5);
+      assert.deepEqual(assessed.downgraded, []);
+      if (scenario === "disabled") assert.equal(claim.evidenceReview, undefined);
+      if (scenario === "http403") assert.match(claim.evidenceReview.note, /HTTP 403/);
+    });
+  }
+}
+
+test("fallback não promove abstenção/contexto nem aceita evidências inválidas ou conflitantes", () => {
+  for (const mutate of [
+    (data) => { data.claims[0].status = "unproven"; },
+    (data) => { data.claims[0].status = "context"; },
+    (data) => { data.claims[0].evidence = []; },
+    (data) => { data.claims[0].sourceIds = []; },
+    (data) => { data.claims[0].evidence[0].quote = ""; },
+    (data) => { data.claims[0].evidence[0].relation = "refutes"; },
+    (data) => { data.claims[0].evidence.push({ ...data.claims[0].evidence[0], relation: "refutes" }); },
+    (data) => { data.claims[0].referencePeriod = { start: "2026-10-01", end: "2026-10-31" };
+      data.claims[0].evidence[0].referencePeriod = { start: "2025-10-01", end: "2025-10-31" }; },
+    (data) => { data.claims[0].referencePeriod = { start: "2026-02-30", end: "2026-03-01" }; },
+    (data) => { data.claims[0].evidence[0].referencePeriod = { start: "invalid", end: "invalid" }; },
+  ]) {
+    const data = researchFixture(); mutate(data);
+    const assessed = evidence.applyEvidenceAssessment({ ...data, config: evidence.evidenceConfig({}) });
+    assert.equal(assessed.claims[0].status, "unproven");
+    assert.equal(assessed.claims[0].score, null);
+  }
+});
+
+test("citação incompatível com documento obtido não reaparece como evidência de pesquisa", async () => {
+  const data = researchFixture();
+  const config = evidence.evidenceConfig({ IEV_EVIDENCE_FETCH: "1" });
+  const dossier = await evidence.collectEvidence({ ...data, config,
+    fetchImpl: async () => ({ ok: true, text: "A página registra outro assunto, sem informar qualquer resultado da pesquisa citada." }) });
+  assert.equal(dossier.citations[0].locator.found, false);
+  const research = evidence.buildResearchCitations(data);
+  assert.deepEqual(evidence.comparisonCitations(dossier.citations, research), []);
+  const assessed = evidence.applyEvidenceAssessment({ ...data, citations: dossier.citations, config });
+  assert.equal(assessed.claims[0].status, "unproven");
+  assert.equal(assessed.claims[0].evidence[0].verification, "unavailable");
+});
+
+for (const [verdict, expected] of [["supports", "true"], ["refutes", "false"], ["context", "unproven"]]) {
+  test(`grupo documental conclusivo ${verdict} prevalece sobre pesquisa`, () => {
+    const data = researchFixture(verdict === "supports" ? "false" : "true");
+    const research = evidence.buildResearchCitations(data);
+    const citations = research.map(({ basis: _basis, ...item }) => ({ ...item, document: { ok: true }, locator: { found: true } }));
+    assert.deepEqual(evidence.comparisonCitations(citations, research), citations);
+    const assessed = evidence.applyEvidenceAssessment({ ...data, citations,
+      review: { claims: [{ claimIndex: 0, verdict, note: "O conjunto documental estabelece a relação indicada." }] },
+      config: evidence.evidenceConfig({ IEV_EVIDENCE_FETCH: "1" }) });
+    assert.equal(assessed.claims[0].status, expected);
+    assert.equal(assessed.claims[0].assessmentBasis, "document_review");
+    assert.equal(assessed.claims[0].evidence[0].verification, "verified");
+  });
+}
+
+test("shell de navegação e texto truncado não se passam por documento integral", async () => {
+  const shell = await evidence.extractDocumentText(htmlResponse("<html><body>Please enable JavaScript to continue and view the full article.</body></html>"));
+  assert.equal(shell.ok, false);
+  assert.equal(shell.reason, "document-shell");
+  const partial = await evidence.extractDocumentText(htmlResponse(`<html><body>${"Documento longo. ".repeat(20)}</body></html>`),
+    { config: evidence.evidenceConfig({ IEV_EVIDENCE_MAX_TEXT_CHARS: "50" }) });
+  assert.equal(partial.truncated, true);
+  assert.equal(partial.text.length, 50);
+});
+
+test("avaliação de evidência preserva claims excedentes para o validador contabilizar omissões", () => {
+  const data = researchFixture();
+  data.claims = Array.from({ length: 52 }, () => structuredClone(data.claims[0]));
+  const assessed = evidence.applyEvidenceAssessment({ ...data, config: evidence.evidenceConfig({}) });
+  assert.equal(assessed.claims.length, 52);
+  const fixed = validateResult({ ...data, outcome: "checked", claims: assessed.claims }).fixed;
+  assert.equal(fixed.claims.length, 50);
+  assert.equal(fixed.omittedClaimsCount, 2);
+  assert.equal(fixed.outcome, "partial_coverage");
 });

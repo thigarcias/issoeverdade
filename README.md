@@ -126,10 +126,19 @@ continuam sendo por instância; não são agregações históricas da Supabase.
   Os quadros selecionados são moderados individualmente (uma imagem por
   requisição), agregando categorias e o maior score observado. Falha mantém
   bloqueio em modo obrigatório; os motivos ficam no registro de erro do Admin.
-- **Evidências** (`server/evidence.js`): obtém o documento de cada fonte
-  vinculada (HTML/PDF), localiza o trecho citado, registra o que não foi
-  localizado e revisa a fidelidade antes de fixar score/veredito. Ausência de
-  trecho nunca é tratada como prova de falsidade.
+- **Pesquisa e auditoria opcional** (`fact-check-16`, `server/evidence.js`): a
+  avaliação principal usa busca web com proveniência de URLs, vínculos por
+  afirmação e validação determinística. **O coletor documental fica desativado
+  por padrão**; somente `IEV_EVIDENCE_FETCH=1` ativa obtenção HTML/PDF, localização
+  de citações e revisão documental opcional (JEV por padrão). Falha operacional
+  dessa auditoria não apaga uma avaliação de pesquisa válida. Citação de pesquisa
+  não é trecho de página lido/conferido independentemente: recebe
+  `verification: research`, nunca `verified`. Uma divergência explícita entre
+  citação e documento obtido impede reutilizar aquela citação como fallback;
+  falta de fonte, conflito ou período incompatível mantém a abstenção.
+  Consulte a [metodologia](docs/metodologia-factual.md) e a
+  [auditoria dos gates do fluxo](docs/auditoria-gates-fluxo-2026-10-15.md) para
+  outros bloqueios e riscos ainda existentes.
 
 Deep-link do detalhe: `/admin?detail=<id>` (restaurado no carregamento e no
 `popstate`, sem reabrir um detalhe já fechado quando a resposta chega atrasada).
@@ -172,7 +181,8 @@ fallback silencioso se falhar. O navegador guarda até 20 resultados em
 dependendo do Blob privado ([privacidade](docs/privacidade-dados-ia.md)).
 
 O POST de checagem transmite NDJSON: `accepted` entrega o mesmo `checkId`
-usado no registro/resultado e uma capacidade secreta `recoveryToken`.
+usado no registro/resultado e informa `recoveryAvailable`; quando há registro
+recuperável, entrega também a capacidade secreta `recoveryToken`.
 O cliente aceita o evento terminal mesmo sem quebra de linha no EOF e preserva
 UTF-8 dividido entre chunks. Se a conexão acabar sem terminal, tenta uma única
 consulta `GET /api/verify?checkId=...`, com o segredo apenas no cabeçalho
@@ -186,8 +196,11 @@ sem conclusão após 5 minutos retorna falha. O envelope fica em Blob privado ou
 memória limitada a 200 registros, sem garantia de exclusão física pelo TTL.
 GET não executa IA, admissão de POST, reserva de orçamento ou conciliação de
 tokens. Um POST que acerta cache ainda passa pela admissão existente, mas não
-recontabiliza o consumo antigo de IA. Se a cópia recuperável falhar ao persistir,
-o resultado válido ainda é entregue com `recoveryAvailable: false`.
+recontabiliza o consumo antigo de IA. Falha ou prazo excedido do registro
+inicial não bloqueia a análise: o stream informa `recoveryAvailable: false`,
+sem token fictício nem nova inferência automática. Se a cópia recuperável
+falhar ao persistir, o resultado válido ainda é entregue com
+`recoveryAvailable: false`.
 
 Publicação é separada da recuperação temporária: o resultado persistido recebe
 uma capacidade `shareToken`, cujo hash fica no servidor. Essa capacidade permanece
@@ -265,27 +278,27 @@ captcha, streams protegidos e conteúdo removido continuam limitações externas
 
 ## Metodologia e avaliação
 
-As novas checagens usam `fact-check-15`: investigam alegações implícitas em
-perguntas e justaposições, distinguindo comparação factual, motivação atribuída
-e juízo de valor. Recortes de manchetes também exigem pesquisa da publicação
-original, fidelidade e datas, sem autenticação por OCR/logotipo. O fluxo executa
-uma avaliação factual com busca (`judge`), pesquisa direcionada condicional para
-notícias (`article-research`), documentos (`evidence`) e revisão documental por
-alegação (`evidence-review`). Uma passagem adicional de cobertura e recuperação
-(`evidence-research`) confronta a entrada original com as hipóteses existentes,
-pesquisa lacunas e propõe citações; não altera as hipóteses existentes. Afirmações
-omitidas só entram com trecho literal localizado na entrada. Novas evidências
-passam pelo saneamento e localização (`evidence-recovered`); apenas conjuntos
-documentalmente alterados são revistos (`evidence-rereview`). Não há repetição do
-mesmo julgamento até obter confirmação nem fallback automático de provedor.
-HTML de reprodução de vídeo sem transcrição fica indisponível como prova de
-fala; a pesquisa prioriza reportagens textuais, documentos e transcrições.
-O coletor reutiliza corpos estruturados de artigos e cache por URL, respeitando
-os tetos de documentos e bytes. A revisão avalia **o conjunto de evidências
-de cada claim**; comparações qualitativas não exigem cálculo anual. Sem suporte
-adequado, o claim fica `unproven`; fontes somente escritas pelo modelo continuam
-descartadas. `/admin` exibe proveniência, dossiê, moderação e subetapas de mídia.
-Registros e smokes anteriores preservam sua versão histórica.
+As novas checagens usam `fact-check-16`: investigam alegações implícitas em
+perguntas e justaposições, preservando comparação factual, atribuição e escopo.
+O fluxo principal executa avaliação com busca (`judge`), pesquisa direcionada
+condicional de notícias (`article-research`), saneamento e validação
+determinística. A base `assessmentBasis: web_research` é **Pesquisa com fontes
+citadas**; `verification: research` identifica trecho informado pelo pesquisador
+com URL na proveniência, não texto bruto de página conferido pelo servidor.
+Isso não garante leitura da página, fidelidade da citação ou autenticidade.
+
+Só `IEV_EVIDENCE_FETCH=1` ativa documentos (`evidence`) e revisão opcional por
+alegação (`evidence-review`), além de cobertura/recuperação (`evidence-research`,
+`evidence-recovered`, `evidence-rereview`). Hipóteses existentes não são
+alteradas; novas hipóteses exigem trecho literal na entrada e começam
+`unproven`. Apenas grupos com conteúdo documental novo são revistos.
+Não há repetição até confirmar nem troca automática de provedor.
+Falha operacional da auditoria conserva pesquisa primária elegível, mas
+divergência explícita de citação em documento obtido exclui aquela citação do
+fallback; truncamento não é refutação. Sem fonte/trecho válido, com conflito ou
+período disjunto, mantém-se a abstenção. Desativar o coletor das fontes não
+desativa leitores da entrada (artigo/PDF/imagem/mídia). Registros e smokes
+anteriores preservam sua versão histórica; a auditoria v15 não foi reescrita.
 A síntese é construída deterministicamente a partir das classificações e
 alegações validadas, com limites de cobertura; não executa nova chamada ao modelo.
 
@@ -297,7 +310,7 @@ especificada. Uma nova medida, declaração, data ou evento exige evidência
 correspondente; rótulo “fake news”, notícia sobre o tema e ausência de anúncio
 não bastam. Data de publicação não se confunde com período de referência do fato.
 
-Notas da revisão documental atual: `true=95`, `false=5`; contexto insuficiente fica sem nota. A âncora `context=70` permanece histórica.
+Notas atuais: `true=95`, `false=5`; `context` da pesquisa principal vira `unproven`, sem nota. `context=70` permanece histórico.
 `unproven` recebe `score=null`, não zero. Havendo qualquer afirmação sem
 comprovação ou omitida, a nota global também é `null` e o veredito `unproven`;
 a média só inclui resultados totalmente avaliados. `evidenceSupport`
@@ -305,26 +318,25 @@ a média só inclui resultados totalmente avaliados. `evidenceSupport`
 `coverage` (`total`, `assessed`, `unproven`, `omitted`) descreve alcance da
 avaliação. A interface, o detalhe e o compartilhamento preservam essa distinção.
 
-A revisão de evidências padrão usa JEV `jev-1.13-free` via OpenCode/SystemOne
-(`IEV_EVIDENCE_REVIEW_PROVIDER=jev|judge`), sem fallback automático.
-Uma resposta JEV só determina a relação do grupo com probabilidade máxima de
-classe ≥0,7 e margem ≥0,2; ambiguidade mantém abstenção. A resposta é
-`{claims:[{claimIndex,verdict,note}]}`; `claim.evidenceReview` registra
-`verdict`, `verification`, `incomplete` e `evidenceIndices`. Na revisão agrupada,
-cada trecho fica `relation: "context"`: sua `verification` é documental, não
-prova semântica independente. Esses limiares não são probabilidades calibradas.
-Uma revisão documental completa e verificada com `supports` ou `refutes` resolve
-o status como `true` ou `false`, respectivamente, mesmo que a classificação
-inicial fosse `unproven`, `context` ou a oposta. Contexto sozinho não promove
-uma alegação a verdadeira/falsa; revisão incompleta ou inconclusiva e comparação
-inválida continuam exigindo abstenção. Na versão 15, o piso de classe passou de 0,8 para 0,7, mantendo a margem de 0,2, após reproduzir abstenção em proposta explicitamente documentada; não é uma garantia de precisão.
-Na versão 15, uma relação documental `context` deixa componente sem suporte e
-resulta em abstenção, independentemente de o modelo inicial ter sugerido
-`true`, `false`, `context` ou `unproven`. A escala histórica de 70 permanece
-legível, mas o contexto da fonte não gera essa nota na revisão documental atual.
-Os grupos são empacotados inteiros; o teto de trechos vale por alegação, sem
-deixar alegações posteriores sem revisão. Falha documental/revisão inconclusiva
-não é reutilizada como abstenção factual durante as 24 horas do cache.
+A auditoria documental opcional usa JEV `jev-1.13-free` via OpenCode/SystemOne
+por padrão (`IEV_EVIDENCE_REVIEW_PROVIDER=jev|judge`), somente com coleta
+ativada e trechos aptos; `IEV_EVIDENCE_REVIEW=0` desativa a revisão separadamente.
+Falhar JEV não aciona outro provedor: retorna à pesquisa principal elegível,
+sem chamar seu trecho de `verified` nem promover hipótese inicialmente sem
+comprovação. Os limiares JEV introduzidos na versão 15 permanecem: classe
+máxima ≥0,7 e margem ≥0,2, sem garantia de precisão ou calibração.
+`claim.evidenceReview` registra `verdict`, `verification`, `incomplete` e
+`evidenceIndices`. Grupo documental completo e conclusivo resolve
+`supports` → `true`, `refutes` → `false`, `context` → `unproven`, mesmo contra
+o palpite inicial, com `assessmentBasis: document_review`. Grupo
+incompleto/ausente/inconclusivo não é conclusão documental e não apaga
+pesquisa válida. Na revisão agrupada, trechos ficam `relation: context`;
+`verified` significa localização e participação em grupo revisado, não prova
+individual da alegação inteira. Comparação inválida continua sem comprovação.
+O teto de trechos vale por alegação, com grupos inteiros em lotes.
+Abstenções sem revisão documental verificada não são reutilizadas nas 24
+horas do cache; isso também exclui abstenções de pesquisa. Pesquisa conclusiva
+elegível pode ser cacheada sem auditoria independente.
 As janelas documentais preservam contexto antes e depois da citação, dentro do
 teto configurado, para não perder sujeito, data ou ressalva adjacentes.
 Na avaliação e na revisão, uma prisão sob suspeita não exige prova de culpa:
@@ -346,16 +358,18 @@ Comparações anuais usam `comparison` com `metric`, `region`, `unit`, `dataset`
 `operator` e dois `groups` (`label`, `startYear`, `endYear`, `rows`). Cada linha
 contém `year`, `valueText`, `numberFormat: "pt-BR"|"en-US"`, `scale: 1|1000|1000000`,
 `evidenceId` e `complete`. Ano, valor literal, unidade e escala precisam estar
-no trecho localizado; não se usam operandos sem localização. Separadores
-ambíguos exigem o formato da fonte, não o idioma da resposta. Nomes de metadados
-não precisam aparecer literalmente: homogeneidade declarada é estrutural e
-a semântica é conferida no grupo. O servidor soma decimais exatamente e registra
+em evidência própria vinculada: trecho documental ou citação explicitamente de
+pesquisa, sem inventar localização. Separadores ambíguos exigem o formato da
+fonte. Metadados homogêneos são validação estrutural, não prova de universo ou
+contexto semântico. O servidor soma decimais exatamente e registra
 `status: complete|lower_bound|partial|invalid`, `eligible`, `relation`, `scope`,
 `reason`, totais, linhas e cobertura. Recortes menores não viram mandatos inteiros;
 dados parciais não autorizam extrapolação. Um limite inferior só estabelece a
 desigualdade quando um subtotal de área não negativa já supera o total completo
-do outro lado, nunca igualdade ou previsão. A conclusão ainda exige revisão
-documental compatível do conjunto. Detalhes em [Metodologia](docs/metodologia-factual.md).
+do outro lado, nunca igualdade ou previsão. A conclusão exige revisão
+documental válida ou pesquisa primária concordante com evidência de pesquisa
+vinculada em **todas** as linhas. A soma exata não autentica operandos.
+Detalhes em [Metodologia](docs/metodologia-factual.md).
 
 Na validação, o objeto de cada afirmação não é substituído por outra pergunta.
 Texto, período e limites continuam vinculados às evidências daquela afirmação. O suporte

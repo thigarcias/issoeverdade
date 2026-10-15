@@ -8,6 +8,7 @@ import { publicCheckEnvelope } from "./public-check.js";
 import { runVerify } from "./verify.js";
 import { getCached, invalidateCache } from "./cache.js";
 import { evidenceConfig } from "./evidence.js";
+import { moderationConfig, moderationPolicyFingerprint } from "./moderation.js";
 import { PROMPT_VERSION } from "./scoring.js";
 
 const guard = { config: { correctionsPerWindow: 100, windowSec: 60 }, rateLimit: async () => ({ allowed: true }) };
@@ -128,6 +129,48 @@ test("public projection drops nested unknown objects and reprojects stored legac
   });
 });
 
+test("research assessment survives persistence and publication with recursive public allowlists", async () => {
+  await withStore(async ({ rows }) => {
+    const source = envelope();
+    Object.assign(source.result.claims[0], {
+      assessmentBasis: "web_research",
+      assessmentNote: "Pesquisa com fonte citada; sem auditoria documental.",
+      evidenceReview: { verification: "unavailable", verdict: "unclear", incomplete: true, raw: { token: "PRIVATE REVIEW" } },
+    });
+    source.result.claims[0].evidence[0].verification = "research";
+    const saved = await saveSuccessfulCheck(entry(), source);
+    const stored = rows.get("private-check").public_envelope.result.claims[0];
+    assert.equal(stored.assessmentBasis, "web_research");
+    assert.equal(stored.evidence[0].verification, "research");
+    await request({ method: "POST", body: { checkId: "private-check", shareToken: saved.shareToken } });
+    const published = (await request({ method: "GET", query: { id: "private-check" } })).body;
+    assert.equal(published.result.claims[0].status, "true");
+    assert.equal(published.result.claims[0].assessmentNote, source.result.claims[0].assessmentNote);
+    assert.equal(published.result.claims[0].assessmentBasis, "web_research");
+    assert.equal(published.result.claims[0].evidence[0].verification, "research");
+    assert.doesNotMatch(JSON.stringify(published), /PRIVATE|token|raw/);
+  });
+});
+
+test("assessment projection accepts only the enum and a bounded string note", () => {
+  for (const basis of ["web_research", "document_review"]) {
+    const source = envelope();
+    Object.assign(source.result.claims[0], { assessmentBasis: basis, assessmentNote: "x".repeat(1200) });
+    const claim = publicCheckEnvelope(source).result.claims[0];
+    assert.equal(claim.assessmentBasis, basis);
+    assert.equal(claim.assessmentNote, "x".repeat(800));
+  }
+  for (const basis of ["verified", ["web_research"], { secret: "PRIVATE BASIS" }]) {
+    const source = envelope();
+    Object.assign(source.result.claims[0], { assessmentBasis: basis, assessmentNote: { secret: "PRIVATE NOTE" } });
+    const projected = publicCheckEnvelope(source);
+    assert.equal(projected.result.claims[0].assessmentBasis, null);
+    assert.equal(projected.result.claims[0].assessmentNote, null);
+    assert.doesNotMatch(JSON.stringify(projected), /PRIVATE BASIS|PRIVATE NOTE/);
+  }
+  assert.equal(publicCheckEnvelope(envelope()).result.claims[0].assessmentBasis, undefined);
+});
+
 test("storage failures stay observable without leaking backend bodies or secrets", async () => {
   await withStore(async (store) => {
     store.fail();
@@ -193,7 +236,7 @@ test("successful and cached executions persist distinct IDs/capabilities and cac
     assert.equal(store.rows.size, 2);
     assert.equal(store.rows.get(second.checkId).log.cachedFrom, first.checkId);
     const ev = evidenceConfig();
-    const namespace = `${PROMPT_VERSION}:media-context-v5:${first.configRevision}:${ev.enabled}:${ev.reviewEnabled}:${ev.reviewProvider}:${ev.reviewModel}`;
+    const namespace = `${PROMPT_VERSION}:media-context-v6:${first.configRevision}:${moderationPolicyFingerprint(moderationConfig())}:${ev.enabled}:${ev.reviewEnabled}:${ev.reviewProvider}:${ev.reviewModel}`;
     const cached = await getCached(input, namespace);
     assert.ok(cached);
     assert.equal(cached.storage, undefined);

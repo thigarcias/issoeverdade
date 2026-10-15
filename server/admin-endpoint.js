@@ -224,6 +224,9 @@ export async function handleAdminRequest({ method, headers = {}, query = {}, bod
           revision: state.revision,
           updatedAt: state.updatedAt,
           persisted: state.persisted,
+          stale: Boolean(state.stale),
+          staleReason: state.staleReason ?? null,
+          error: state.error ?? null,
           methodology: METHODOLOGY,
         },
       };

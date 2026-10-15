@@ -12,7 +12,9 @@ import { saveCheckLog as saveLog, saveSuccessfulCheck } from "./checklog.js";
 import { getCached, setCached } from "./cache.js";
 import {
   EVIDENCE_REVIEW_INSTRUCTIONS,
-  applyReview,
+  applyEvidenceAssessment,
+  buildResearchCitations,
+  comparisonCitations,
   buildReviewBatches,
   buildReviewInput,
   collectEvidence,
@@ -32,6 +34,7 @@ import {
   moderateImages,
   moderateText,
   moderationConfig,
+  moderationPolicyFingerprint,
   moderationSummary,
   purposeTriage,
   refusalMessage,
@@ -293,6 +296,8 @@ function sanitizeSources(sources, claims = [], citations = []) {
 
   const evidenceByClaim = claims.map((claim) => {
     delete claim.evidenceReview;
+    delete claim.assessmentBasis;
+    delete claim.assessmentNote;
     const evidences = [];
     for (const [evidenceIndex, evidence] of (Array.isArray(claim?.evidence) ? claim.evidence : []).entries()) {
       const originalIndex = Number(evidence?.source) - 1;
@@ -340,6 +345,60 @@ function sanitizeSources(sources, claims = [], citations = []) {
     delete claim.sources;
   }
   return { sources: finalSources, dropped };
+}
+
+function articleAssessment(raw, citations) {
+  const copy = structuredClone(raw);
+  if (!copy || !Array.isArray(copy.claims ?? []) ||
+    (copy.claims ?? []).some((claim) => !claim || typeof claim !== "object" ||
+      typeof claim.text !== "string" || !claim.text.trim())) throw new Error("invalid_article_assessment");
+  copy.claims ??= [];
+  const clean = sanitizeSources(copy.sources, copy.claims, citations);
+  copy.sources = clean.sources;
+  copy.claims = applyComparisons({ claims: copy.claims, citations: buildResearchCitations(copy) });
+  copy.claims = applyEvidenceAssessment({ ...copy, config: { ...evidenceConfig(), enabled: false } }).claims;
+  const fixed = validateResult(copy).fixed;
+  if (fixed.claims.length === 0 && (copy.needs_media === true || copy.outcome === "inaccessible_media")) {
+    fixed.needs_media = true;
+  }
+  return fixed;
+}
+
+function mergeArticleAssessments(base, next) {
+  if (base.claims.length === 0 && next.claims.length === 0) return next;
+  const sources = [...base.sources, ...next.sources];
+  const rawClaim = (claim, offset, prefix = "") => {
+    const ids = new Map();
+    const id = (value) => {
+      if (!prefix) return value;
+      if (!ids.has(value)) ids.set(value, `${prefix}${ids.size + 1}`);
+      return ids.get(value);
+    };
+    return { ...claim, evidence: claim.evidence.map((item) => ({ ...item,
+      source: item.sourceId + offset + 1, evidenceId: id(item.evidenceId) })),
+      ...(claim.comparison ? { comparison: { ...claim.comparison,
+        groups: claim.comparison.groups.map((group) => ({ ...group,
+          rows: group.rows.map((row) => ({ ...row, evidenceId: id(row.evidenceId) })) })) } } : {}) };
+  };
+  const claims = base.claims.map((claim) => rawClaim(claim, 0));
+  const key = (claim) => `${claim.text.normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase()}:${JSON.stringify(claim.referencePeriod)}`;
+  for (const [index, claim] of next.claims.entries()) {
+    const incoming = rawClaim(claim, base.sources.length, `article${index}-`);
+    const existing = claims.find((item) => key(item) === key(incoming));
+    if (!existing) { claims.push(incoming); continue; }
+    const conclusive = (status) => status === "true" || status === "false";
+    const conflict = conclusive(existing.status) && conclusive(incoming.status) && existing.status !== incoming.status;
+    const evidence = [...existing.evidence, ...incoming.evidence];
+    if (conclusive(incoming.status)) Object.assign(existing, incoming);
+    existing.evidence = evidence;
+    if (conflict) {
+      existing.status = "unproven";
+      existing.note = "As pesquisas forneceram conclusões incompatíveis para a mesma afirmação.";
+    }
+  }
+  return { ...base, claims, sources, needs_media: false,
+    outcome: base.outcome === "partial_coverage" || next.outcome === "partial_coverage" ? "partial_coverage" : "checked",
+    omittedClaimsCount: Math.max(base.omittedClaimsCount ?? 0, next.omittedClaimsCount ?? 0) };
 }
 
 
@@ -427,7 +486,7 @@ async function collectMediaArtifacts(audio, frameResult, mediaContext, opts = {}
           ? `transcribe:${result.provider}:${result.model}:${result.segments?.length ?? 0} segmentos`
           : `transcribe:${selected.provider}:${selected.model}:${result?.reason ?? "failed"}${result?.status ? `:http-${result.status}` : ""}${result?.detail ? `:${result.detail}` : ""}`);
         if (result?.ok && result.text && opts.moderateText) {
-          const gate = await opts.moderateText(result.text).catch(() => null);
+          const gate = await opts.moderateText(result.text);
           if (gate?.report) reports.push(gate.report);
           if (gate && !gate.allowed) {
             blocked.push(gate);
@@ -451,7 +510,7 @@ async function collectMediaArtifacts(audio, frameResult, mediaContext, opts = {}
       }
       debug.push(`frames:${frameResult.via ?? "media"}:${frameResult.frames.length}`);
       if (opts.moderateFrames) {
-        const gate = await opts.moderateFrames(frameResult.frames).catch(() => null);
+        const gate = await opts.moderateFrames(frameResult.frames);
         if (gate?.report) reports.push(gate.report);
         if (gate && !gate.allowed) {
           blocked.push(gate);
@@ -490,7 +549,7 @@ async function enrichWithMedia(maybeUrl, opts = {}) {
       media.media?.linkedContext && `Conteúdo vinculado extraído:\n${media.media.linkedContext}`,
     ].filter(Boolean).join("\n\n");
     const metadataGate = media.ok && media.context && opts.moderateText
-      ? await opts.moderateText(media.context).catch(() => null)
+      ? await opts.moderateText(media.context)
       : null;
     const origin = toOrigin(media.ok ? media.media : null, maybeUrl);
     const mediaContext = media.ok ? `Metadados da origem:\n${media.context}` : "";
@@ -536,7 +595,7 @@ async function enrichWithMedia(maybeUrl, opts = {}) {
   const expectFrames = canExtractFrames && (hasVideo ||
     (audio?.hasVideo !== false && frameResult?.hasVideo !== false && media.media?.hasVideo !== false));
   const metadataGate = media.ok && media.context && opts.moderateText
-    ? await opts.moderateText(media.context).catch(() => null)
+    ? await opts.moderateText(media.context)
     : null;
   const coverage = hasVideo && opts.checkVideoCoverage ? opts.checkVideoCoverage() : null;
   const coverageReports = [metadataGate?.report, coverage?.report].filter(Boolean);
@@ -717,15 +776,29 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   const progress = makeProgressEmitter(onProgress);
   const configState = await getAiConfigState();
   const aiCfg = configState.config;
-  trace.aiConfig = Object.fromEntries(Object.entries(aiCfg).map(([step, pair]) => [step, `${pair.provider}:${pair.model}`]));
   trace.configRevision = configState.revision;
   trace.configSource = configState.source;
+  trace.configStale = Boolean(configState.stale);
+  trace.configErrors = configState.configErrors ?? null;
+  // Sem configuração determinável com segurança, falha antes da inferência paga.
+  if (!aiCfg) {
+    const code = configState.error ?? "ai_config_unavailable";
+    fail(503, code, {
+      message: code === "ai_config_invalid"
+        ? "A configuração de IA persistida é inválida ou incompatível com o catálogo; a checagem não foi executada até ser corrigida."
+        : "A configuração de IA não pôde ser determinada com segurança; a checagem não foi executada.",
+    });
+  }
+  trace.aiConfig = Object.fromEntries(Object.entries(aiCfg).map(([step, pair]) => [step, `${pair.provider}:${pair.model}`]));
   trace.methodologyVersion = PROMPT_VERSION;
+  // Política de moderação vigente: usada para vincular o cache e decisões de recusa.
+  const modCfg = moderationConfig();
   const evCfg = evidenceConfig();
   const evidenceFetcher = createEvidenceFetcher(evCfg);
-  const cacheNamespace = `${PROMPT_VERSION}:media-context-v5:${configState.revision}:${evCfg.enabled}:${evCfg.reviewEnabled}:${evCfg.reviewProvider}:${evCfg.reviewModel}`;
+  const policyFingerprint = moderationPolicyFingerprint(modCfg);
+  const cacheNamespace = `${PROMPT_VERSION}:media-context-v6:${configState.revision}:${policyFingerprint}:${evCfg.enabled}:${evCfg.reviewEnabled}:${evCfg.reviewProvider}:${evCfg.reviewModel}`;
   const t0 = startedAt ?? Date.now();
-  const hit = await getCached(input, cacheNamespace).catch(() => null);
+  const hit = await getCached(input, cacheNamespace, policyFingerprint).catch(() => null);
   if (hit) {
     const elapsed = Date.now() - t0;
     const storage = await saveSuccessfulCheck({
@@ -904,7 +977,6 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   let articleCoverage = null;
 
   // Triagem de propósito e cobertura de moderação antes de qualquer etapa paga.
-  const modCfg = moderationConfig();
   const moderationReports = [];
   trace.moderationReports = moderationReports;
   const purpose = purposeTriage(input);
@@ -948,8 +1020,8 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
    */
   const moderationState = (gate) => {
     if (!gate || gate.allowed) return null;
-    if (gate.error === "moderation_unavailable") {
-      fail(503, "moderation_unavailable", { message: gate.message ?? "Moderação de conteúdo indisponível; a checagem não foi executada." });
+    if (gate.error) {
+      fail(gate.status ?? 503, gate.error, { message: gate.message ?? "Moderação de conteúdo indisponível; a checagem não foi executada." });
     }
     return {
       outcome: "content_refused",
@@ -965,6 +1037,13 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   if (!blockedResult && input?.context) {
     const gate = await phase("context-moderation", () => moderateTextArtifact(input.context));
     blockedResult = moderationState(gate);
+  }
+  if (!blockedResult && input?.kind === "video") {
+    for (const value of [input.text, String(input.fileName ?? "").slice(0, 200)]) {
+      if (typeof value !== "string" || !value.trim()) continue;
+      blockedResult = moderationState(await moderateTextArtifact(value));
+      if (blockedResult) break;
+    }
   }
   if (!blockedResult && wantsMedia && isUrl && !mediaTarget && !imageTarget) {
     await phase("media-probe", async () => {
@@ -983,8 +1062,17 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       }
       if (sourceInfo?.type === "pdf") {
         origin = toOrigin(media.media, maybeUrl);
-        if (media.ok) mediaContext = media.context;
-        else {
+        if (media.ok) {
+          // O texto extraído do PDF é conteúdo de checagem: modera antes de
+          // seguir para a próxima etapa, como artigo, post e demais ramos.
+          mediaContext = media.context;
+          const gate = await moderateTextArtifact(media.context);
+          const state = moderationState(gate);
+          if (state) {
+            blockedResult = state;
+            mediaContext = "";
+          }
+        } else {
           blockedResult = {
             outcome: "inaccessible_media",
             verdict: null,
@@ -1006,7 +1094,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       } else if (media.ok) {
         if (!articleTarget) mediaContext = `Texto/contexto de origem (não necessariamente integral):\n${media.context}`;
         origin = toOrigin(media.media, maybeUrl);
-        const gate = await moderateTextArtifact(media.context).catch(() => null);
+        const gate = await moderateTextArtifact(media.context);
         const state = moderationState(gate);
         if (state) {
           blockedResult = state;
@@ -1173,18 +1261,12 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     }
   }
 
-  if (!blockedResult && input?.kind === "text" && String(input.text ?? "").trim()) {
-    const gate = await moderateTextArtifact(input.text);
-    blockedResult = moderationState(gate);
-  }
-  if (!blockedResult && postTextOnly && mediaContext) {
-    // Texto de post usado como conteúdo de checagem também passa pela moderação.
-    const gate = await moderateTextArtifact(mediaContext).catch(() => null);
-    const state = moderationState(gate);
-    if (state) {
-      blockedResult = state;
-      mediaContext = "";
-      postTextOnly = false;
+  if (!blockedResult) {
+    const texts = [input?.kind === "video" ? "" : input?.text,
+      mediaContext ? mediaContext.slice(0, 24_000) : ""];
+    for (const text of new Set(texts.filter((value) => typeof value === "string" && value.trim()))) {
+      const state = moderationState(await moderateTextArtifact(text));
+      if (state) { blockedResult = state; break; }
     }
   }
 
@@ -1220,24 +1302,62 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   let model = judge?.model ?? null;
   let provider = judge?.provider ?? null;
   let resultCitations = firstCitations;
+  const articleResearchLimitations = [];
 
   if (!blockedResult && articleTarget && (first?.needs_media === true || first?.outcome === "inaccessible_media" ||
       first?.outcome === "insufficient_input" || judge?.diagnostics?.status === "no_search_calls")) {
     // Resposta legada não encerra notícias sem pesquisar as alegações disponíveis.
     const researchInput = `${judgeInput}\nInvestigue agora com busca web a publicação original e suas alegações pelo URL, título e site. Não solicite áudio/vídeo para uma notícia textual e não responda needs_media. Se recuperar apenas título/trechos, declare a cobertura; não finja leitura integral. Identifique claims e pesquise evidência independente, sem forçar verdadeiro/falso. Só use insufficient_input se nenhuma alegação puder ser identificada após a pesquisa.`;
-    const research = await phase("article-research", () =>
-      callModel({
-        aiCfg, step: "judge", instructions: judgeInstructions,
-        input: researchInput, timeoutMs, sessionId: id, webSearch: true, requireWebSearch: true,
-      }),
-    );
-    finalResult = research.result;
-    model = research.model;
-    provider = research.provider;
-    resultCitations = [...new Map([...firstCitations, ...(research.citations ?? [])].map((citation) => [citation.url, citation])).values()];
-    addUsage(research);
-    recordModel("article-research", research);
-    recordQueries(research, "article-research");
+    // A primeira resposta é a base elegível; ela só é substituída por uma
+    // segunda resposta com alegações, sempre passando pelo saneamento e pela
+    // validação do pipeline. A etapa complementar não repete tentativas nem
+    // troca de provedor e usa o orçamento restante da execução.
+    const firstBase = first;
+    const baseHasClaims = Array.isArray(firstBase?.claims) && firstBase.claims.length > 0;
+    const remainingBudgetMs = Math.max(5_000, timeoutMs - (Date.now() - t0));
+    let research = null;
+    try {
+      research = await phase("article-research", () =>
+        callModel({
+          aiCfg, step: "judge", instructions: judgeInstructions,
+          input: researchInput, timeoutMs: Math.min(timeoutMs, remainingBudgetMs), sessionId: id, webSearch: true, requireWebSearch: true,
+        }),
+      );
+    } catch {
+      research = null;
+    }
+    if (research) {
+      addUsage(research);
+      recordModel("article-research", research);
+      recordQueries(research, "article-research");
+      const researchClaims = Array.isArray(research.result?.claims) ? research.result.claims : [];
+      if (researchClaims.length === 0 && baseHasClaims) {
+        // Um resultado adicional vazio não apaga alegações já identificadas:
+        // a base é preservada com a cobertura incompleta declarada.
+        finalResult = firstBase;
+        resultCitations = [...new Map([...firstCitations, ...(research.citations ?? [])].map((citation) => [citation.url, citation])).values()];
+        articleResearchLimitations.push("A pesquisa adicional do artigo não retornou alegações utilizáveis; as afirmações já identificadas foram preservadas com cobertura limitada.");
+      } else {
+        try {
+          const combinedCitations = [...firstCitations, ...(research.citations ?? [])];
+          finalResult = mergeArticleAssessments(articleAssessment(firstBase, firstCitations),
+            articleAssessment(research.result, combinedCitations));
+        } catch {
+          finalResult = firstBase;
+          articleResearchLimitations.push("A pesquisa adicional retornou estrutura inválida; a primeira avaliação foi preservada.");
+        }
+        model = research.model;
+        provider = research.provider;
+        resultCitations = [...new Map([...firstCitations, ...(research.citations ?? [])].map((citation) => [citation.url, citation])).values()];
+      }
+    } else {
+      // Falha operacional da etapa complementar: a primeira avaliação segue
+      // como resultado, sem ser promovida nem substituída por outro provedor.
+      finalResult = firstBase;
+      articleResearchLimitations.push(baseHasClaims
+        ? "A pesquisa adicional do artigo ficou indisponível; o resultado preserva a primeira avaliação e sua cobertura."
+        : "A pesquisa adicional do artigo ficou indisponível; nenhuma alegação utilizável foi registrada.");
+    }
   }
 
   if (!blockedResult && !articleTarget && first?.needs_media === true) {
@@ -1265,8 +1385,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   const clean = sanitizeSources(finalResult?.sources, claims, resultCitations);
   finalResult = { ...finalResult, claims, sources: clean.sources };
 
-  // Dossiê de evidências: obtém os documentos vinculados, localiza os trechos e
-  // revisa a fidelidade antes de fixar score/veredito.
+  // A pesquisa com fontes citadas é primária; a leitura própria é auditoria opcional.
   let evidenceDossier = null;
   const evidenceCorrections = [];
   if (!blockedResult && evCfg.enabled) progress.activity("evidence", "pending", null);
@@ -1277,7 +1396,12 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     ).catch(() => null);
   }
   let citations = evidenceDossier?.citations ?? [];
-  finalResult = { ...finalResult, claims: applyComparisons({ claims: finalResult.claims, citations }) };
+  const withComparisons = (value, documentary) => applyComparisons({
+    claims: value.claims,
+    citations: comparisonCitations(documentary, buildResearchCitations({ claims: value.claims, sources: value.sources })),
+  });
+  finalResult = { ...finalResult, claims: withComparisons(finalResult, citations) };
+  let review = null;
   if (needsEvidence) {
     const reviewEvidence = async (reviewCitations, phaseName) => {
       if (!evCfg.reviewEnabled || reviewableCitations(reviewCitations, evCfg).length === 0) return null;
@@ -1310,9 +1434,9 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       }
       return review?.result ?? null;
     };
-    let review = await reviewEvidence(citations, "evidence-review");
+    review = await reviewEvidence(citations, "evidence-review");
     const originalMaterial = [input?.kind === "text" ? input.text : "", input?.context, mediaContext].filter(Boolean).join("\n");
-    const provisional = applyReview({ claims: finalResult.claims, citations, review, config: evCfg });
+    const provisional = applyEvidenceAssessment({ claims: finalResult.claims, sources: finalResult.sources, citations, review, config: evCfg });
     const provisionalResult = validateResult({ ...finalResult, claims: provisional.claims }).fixed;
     const unresolved = provisionalResult.claims.flatMap((claim, index) => claim.status === "unproven" ? [index] : []);
     // Uma recuperação documental, não uma repetição do mesmo julgamento até obter confirmação.
@@ -1351,7 +1475,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
         if (recovered) {
           const targets = [...unresolved, ...candidate.claims.flatMap((_claim, index) => index >= finalResult.claims.length ? [index] : [])];
           const changed = changedEvidenceClaims(citations, recovered.citations, targets);
-          finalResult = { ...finalResult, ...candidate, claims: applyComparisons({ claims: candidate.claims, citations: recovered.citations }) };
+          finalResult = { ...finalResult, ...candidate, claims: withComparisons(candidate, recovered.citations) };
           citations = recovered.citations;
           evidenceDossier = recovered;
           if (changed.length > 0) {
@@ -1364,11 +1488,11 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
         }
       }
     }
-    const applied = applyReview({ claims: finalResult.claims, citations, review, config: evCfg });
-    finalResult = { ...finalResult, claims: applied.claims };
-    evidenceCorrections.push(...applied.corrections);
-    if (evidenceDossier) evidenceDossier.verification = applied.summary;
   }
+  const applied = applyEvidenceAssessment({ claims: finalResult.claims, sources: finalResult.sources, citations, review, config: evCfg });
+  finalResult = { ...finalResult, claims: applied.claims };
+  evidenceCorrections.push(...applied.corrections);
+  if (evidenceDossier) evidenceDossier.verification = applied.summary;
 
   const { fixed, corrections } = validateResult(finalResult);
   corrections.push(...evidenceCorrections);
@@ -1377,6 +1501,10 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   if (fixed.outcome === "inaccessible_media") fixed.summary = "A mídia necessária não ficou acessível; não foi atribuído veredito factual.";
   if (fixed.outcome === "no_verifiable_claims" && !purpose.blocked) fixed.summary = "Não foi identificada uma afirmação factual verificável no material recebido.";
   const summaryLimitations = [];
+  if (articleResearchLimitations.length > 0) {
+    summaryLimitations.push(...articleResearchLimitations);
+    corrections.push(...articleResearchLimitations);
+  }
   if (postTextOnly) {
     summaryLimitations.push("Cobertura limitada ao texto disponível do post; imagens, áudio e vídeo anexados não foram examinados.");
   }
@@ -1399,7 +1527,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       // documental própria, sem reaproveitar conclusões cruzadas da avaliação.
       fixed.claims = fixed.claims.map((claim, index) => {
         if (claim.status !== claims[index]?.status || claim.comparison) return claim;
-        const reviewedNote = String(claim.evidenceReview?.note ?? "").trim();
+        const reviewedNote = String(claim.assessmentBasis === "web_research" ? claim.note ?? "" : claim.evidenceReview?.note ?? "").trim();
         const statusNote = {
           true: "Os trechos vinculados sustentam esta afirmação.",
           false: "Os trechos vinculados refutam esta afirmação.",
@@ -1552,7 +1680,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     progress.activity(mapping.id, "skipped", mapping.parent);
   }
   progress.close();
-  setCached(input, out, cacheNamespace).catch(() => {});
+  setCached(input, out, cacheNamespace, policyFingerprint).catch(() => {});
   const storage = await saveSuccessfulCheck(entry, out).catch(() => ({ persisted: false }));
   return { ...out, storage };
 }

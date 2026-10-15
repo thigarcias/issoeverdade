@@ -254,3 +254,149 @@ test("resumo consolidado preserva limites sem recuperar conclusões descartadas"
     }
   }
 });
+
+test("pesquisa adicional recuperável: falha da segunda chamada preserva a primeira avaliação", async (t) => {
+  const savedEnv = Object.fromEntries(["OPENCODE_API", "OPENAI_API_KEY", "IEV_ALLOW_PRIVATE_HOSTS", "IEV_HTTP_PORTS", "IEV_EVIDENCE_FETCH"].map((key) => [key, process.env[key]]));
+  const originalFetch = globalThis.fetch;
+  const server = createServer((_req, res) => {
+    res.writeHead(403, { "Content-Type": "text/html" });
+    res.end("<html><title>Forbidden</title></html>");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  process.env.IEV_ALLOW_PRIVATE_HOSTS = "1";
+  process.env.IEV_HTTP_PORTS = String(port);
+  process.env.OPENCODE_API = "test-only-key";
+  delete process.env.OPENAI_API_KEY;
+  process.env.IEV_EVIDENCE_FETCH = "0";
+  let responses = [];
+  let failAfterFirst = false;
+  let modelCalls = 0;
+  globalThis.fetch = async (url, options) => {
+    if (String(url).endsWith("/responses")) {
+      modelCalls += 1;
+      if (failAfterFirst && modelCalls > 1) {
+        return new Response(JSON.stringify({ error: { message: "PRIVATE upstream failure", type: "server_error" } }), { status: 500 });
+      }
+      const result = responses.shift();
+      assert.ok(result, "requisição inesperada ao modelo");
+      const body = JSON.parse(options.body);
+      // Sem chamada de busca registrada na primeira resposta: dispara a etapa adicional.
+      const includeSearch = /Investigue agora com busca web/.test(String(body.input));
+      return new Response(JSON.stringify({
+        output: [
+          ...(includeSearch ? [{ type: "web_search_call", status: "completed", action: { type: "search", query: "publicação escolas municipais", sources: [] } }] : []),
+          { type: "message", content: [{ type: "output_text", text: JSON.stringify(result), annotations: (result.sources ?? []).filter((source) => source.outlet !== "Fonte inventada").map((source) => ({ type: "url_citation", url: source.url, title: source.outlet })) }] },
+        ],
+      }), { status: 200 });
+    }
+    if (String(url).endsWith("/models")) return new Response(JSON.stringify({ data: [{ id: "muse-spark-1.3-contributor" }] }), { status: 200 });
+    return originalFetch(url, options);
+  };
+  try {
+    await t.test("resposta válida com claims + segunda chamada falha: elegível preservado com aviso", async () => {
+      responses = [{ outcome: "checked", claims: [{ text: "O município anunciou sete escolas.", status: "unproven", note: "A alegação foi identificada.", evidence: [] }], sources: [], summary: "Alegação identificada." }];
+      failAfterFirst = true;
+      modelCalls = 0;
+      const out = await handleVerifyRequest(post({ kind: "link", text: `http://127.0.0.1:${port}/falha-na-pesquisa` }, { guard: guardWith() }));
+      assert.equal(out.status, 200);
+      assert.equal(out.body.result.claims.length, 1);
+      assert.equal(out.body.result.claims[0].status, "unproven");
+      assert.match(out.body.result.summary, /pesquisa adicional do artigo ficou indisponível/i);
+      assert.doesNotMatch(JSON.stringify(out.body), /PRIVATE upstream failure/);
+      assert.equal(responses.length, 0);
+    });
+    await t.test("sem avaliação utilizável + segunda indisponível: limitação sem promoção a confirmado", async () => {
+      responses = [{ needs_media: true }];
+      failAfterFirst = true;
+      modelCalls = 0;
+      const out = await handleVerifyRequest(post({ kind: "link", text: `http://127.0.0.1:${port}/sem-claims` }, { guard: guardWith() }));
+      assert.equal(out.status, 200);
+      assert.equal(out.body.result.outcome, "insufficient_input");
+      assert.equal(out.body.result.score, null);
+      assert.equal(out.body.result.verdict, null);
+      assert.equal(out.body.result.claims.length, 0);
+      assert.match(out.body.result.summary, /nenhuma alegação utilizável/i);
+    });
+    await t.test("segunda resposta vazia não apaga alegações já identificadas", async () => {
+      responses = [
+        { outcome: "checked", claims: [{ text: "A cidade anunciou sete escolas.", status: "unproven", note: "Identificada na primeira avaliação.", evidence: [] }], sources: [], summary: "Primeira avaliação." },
+        { outcome: "insufficient_input", claims: [], sources: [], summary: "Nada adicional." },
+      ];
+      failAfterFirst = false;
+      modelCalls = 0;
+      const out = await handleVerifyRequest(post({ kind: "link", text: `http://127.0.0.1:${port}/vazio` }, { guard: guardWith() }));
+      assert.equal(out.status, 200);
+      assert.equal(out.body.result.claims.length, 1, "afirmação identificada não é apagada silenciosamente");
+      assert.match(out.body.result.summary, /não retornou alegações utilizáveis/i);
+      assert.equal(responses.length, 0);
+    });
+    await t.test("fontes sem proveniência da ferramenta continuam rejeitadas no caminho adicional", async () => {
+      responses = [
+        { needs_media: true },
+        { outcome: "checked", claims: [{ text: "O município anunciou sete escolas.", status: "true", score: 95, evidence: [{ source: 1, relation: "supports", quote: "Sete escolas foram anunciadas." }] }], sources: [{ url: `http://127.0.0.1:${port}/inventada`, outlet: "Fonte inventada" }], summary: "Confirmado." },
+      ];
+      failAfterFirst = false;
+      modelCalls = 0;
+      const out = await handleVerifyRequest(post({ kind: "link", text: `http://127.0.0.1:${port}/fonte-sem-proveniencia` }, { guard: guardWith() }));
+      assert.equal(out.status, 200);
+      assert.equal(out.body.result.sources.length, 0, "URL apenas presente no JSON não vira fonte");
+      assert.equal(out.body.result.claims[0].status, "unproven");
+      assert.equal(out.body.result.verdict, "unproven");
+    });
+    await t.test("segunda pesquisa preserva claims omitidos e neutraliza conclusões conflitantes", async (t) => {
+      const sources = [{ url: "https://www.gov.br/educacao/escolas", outlet: "Registro público" }];
+      const claim = (text, status) => ({
+        text, status, score: status === "true" ? 95 : 5,
+        evidence: [{ source: 1, relation: status === "true" ? "supports" : "refutes", quote: "O município anunciou sete escolas, mas não inaugurou nenhuma escola." }],
+      });
+      const announced = "O município anunciou sete escolas.";
+      const opened = "O município inaugurou sete escolas.";
+      for (const scenario of [
+        { name: "segunda contém apenas true", first: [claim(announced, "true"), claim(opened, "false")], second: [claim(announced, "true")], expected: ["true", "false"] },
+        { name: "segunda contém claim nulo", first: [claim(announced, "true"), claim(opened, "false")], second: [null], expected: ["true", "false"] },
+        { name: "mesmo claim com conclusões opostas", first: [claim(announced, "true")], second: [claim(announced, "false")], expected: ["unproven"] },
+      ]) {
+        await t.test(scenario.name, async () => {
+          responses = [
+            { needs_media: true, outcome: "checked", claims: scenario.first, sources },
+            { outcome: "checked", claims: scenario.second, sources },
+          ];
+          failAfterFirst = false;
+          modelCalls = 0;
+          const out = await handleVerifyRequest(post({ kind: "link", text: `http://127.0.0.1:${port}/merge-${encodeURIComponent(scenario.name)}` }, { guard: guardWith() }));
+          assert.equal(out.status, 200);
+          assert.deepEqual(out.body.result.claims.map((item) => item.status), scenario.expected);
+          assert.equal(out.body.result.coverage.total, scenario.expected.length);
+          if (scenario.expected.length === 2) {
+            assert.equal(out.body.result.claims[1].text, opened);
+            assert.equal(out.body.result.coverage.assessed, 2);
+          }
+          assert.equal(modelCalls, 2);
+          assert.equal(responses.length, 0);
+        });
+      }
+    });
+    await t.test("primeira resposta legada sem claims aceita pesquisa válida posterior", async () => {
+      responses = [
+        { needs_media: true },
+        { outcome: "checked", claims: [{ text: "O município anunciou sete escolas.", status: "unproven", evidence: [] }], sources: [] },
+      ];
+      failAfterFirst = false;
+      modelCalls = 0;
+      const out = await handleVerifyRequest(post({ kind: "link", text: `http://127.0.0.1:${port}/legado-merge` }, { guard: guardWith() }));
+      assert.equal(out.status, 200);
+      assert.equal(out.body.result.claims.length, 1);
+      assert.equal(out.body.result.coverage.total, 1);
+      assert.equal(modelCalls, 2);
+      assert.equal(responses.length, 0);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

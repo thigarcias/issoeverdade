@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { applyComparisons, calculateComparison, parseComparisonNumber } from "./comparison.js";
-import { applyReview, buildReviewGroups } from "./evidence.js";
+import { applyEvidenceAssessment, applyReview, buildResearchCitations, buildReviewGroups, comparisonCitations } from "./evidence.js";
 import { validateResult } from "./scoring.js";
 
 const now = new Date("2026-10-14T00:00:00Z");
@@ -179,4 +179,117 @@ test("formato explícito não aceita agrupamento de milhares ou escala em conven
   assert.equal(parseComparisonNumber("1,234.56", "pt-BR"), null);
   assert.equal(parseComparisonNumber("1.234,56", "en-US"), null);
   assert.equal(parseComparisonNumber("1.234", "desconhecido"), null);
+});
+
+function researchComparisonFixture(a = "20", b = "10", status = "true") {
+  const data = fixture(a, b);
+  data.sources = [{ outlet: "Atlas", url: "https://example.test/2020" }, { outlet: "Atlas", url: "https://example.test/2021" }];
+  data.claims[0].status = status;
+  data.claims[0].evidence = data.claims[0].evidence.map((item) => ({
+    ...item, relation: status === "false" ? "refutes" : "supports",
+  }));
+  data.citations = buildResearchCitations(data);
+  return data;
+}
+
+function assessResearchComparison(data, citations = data.citations) {
+  const claims = applyComparisons({ claims: data.claims, citations, now });
+  return applyEvidenceAssessment({ claims, sources: data.sources, config: { enabled: false, maxReviewItems: 12 } }).claims[0];
+}
+
+for (const [a, b, status] of [["20", "10", "true"], ["10", "20", "false"]]) {
+  test(`comparação completa ${status} funciona apenas com pesquisa citada, sem HTTP/localizador`, () => {
+    const data = researchComparisonFixture(a, b, status);
+    assert.ok(data.citations.every((item) => item.basis === "web_research" && item.locator === undefined));
+    const claim = assessResearchComparison(data);
+    assert.equal(claim.status, status);
+    assert.equal(claim.comparison.eligible, true);
+    assert.deepEqual(claim.comparison.groups.map((group) => group.total), [Number(a), Number(b)]);
+    assert.equal(claim.assessmentBasis, "web_research");
+    assert.ok(claim.evidence.every((item) => item.verification === "research"));
+    assert.equal(claim.score, status === "true" ? 95 : 5);
+    assert.equal(claim.evidenceReview, undefined);
+  });
+}
+
+test("cálculo da pesquisa não promove abstenção nem contradiz o julgamento semântico inicial", () => {
+  for (const status of ["unproven", "false", "context"]) {
+    assert.equal(assessResearchComparison(researchComparisonFixture("20", "10", status)).status, "unproven");
+  }
+});
+
+test("comparação de pesquisa rejeita linhas inválidas, parciais, ambíguas e conflitantes", () => {
+  for (const mutate of [
+    (data) => { data.claims[0].comparison.groups[1].rows[0].complete = false; },
+    (data) => { data.claims[0].comparison.groups[1].endYear = 2022; },
+    (data) => { data.claims[0].comparison.groups[1].rows[0].evidenceId = "ausente"; },
+    (data) => { data.claims[0].comparison.groups[1].rows[0].valueText = "1000"; },
+    (data) => { data.claims[0].comparison.groups[1].rows[0].scale = 1000; },
+    (data) => { data.claims[0].comparison.groups[1].unit = "km²"; },
+    (data) => { data.claims[0].comparison.groups[1].dataset = "Outro"; },
+    (data) => { data.claims[0].comparison.groups[1].rows[0].year = 2027; },
+    (data) => { data.claims[0].comparison.groups[1].rows[0].year = 2020; },
+    (data) => { data.claims[0].evidence[1].quote = "O Atlas informou um total sem indicar número ou período."; },
+    (data) => { data.claims[0].evidence[1].quote = data.claims[0].evidence[1].quote.replace("hectares", "pessoas"); },
+    (data) => { data.claims[0].evidence.push({ ...data.claims[0].evidence[1] }); },
+    (data) => { data.claims[0].evidence[1].relation = "refutes"; },
+  ]) {
+    const data = researchComparisonFixture(); mutate(data);
+    data.citations = buildResearchCitations(data);
+    assert.equal(assessResearchComparison(data).status, "unproven");
+  }
+});
+
+test("linhas research exigem fonte tipada e trecho literal, sem simular localização", () => {
+  for (const mutate of [
+    (item) => { delete item.basis; },
+    (item) => { delete item.sourceId; },
+    (item) => { delete item.evidenceIndex; },
+    (item) => { item.sourceId = "1"; },
+    (item) => { item.excerpt = `Conteúdo independente: ${item.quote}`; },
+    (item) => { item.locator = { found: false }; },
+  ]) {
+    const data = researchComparisonFixture(); mutate(data.citations[1]);
+    assert.equal(calculate(data).eligible, false);
+  }
+});
+
+test("auditoria HTTP indisponível usa operandos da pesquisa, mas incompatibilidade documental não", () => {
+  const data = researchComparisonFixture();
+  const unavailable = data.citations.map((item) => ({ ...item, basis: undefined, excerpt: null,
+    document: { ok: false, reason: "http-403" }, locator: { found: false, kind: "document_unavailable" } }));
+  assert.equal(assessResearchComparison(data, comparisonCitations(unavailable, data.citations)).status, "true");
+  unavailable[1] = { ...unavailable[1], document: { ok: true }, locator: { found: false, kind: "missing" } };
+  assert.equal(assessResearchComparison(data, comparisonCitations(unavailable, data.citations)).status, "unproven");
+});
+
+test("score da comparação research revalida operandos em vez de confiar em eligible informado", () => {
+  const data = researchComparisonFixture();
+  const claims = applyComparisons({ claims: data.claims, citations: data.citations, now });
+  claims[0].assessmentBasis = "web_research";
+  claims[0].evidence = claims[0].evidence.map((item) => ({ ...item, verification: "research" }));
+  assert.equal(validateResult({ ...data, claims }).fixed.claims[0].status, "true");
+  for (const mutate of [
+    (claim) => { claim.evidence[1].verification = "unavailable"; },
+    (claim) => { claim.evidence[1].quote = "Sem valor anual literal."; },
+    (claim) => { claim.comparison.groups[1].rows[0].complete = false; },
+    (claim) => { claim.comparison.groups[1].rows[0].valueText = "1000"; },
+    (claim) => { claim.comparison.groups[1].rows[0].evidenceId = "missing"; },
+    (claim) => { claim.comparison.relation = "refutes"; },
+  ]) {
+    const broken = structuredClone(claims); mutate(broken[0]);
+    assert.equal(validateResult({ ...data, claims: broken }).fixed.claims[0].status, "unproven");
+  }
+});
+
+test("totais exibidos da comparação de pesquisa são recalculados dos valores literais", () => {
+  const data = researchComparisonFixture();
+  const claims = applyComparisons({ claims: data.claims, citations: data.citations, now });
+  claims[0].assessmentBasis = "web_research";
+  claims[0].evidence = claims[0].evidence.map((item) => ({ ...item, verification: "research" }));
+  claims[0].comparison.groups[0].total = 999;
+  const fixed = validateResult({ ...data, claims }).fixed;
+  assert.deepEqual(fixed.claims[0].comparison.groups.map((group) => group.total), [20, 10]);
+  assert.match(fixed.claims[0].note, /20 hectares/);
+  assert.doesNotMatch(fixed.claims[0].note, /999/);
 });

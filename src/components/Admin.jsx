@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, VERDICTS, migrateVerdict } from "../data/constants.js";
+import { ASSESSMENT_BASIS, CLAIM_STATUS, EVIDENCE_SUPPORT, VERDICTS, evidenceReviewLabel, evidenceVerificationLabel, migrateVerdict } from "../data/constants.js";
 import ComparisonDetails from "./ComparisonDetails.jsx";
 import { Activity, ArrowUpRight, BookOpen, ClipboardCheck, Copy, LayoutDashboard, LogOut, MessageSquare, RefreshCw, Search, Settings2, ShieldCheck } from "lucide-react";
 import AdminSelect from "./AdminSelect.jsx";
@@ -298,9 +298,10 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
                       </span>
                       <p>{c.text}</p>
                       {c.note && <small>{c.note}</small>}
+                      {ASSESSMENT_BASIS[c.assessmentBasis] && <small>Base da avaliação: {ASSESSMENT_BASIS[c.assessmentBasis]}.{c.assessmentNote ? ` ${c.assessmentNote}` : ""}</small>}
                       {c.evidenceSupport && <small>Suporte da evidência: {EVIDENCE_SUPPORT[c.evidenceSupport] ?? c.evidenceSupport}.</small>}
-                      {c.evidenceReview && <small>Revisão do conjunto: {EVIDENCE_SUPPORT[c.evidenceReview.verdict] ?? "Inconclusiva"}{c.evidenceReview.incomplete ? " · cobertura incompleta" : ""}.</small>}
-                      <ComparisonDetails comparison={c.comparison} />
+                      {c.evidenceReview && <small>{evidenceReviewLabel(c)}</small>}
+                      <ComparisonDetails comparison={c.comparison} assessmentBasis={c.assessmentBasis} />
                       {Array.isArray(c.evidence) && c.evidence.length > 0 && <ul className="admin-claim-evidence">{c.evidence.map((evidence, index) => {
                         const source = detail.sources?.[evidence.sourceId];
                         const relation = { supports: "Apoia", refutes: "Contradiz", context: "Contextualiza" }[evidence.relation] ?? "Evidência";
@@ -308,7 +309,7 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
                           <li key={`${evidence.sourceId ?? "source"}-${index}`}>
                             <b>{relation}{source?.outlet ? ` · ${source.outlet}` : ""}</b>
                             {evidence.quote && <q>{evidence.quote}</q>}
-                            {evidence.verification && <small>{c.evidenceReview && evidence.verification === "verified" ? "Trecho do conjunto revisado" : EVIDENCE_VERIFICATION[evidence.verification] ?? evidence.verification}</small>}
+                            {evidence.verification && <small>{evidenceVerificationLabel(c, evidence)}</small>}
                             {evidence.referencePeriod && <small>Período da evidência: {evidence.referencePeriod.start} a {evidence.referencePeriod.end}</small>}
                             {source?.url && <a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>}
                           </li>
@@ -527,29 +528,40 @@ const STEP_LABEL = {
 };
 const LOG_STEP_LABEL = { ...STEP_LABEL, final: "Revisão final histórica" };
 
-function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSave, onReload, onRefreshCatalog, error, loading, configErrors }) {
+function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSave, onReload, onRefreshCatalog, error, loading, configErrors, configUnavailable, configStale, staleReason }) {
   const [inventoryQuery, setInventoryQuery] = useState("");
-  if (!catalog || !draft) return <section className="card admin-ai-state" aria-live="polite"><h2>Modelos & provedores</h2><p>{loading ? "Carregando catálogo e configuração…" : error || "Catálogo de modelos indisponível."}</p>{!loading && <button className="btn" type="button" onClick={onReload}>Tentar novamente</button>}</section>;
-  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  if (!catalog) return <section className="card admin-ai-state" aria-live="polite"><h2>Modelos & provedores</h2><p>{loading ? "Carregando catálogo e configuração…" : error || "Catálogo de modelos indisponível."}</p>{configErrors && <ul>{Object.entries(configErrors).map(([step, reason]) => <li key={step}>{STEP_LABEL[step] ?? step}: {reason}</li>)}</ul>}{!loading && <button className="btn" type="button" onClick={onReload}>Tentar novamente</button>}</section>;
+  const selection = draft ?? {};
+  const dirty = JSON.stringify(selection) !== JSON.stringify(saved);
   const providers = catalog.providers ?? {};
+  const steps = catalog.steps ?? Object.keys(STEP_LABEL);
+  const editingBlocked = configUnavailable === "ai_config_unavailable" || loading;
+  const complete = steps.length > 0 && steps.every((step) => {
+    const pair = selection[step];
+    const provider = providers[pair?.provider];
+    return provider?.hasKey && (provider.models ?? []).some((model) => model.id === pair?.model && (model.eligibleSteps ?? []).includes(step));
+  });
   const query = inventoryQuery.trim().toLowerCase();
-  function setStep(step, patch) { onChange({ ...draft, [step]: { ...draft[step], ...patch } }); }
+  function setStep(step, patch) { onChange({ ...selection, [step]: { ...selection[step], ...patch } }); }
   return (
     <section className="card admin-ai" aria-label="Configuração de modelos">
       <p className="admin-mut">Escolha modelos elegíveis para cada etapa. Alterações afetam somente novas checagens; a configuração chega às instâncias via atualização periódica. Não há troca automática de provedor quando um modelo falha.</p>
       {error && <p className="admin-error-state" role="alert">{error}</p>}
-      {configErrors && Object.keys(configErrors).length > 0 && <div className="admin-notice" role="status"><b>Configuração persistida com pares inválidos:</b><ul>{Object.entries(configErrors).map(([step, reason]) => <li key={step}>{STEP_LABEL[step] ?? step}: {reason}</li>)}</ul><p>A checagem usa temporariamente o modelo padrão até a configuração ser corrigida.</p></div>}
+      {configUnavailable && <div className="admin-notice" role="alert"><b>{configUnavailable === "ai_config_invalid" ? "Configuração persistida inválida ou incompatível:" : "Configuração de IA indisponível:"}</b>{configErrors && Object.keys(configErrors).length > 0 && <ul>{Object.entries(configErrors).map(([step, reason]) => <li key={step}>{STEP_LABEL[step] ?? step}: {reason}</li>)}</ul>}<p>As checagens ficam bloqueadas. Nenhum par diferente é usado automaticamente.</p><p>{configUnavailable === "ai_config_invalid" ? "Selecione explicitamente um provedor e um modelo elegível para cada etapa e salve a configuração corrigida. Nenhum padrão foi preenchido." : "A configuração persistida não pôde ser determinada. Edição e salvamento ficam bloqueados para evitar sobrescrevê-la sem conhecê-la; tente carregar novamente quando a persistência voltar."}</p><button className="btn" type="button" onClick={onReload} disabled={loading || saving}>Recarregar configuração</button></div>}
+      {configStale && !configUnavailable && <div className="admin-notice" role="status"><b>Snapshot em uso:</b> {staleReason === "catalog_stale" ? "o catálogo está desatualizado; a última configuração conhecida e válida continua em uso sem troca de pares." : staleReason === "config_read_failed" ? "a persistência não respondeu; a última configuração conhecida e válida continua em uso, com possível desatualização." : "a última configuração conhecida e válida continua em uso, com possível desatualização."}</div>}
       <div className="admin-ai-grid">
-        {(catalog.steps ?? []).map((step) => {
-          const pair = draft[step] ?? {};
+        {steps.map((step) => {
+          const pair = selection[step] ?? {};
           const prov = providers[pair.provider] ?? {};
           const models = prov.models ?? [];
           const current = models.find((m) => m.id === pair.model);
-          const eligible = Boolean(current && (current.eligibleSteps ?? []).includes(step));
+          const eligible = Boolean(prov.hasKey && current && (current.eligibleSteps ?? []).includes(step));
           const availableProviders = Object.entries(providers).filter(([, p]) => p.hasKey && (p.models ?? []).some((m) => (m.eligibleSteps ?? []).includes(step)));
           const currentReason = current?.stepReasons?.[step] ?? null;
-          const visibleReason = !prov.hasKey
-            ? "Provedor sem chave configurada — disponibilidade não confirmada."
+          const visibleReason = !pair.provider || !pair.model
+            ? "Selecione explicitamente um provedor e um modelo elegível."
+            : !prov.hasKey
+              ? "Provedor sem chave configurada — disponibilidade não confirmada."
             : (prov.discovery?.stale && !current)
               ? "Inventário desatualizado e modelo ausente da última descoberta — atualize o catálogo."
               : !current
@@ -559,14 +571,11 @@ function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSa
           return (
             <div key={step} className="admin-ai-row">
               <span className="admin-ai-step">{STEP_LABEL[step] ?? step}</span>
-              <label>Provedor<AdminSelect value={pair.provider ?? ""} disabled={saving} onValueChange={(value) => {
-                const next = providers[value] ?? {};
-                const model = (next.models ?? []).find((m) => (m.eligibleSteps ?? []).includes(step));
-                setStep(step, { provider: value, model: model?.id ?? "" });
-              }}>
+              <label>Provedor<AdminSelect value={pair.provider ?? ""} disabled={saving || editingBlocked} onValueChange={(value) => setStep(step, { provider: value, model: "" })}>
+                <option value="" disabled>Selecione um provedor</option>
                 {availableProviders.map(([id, p]) => <option key={id} value={id}>{p.label}</option>)}
               </AdminSelect></label>
-              <label>Modelo<AdminSelect value={eligible ? pair.model : ""} disabled={saving || !models.length} onValueChange={(value) => setStep(step, { model: value })}>
+              <label>Modelo<AdminSelect value={eligible ? pair.model : ""} disabled={saving || editingBlocked || !prov.hasKey || !models.length} onValueChange={(value) => setStep(step, { model: value })}>
                 <option value="" disabled>Selecione um modelo elegível</option>
                 {sorted.map((model) => {
                   const canUse = (model.eligibleSteps ?? []).includes(step);
@@ -582,8 +591,8 @@ function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSa
       </div>
       <p className="admin-mut">Configuração: origem {catalog.source ?? "não informada"} · revisão {catalog.revision ?? "não informada"} · persistência {persisted ? "durável (Blob)" : "efêmera nesta instância"}{catalog.updatedAt ? ` · atualizada ${fmtFullTime(catalog.updatedAt)}` : ""} · catálogo em cache por até 15 min.</p>
       <div className="admin-ai-actions">
-        <button className="btn primary" type="button" onClick={onSave} disabled={saving || !dirty}>{saving ? "Salvando…" : "Salvar modelos"}</button>
-        <button className="btn ghost" type="button" onClick={onRefreshCatalog} disabled={loading}>{loading ? "Atualizando catálogo…" : "Atualizar catálogo"}</button>
+        <button className="btn primary" type="button" onClick={onSave} disabled={saving || editingBlocked || !dirty || !complete}>{saving ? "Salvando…" : "Salvar modelos"}</button>
+        <button className="btn ghost" type="button" onClick={onRefreshCatalog} disabled={loading || saving}>{loading ? "Atualizando catálogo…" : "Atualizar catálogo"}</button>
         {dirty && <button className="btn ghost" type="button" onClick={onReload} disabled={saving}>Descartar alterações</button>}
       </div>
       <div className="admin-provider-inventory">
@@ -1082,6 +1091,9 @@ export default function Admin({ showToast }) {
   const [aiPersisted, setAiPersisted] = useState(true);
   const [aiError, setAiError] = useState("");
   const [aiConfigErrors, setAiConfigErrors] = useState(null);
+  const [aiConfigUnavailable, setAiConfigUnavailable] = useState(null);
+  const [aiConfigStale, setAiConfigStale] = useState(false);
+  const [aiStaleReason, setAiStaleReason] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [methodology, setMethodology] = useState(null);
   const [corrections, setCorrections] = useState(null);
@@ -1117,16 +1129,24 @@ export default function Admin({ showToast }) {
     setAiConfig(null);
     setAiDraft(null);
     setAiConfigErrors(null);
+    setAiConfigUnavailable(null);
+    setAiConfigStale(false);
+    setAiStaleReason(null);
+    setAiError("");
+    setAiSaving(false);
+    setAiLoading(false);
+    setAiPersisted(true);
   }, []);
 
-  const authedFetch = useCallback(async (path) => {
+  const authedFetch = useCallback(async (path, { allowAiConfigState = false } = {}) => {
     const res = await fetch(path, { headers: { Authorization: `Bearer ${secret}` } });
     if (res.status === 401) {
       expireSession();
       throw new Error("Sessão inválida. Entre de novo.");
     }
     const data = await res.json().catch(() => null);
-    if (!res.ok || data?.error || !data) {
+    const configState = allowAiConfigState && res.status === 200 && ["ai_config_invalid", "ai_config_unavailable"].includes(data?.error) && data.config === null;
+    if (!res.ok || (data?.error && !configState) || !data) {
       const error = new Error(data?.message || data?.error || `Falha ao carregar (HTTP ${res.status}).`);
       error.data = data;
       throw error;
@@ -1203,7 +1223,7 @@ export default function Admin({ showToast }) {
     setAiError("");
     setAiLoading(true);
     try {
-      const data = await authedFetch(`/api/admin?config=1${refresh ? "&refresh=1" : ""}`);
+      const data = await authedFetch(`/api/admin?config=1${refresh ? "&refresh=1" : ""}`, { allowAiConfigState: true });
       if (request !== aiRequest.current) return;
       setAiCatalog(data.catalog ? {
         ...data.catalog,
@@ -1212,11 +1232,14 @@ export default function Admin({ showToast }) {
         updatedAt: data.updatedAt ?? data.catalog.updatedAt,
       } : null);
       setAiConfig(data.config ?? null);
-      if (!preserveDraft) setAiDraft(data.config ?? null);
+      if (!preserveDraft) setAiDraft(data.config ?? {});
       setAiConfigErrors(data.configErrors ?? null);
+      setAiConfigUnavailable(data.config ? null : (data.error ?? "ai_config_unavailable"));
+      setAiConfigStale(data.config ? Boolean(data.stale) : false);
+      setAiStaleReason(data.staleReason ?? null);
       setAiPersisted(data.persisted === true);
       if (data.methodology) setMethodology(data.methodology);
-      if (!data.catalog || !data.config) setAiError("A API não retornou catálogo e configuração.");
+      if (!data.catalog || (!data.config && !["ai_config_invalid", "ai_config_unavailable"].includes(data.error))) setAiError("A API não retornou catálogo e configuração.");
     } catch (err) {
       if (request !== aiRequest.current) return;
       if (!preserveDraft) setAiCatalog(null);
@@ -1331,7 +1354,8 @@ export default function Admin({ showToast }) {
   const invalidateAdminCache = useCallback(async (reason) => authedPost("/api/admin?cache=1", { action: "invalidate", reason: reason || "manual" }), [authedPost]);
 
   async function saveAi() {
-    if (!aiDraft) return;
+    if (!aiDraft || aiConfigUnavailable === "ai_config_unavailable" || aiLoading) return;
+    const request = ++aiRequest.current;
     setAiSaving(true);
     setAiError("");
     try {
@@ -1340,12 +1364,14 @@ export default function Admin({ showToast }) {
         headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
         body: JSON.stringify({ config: aiDraft }),
       });
+      if (request !== aiRequest.current) return;
       if (res.status === 401) {
         expireSession();
         showToast("Sessão inválida. Entre de novo.");
         return;
       }
       const data = await res.json();
+      if (request !== aiRequest.current) return;
       if (!res.ok || data.error) {
         const details = Object.entries(data.fields ?? {}).map(([step, reason]) => `${STEP_LABEL[step] ?? step}: ${reason}`).join(" · ");
         setAiConfigErrors(data.fields ?? null);
@@ -1354,15 +1380,19 @@ export default function Admin({ showToast }) {
         return;
       }
       setAiConfigErrors(null);
+      setAiConfigUnavailable(null);
+      setAiConfigStale(false);
+      setAiStaleReason(null);
       setAiConfig(data.saved ?? aiDraft);
       setAiDraft(data.saved ?? aiDraft);
       setAiPersisted(data.persisted === true);
-      setAiCatalog((current) => current ? { ...current, revision: data.revision ?? current.revision, source: data.source ?? current.source } : current);
+      setAiCatalog((current) => current ? { ...current, revision: data.revision ?? current.revision, source: data.source ?? current.source, updatedAt: data.updatedAt ?? current.updatedAt } : current);
       showToast(data.persisted === false ? "Aplicado apenas nesta instância; não há persistência durável." : "Configuração de modelos atualizada.");
     } catch {
+      if (request !== aiRequest.current) return;
       setAiError("Falha de rede ao salvar a configuração.");
       showToast("Não consegui salvar a configuração de modelos.");
-    } finally { setAiSaving(false); }
+    } finally { if (request === aiRequest.current) setAiSaving(false); }
   }
 
   useEffect(() => {
@@ -1521,7 +1551,7 @@ export default function Admin({ showToast }) {
         />}
         {section === "metrics" && <AdminMetrics data={metricsData} loading={metricsLoading} error={metricsError} onReload={() => loadMetrics()} />}
         {section === "models" && <section aria-labelledby="admin-models-title"><div className="admin-section-heading"><p className="admin-eyebrow">Configuração e compatibilidade</p><h1 id="admin-models-title">Modelos & provedores</h1><p>Defina separadamente os modelos usados na avaliação factual, visão e transcrição.</p></div>
-          <AiConfigCard catalog={aiCatalog} draft={aiDraft} saved={aiConfig} saving={aiSaving} loading={aiLoading} persisted={aiPersisted} error={aiError} configErrors={aiConfigErrors} onChange={setAiDraft} onSave={saveAi} onReload={() => loadAi()} onRefreshCatalog={() => loadAi({ refresh: true, preserveDraft: true })} />
+          <AiConfigCard catalog={aiCatalog} draft={aiDraft} saved={aiConfig} saving={aiSaving} loading={aiLoading} persisted={aiPersisted} error={aiError} configErrors={aiConfigErrors} configUnavailable={aiConfigUnavailable} configStale={aiConfigStale} staleReason={aiStaleReason} onChange={setAiDraft} onSave={saveAi} onReload={() => loadAi()} onRefreshCatalog={() => loadAi({ refresh: true, preserveDraft: true })} />
         </section>}
         {section === "methodology" && <AdminMethodology methodology={methodology} />}
       </section>

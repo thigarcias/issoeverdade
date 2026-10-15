@@ -1,6 +1,8 @@
 // Allowlist recursiva: nenhum objeto arbitrário do modelo ou do log atravessa
 // esta fronteira pública, inclusive quando um registro antigo é lido.
 const period = { start: "string", end: "string" };
+const assessmentBasis = (value) => ["web_research", "document_review"].includes(value) ? value : null;
+const assessmentNote = (value) => typeof value === "string" ? value.slice(0, 800) : null;
 const coverage = { total: "number", assessed: "number", unproven: "number", omitted: "number" };
 const comparison = {
   metric: "string", region: "string", unit: "string", dataset: "string", operator: "string",
@@ -12,6 +14,7 @@ const comparison = {
 };
 const claim = {
   text: "string", note: "string", status: "string", score: "number", evidenceSupport: "string", sourceIds: ["number"],
+  assessmentBasis, assessmentNote,
   referencePeriod: period, comparison,
   evidenceReview: { verification: "string", verdict: "string", incomplete: "boolean", evidenceIndices: ["number"], reason: "string" },
   evidence: [{ evidenceId: "string", sourceId: "number", relation: "string", quote: "string", verification: "string", referencePeriod: period }],
@@ -37,6 +40,7 @@ function publicUrl(value) {
 
 function project(value, schema) {
   if (value == null) return null;
+  if (typeof schema === "function") return schema(value);
   if (schema === "url") return typeof value === "string" ? publicUrl(value) : null;
   if (typeof schema === "string") {
     if (typeof value !== schema || (schema === "number" && !Number.isFinite(value))) return null;

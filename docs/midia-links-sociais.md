@@ -121,9 +121,10 @@ O extrator de páginas vinculadas agora compartilha a leitura de metadados/corpo
 com notícias enviadas diretamente. Posts mantêm até 3 links, 512 KiB/15 s por
 página, corpo de até 2.500 caracteres e contexto combinado de até 12.000.
 Cada trecho é identificado como contexto limitado, sem prometer artigo
-integral. A revisão atual do cache é `media-context-v5`, mantendo a metodologia
-`fact-check-5` e a revisão da configuração de IA; o histórico acima descreve
-execuções anteriores e não comprova a implantação atual.
+integral. A revisão atual do cache é `media-context-v6`, que vincula a
+metodologia, a revisão da configuração de IA, o fingerprint da política de
+moderação e as opções da auditoria; o histórico acima descreve execuções
+anteriores e não comprova a implantação atual.
 
 O mesmo roteamento classifica HTML, post social, PDF, imagem, áudio e vídeo.
 Notícias comuns não disparam download audiovisual; Spotify só trata episódios

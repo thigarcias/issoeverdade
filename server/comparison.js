@@ -58,7 +58,11 @@ function unitPattern(unit) {
 }
 
 function sourcedRow(row, citation, proposal) {
-  if (citation?.locator?.found !== true || !citation.quote || !citation.excerpt) return null;
+  const research = citation?.basis === "web_research" && citation.locator == null &&
+    Number.isInteger(citation.sourceId) && citation.sourceId >= 0 &&
+    Number.isInteger(citation.evidenceIndex) && citation.evidenceIndex >= 0 &&
+    typeof citation.quote === "string" && citation.quote.trim().length >= 8 && citation.excerpt === citation.quote;
+  if ((!research && citation?.locator?.found !== true) || !citation.quote || !citation.excerpt) return null;
   if (row.numberFormat == null && /^\d{1,3}[.,]\d{3}$/.test(String(row.valueText).trim())) return null;
   const number = parseComparisonNumber(row.valueText, row.numberFormat);
   if (number == null || ![1, 1000, 1000000].includes(row.scale)) return null;
@@ -85,9 +89,10 @@ export function calculateComparison(comparison, { citations = [], claimIndex = 0
   const base = { ...comparison, status: "invalid", eligible: false, relation: null, scope: "partial", equalLength: false, groups: [] };
   const invalid = (reason, groups = base.groups) => ({ ...base, groups, reason });
   if (!comparison || !OPERATORS.has(comparison.operator) || FIELDS.some((field) => !normalize(comparison[field])) || !Array.isArray(comparison.groups) || comparison.groups.length !== 2) return invalid("A comparação precisa identificar indicador, região, unidade, dataset, operador e dois períodos.");
-  const located = (citations ?? []).filter((item) => item.claimIndex === claimIndex && item.locator?.found === true);
-  // Metadata homogeneity is structural. Only the grouped documentary review
-  // can establish semantic scope; identifiers need not be literal quotations.
+  const located = (citations ?? []).filter((item) => item.claimIndex === claimIndex &&
+    (item.locator?.found === true || (item.basis === "web_research" && item.locator == null)));
+  // Scope metadata is structural. The primary research assessment or conclusive
+  // grouped documentary review must separately agree with the arithmetic.
   const currentYear = new Date(now).getUTCFullYear();
   const yearsSeen = new Set();
   const groups = [];
@@ -100,9 +105,9 @@ export function calculateComparison(comparison, { citations = [], claimIndex = 0
       if (!Number.isInteger(row?.year) || row.year < group.startYear || row.year > group.endYear || row.year > currentYear || yearsSeen.has(row.year) || typeof row.complete !== "boolean" || typeof row.evidenceId !== "string" || !row.evidenceId || FIELDS.some((field) => row[field] != null && normalize(row[field]) !== normalize(comparison[field]))) return invalid("Ano duplicado, sobreposto, futuro ou escopo incompatível nos dados anuais.", groups);
       yearsSeen.add(row.year);
       const candidates = located.filter((item) => item.evidenceId === row.evidenceId);
-      if (candidates.length !== 1) return invalid("Um valor anual não possui uma evidência localizada inequívoca.", groups);
+      if (candidates.length !== 1) return invalid("Um valor anual não possui uma evidência citada inequívoca.", groups);
       const value = sourcedRow(row, candidates[0], comparison);
-      if (value == null) return invalid("Valor, escala, unidade ou ano não conferem com o trecho localizado.", groups);
+      if (value == null) return invalid("Valor, escala, unidade ou ano não conferem com o trecho citado.", groups);
       rows.push({ ...row, value, complete: row.complete && row.year < currentYear });
     }
     rows.sort((a, b) => a.year - b.year);

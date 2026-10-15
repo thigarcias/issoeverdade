@@ -6,7 +6,7 @@ const SCOPE_LABELS = {
   partial: "Dados parciais: a comparação completa não foi estabelecida",
 };
 
-export default function ComparisonDetails({ comparison }) {
+export default function ComparisonDetails({ comparison, assessmentBasis }) {
   if (!comparison || !["complete", "lower_bound", "partial", "invalid"].includes(comparison.status)) return null;
   const groups = comparison.status !== "invalid" && Array.isArray(comparison.groups) ? comparison.groups : [];
   const totalLabel = `Total${comparison.unit ? ` (${comparison.unit})` : ""}`;
@@ -46,7 +46,9 @@ export default function ComparisonDetails({ comparison }) {
         </div>
       ))}
       {comparison.reason && <p className="score-legend">{comparison.reason}</p>}
-      <p className="score-legend">Soma calculada a partir dos trechos localizados. A revisão verifica se métrica, região e períodos permitem a conclusão.</p>
+      <p className="score-legend">{assessmentBasis === "web_research"
+        ? "Soma calculada a partir dos trechos informados pela pesquisa, sem conferência documental independente. A avaliação considera métrica, região e períodos."
+        : "Soma calculada a partir dos trechos localizados. A revisão verifica se métrica, região e períodos permitem a conclusão."}</p>
     </section>
   );
 }

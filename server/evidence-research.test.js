@@ -12,8 +12,10 @@ const answer = (choice) => ({ type: "choice", choice, probabilities: Object.from
   ["supports", "refutes", "context", "unclear"].map((key) => [key, key === choice ? 0.97 : 0.01]),
 ) });
 
-async function scenario(t, { repair = "recover", initialLocated = false, omitted = false } = {}) {
+async function scenario(t, { repair = "recover", initialLocated = false, omitted = false, initialStatus = "true", collector = "1", reviewUnavailable = false } = {}) {
+  let documentRequests = 0;
   const server = http.createServer((req, res) => {
+    documentRequests++;
     if (req.url === "/blocked") { res.writeHead(403); res.end("Forbidden"); return; }
     res.setHeader("Content-Type", "text/html");
     res.end(`<html><body><article><p>${receipt}</p><p>${quote}</p></article></body></html>`);
@@ -27,6 +29,8 @@ async function scenario(t, { repair = "recover", initialLocated = false, omitted
   const names = ["OPENCODE_API", "OPENAI_API_KEY", "BLOB_READ_WRITE_TOKEN", "MODERATION_MODE", "IEV_EVIDENCE_FETCH", "IEV_EVIDENCE_REVIEW", "IEV_ALLOW_PRIVATE_HOSTS", "IEV_HTTP_PORTS"];
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   Object.assign(process.env, { OPENCODE_API: "test-only", MODERATION_MODE: "off", IEV_EVIDENCE_FETCH: "1", IEV_EVIDENCE_REVIEW: "1", IEV_ALLOW_PRIVATE_HOSTS: "1", IEV_HTTP_PORTS: String(port) });
+  if (collector === null) delete process.env.IEV_EVIDENCE_FETCH;
+  else process.env.IEV_EVIDENCE_FETCH = collector;
   delete process.env.OPENAI_API_KEY;
   delete process.env.BLOB_READ_WRITE_TOKEN;
   const originalFetch = globalThis.fetch;
@@ -35,6 +39,7 @@ async function scenario(t, { repair = "recover", initialLocated = false, omitted
     if (String(url).endsWith("/models")) return new Response(JSON.stringify({ data: [{ id: "gpt-6-luna" }] }));
     const body = JSON.parse(options.body);
     if (String(url).endsWith("/systemone")) {
+      if (reviewUnavailable) return new Response("Unavailable", { status: 503 });
       const groups = JSON.parse(body.state).claims;
       const answers = Object.fromEntries(groups.map((group) => [String(group.claimIndex),
         answer(group.claimIndex === 1 && initialLocated ? (reviewed ? "refutes" : "unclear") : "supports")]));
@@ -51,7 +56,7 @@ async function scenario(t, { repair = "recover", initialLocated = false, omitted
       outcome: "checked", omittedClaimsCount: 0,
       claims: [
         { text: "A candidata recebeu o Projeto Horizonte.", status: "true", evidence: [{ source: 1, quote: receipt, relation: "supports" }] },
-        ...(!omitted ? [{ text, status: "true", referencePeriod: null, evidence: [{ evidenceId: "proposal", source: initialLocated ? 1 : 2, quote, relation: "supports" }] }] : []),
+        ...(!omitted ? [{ text, status: initialStatus, referencePeriod: null, evidence: [{ evidenceId: "proposal", source: initialLocated ? 1 : 2, quote, relation: "supports" }] }] : []),
       ],
       sources: [{ url: documentUrl, outlet: "Associação" }, { url: blockedUrl, outlet: "Fonte indisponível" }],
     };
@@ -61,7 +66,7 @@ async function scenario(t, { repair = "recover", initialLocated = false, omitted
     ] }));
   };
   try {
-    return await runVerify({ kind: "text", text: `${text} Registro de controle ${port}.` });
+    return { ...await runVerify({ kind: "text", text: `${text} Registro de controle ${port}.` }), documentRequests };
   } finally {
     globalThis.fetch = originalFetch;
     for (const [name, value] of Object.entries(previous)) {
@@ -71,7 +76,7 @@ async function scenario(t, { repair = "recover", initialLocated = false, omitted
 }
 
 test("recupera prova de outra passagem obtida sem transferir veredito ou mudar hipótese", async (t) => {
-  const out = await scenario(t);
+  const out = await scenario(t, { initialStatus: "unproven" });
   assert.equal(out.result.claims[1].text, text);
   assert.equal(out.result.claims[1].referencePeriod, null);
   assert.deepEqual(out.result.claims.map((claim) => claim.status), ["true", "true"]);
@@ -80,15 +85,16 @@ test("recupera prova de outra passagem obtida sem transferir veredito ou mudar h
 });
 
 for (const repair of ["invented", "unproven-url"]) test(`recuperação ${repair} não transforma candidato em prova`, async (t) => {
-  const out = await scenario(t, { repair });
+  const out = await scenario(t, { repair, initialStatus: "unproven" });
   assert.deepEqual(out.result.claims.map((claim) => claim.status), ["true", "unproven"]);
   assert.equal(out.result.score, null);
   assert.equal(out.result.claims[1].text, text);
 });
 
-test("mesmo conjunto inconclusivo não é rejulgado até trocar de veredito", async (t) => {
+test("revisão opcional inconclusiva preserva a pesquisa sem rejulgar o mesmo conjunto até inverter", async (t) => {
   const out = await scenario(t, { initialLocated: true });
-  assert.equal(out.result.claims[1].status, "unproven");
+  assert.equal(out.result.claims[1].status, "true");
+  assert.equal(out.result.claims[1].assessmentBasis, "web_research");
   assert.equal(out.result.claims[0].status, "true");
 });
 
@@ -98,6 +104,29 @@ test("cobertura confere omissão mesmo quando todas as afirmações iniciais for
   assert.equal(out.result.claims[1].text, text);
   assert.equal(out.result.score, null);
   assert.equal(out.result.coverage.total, 2);
+});
+
+test("pesquisa citada funciona sem requisição documental no padrão atual", async (t) => {
+  const out = await scenario(t, { collector: null });
+  assert.equal(out.documentRequests, 0);
+  assert.deepEqual(out.result.claims.map((claim) => claim.status), ["true", "true"]);
+  assert.ok(out.result.claims.every((claim) => claim.assessmentBasis === "web_research"));
+  assert.ok(out.result.claims.flatMap((claim) => claim.evidence).every((item) => item.verification === "research"));
+});
+
+test("HTTP 403 na auditoria opt-in não apaga pesquisa com fontes citadas", async (t) => {
+  const out = await scenario(t);
+  assert.equal(out.result.claims[1].status, "true");
+  assert.equal(out.result.claims[1].assessmentBasis, "web_research");
+  assert.equal(out.result.claims[1].evidence[0].verification, "research");
+  assert.ok(out.evidence.documents.some((doc) => doc.status === 403));
+});
+
+test("indisponibilidade do JEV opcional mantém avaliação primária e não inventa verificação", async (t) => {
+  const out = await scenario(t, { initialLocated: true, reviewUnavailable: true });
+  assert.deepEqual(out.result.claims.map((claim) => claim.status), ["true", "true"]);
+  assert.ok(out.result.claims.every((claim) => claim.assessmentBasis === "web_research"));
+  assert.ok(out.result.claims.flatMap((claim) => claim.evidence).every((item) => item.verification !== "verified"));
 });
 
 test("recuperação preserva operandos existentes e só substitui citação ausente de mesmo identificador", () => {

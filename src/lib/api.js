@@ -5,7 +5,7 @@
 // Retorna `{ result }`. Detalhes do modelo ficam no servidor.
 // ---------------------------------------------------------------------------
 
-import { ERROR_MESSAGES, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, OUTCOME_LABEL, migrateVerdict } from "../data/constants.js";
+import { ASSESSMENT_BASIS, ERROR_MESSAGES, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, OUTCOME_LABEL, migrateVerdict } from "../data/constants.js";
 
 export const VERIFY_NDJSON_TYPE = "application/x-ndjson";
 
@@ -57,6 +57,8 @@ function normalize(raw, input, origin, createdAt) {
           status: statuses.includes(claim?.status) ? claim.status : "unproven",
           score: clamp(claim?.score, null),
           evidenceSupport: Object.hasOwn(EVIDENCE_SUPPORT, claim?.evidenceSupport) ? claim.evidenceSupport : null,
+          assessmentBasis: typeof claim?.assessmentBasis === "string" && Object.hasOwn(ASSESSMENT_BASIS, claim.assessmentBasis) ? claim.assessmentBasis : null,
+          assessmentNote: typeof claim?.assessmentNote === "string" ? claim.assessmentNote.slice(0, 800) : "",
           text: String(claim?.text ?? "Afirmação"),
           note: String(claim?.note ?? ""),
           referencePeriod: claim?.referencePeriod ?? null,
@@ -70,7 +72,7 @@ function normalize(raw, input, origin, createdAt) {
                   sourceId: item.sourceId,
                   evidenceId: typeof item?.evidenceId === "string" ? item.evidenceId : null,
                   relation: item.relation,
-                  verification: Object.hasOwn(EVIDENCE_VERIFICATION, item?.verification) ? item.verification : null,
+                  verification: typeof item?.verification === "string" && Object.hasOwn(EVIDENCE_VERIFICATION, item.verification) ? item.verification : null,
                   quote: String(item.quote ?? ""),
                   referencePeriod: item?.referencePeriod ?? null,
                 }))
@@ -235,8 +237,12 @@ export async function verify(input, opts = {}) {
     try { event = JSON.parse(line); } catch { return; }
     if (event?.type === "accepted") {
       checkId = event.checkId ?? checkId;
-      if (typeof checkId === "string" && typeof event.recoveryToken === "string") capability = { checkId, recoveryToken: event.recoveryToken };
-      notify(opts.onAccepted, { checkId, recoveryToken: event.recoveryToken ?? null, contract: event.contract ?? null });
+      // Servidores antigos não informavam `recoveryAvailable`: um token válido
+      // continua sendo capacidade. A indisponibilidade explícita nunca é
+      // confundida com recuperação disponível.
+      const offered = event.recoveryAvailable !== false && typeof checkId === "string" && typeof event.recoveryToken === "string";
+      if (offered) capability = { checkId, recoveryToken: event.recoveryToken };
+      notify(opts.onAccepted, { checkId, recoveryAvailable: offered, recoveryToken: offered ? event.recoveryToken : null, contract: event.contract ?? null });
     } else if (event?.type === "content") {
       notify(opts.onContent, { modality: event.modality ?? "unknown", provisional: Boolean(event.provisional), coverage: event.coverage ?? {} });
     } else if (event?.type === "activity") {
@@ -283,7 +289,9 @@ export async function verify(input, opts = {}) {
   opts.signal?.throwIfAborted?.();
   if (!terminal) {
     if (capability) return recover(input, capability, opts);
-    throw withRecovery(friendlyError("upstream_error", "A conexão foi interrompida antes do resultado."), null);
+    // Sem capacidade não existe GET possível nem nova inferência automática:
+    // a execução pode ter continuado no servidor sem resultado recuperável.
+    throw withRecovery(friendlyError("upstream_error", "A conexão foi interrompida antes do resultado e esta execução não tem cópia recuperável. Ela pode ter continuado no servidor sem resultado disponível."), null);
   }
   if (terminal.kind === "error") throw withRecovery(friendlyError(terminal.code, terminal.message), null);
   return recoveredResult(terminal.envelope, input, terminal.checkId);

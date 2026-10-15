@@ -36,12 +36,36 @@ export const EVIDENCE_SUPPORT = {
   insufficient: "Evidência insuficiente",
 };
 
+export const ASSESSMENT_BASIS = {
+  web_research: "Pesquisa com fontes citadas",
+  document_review: "Revisão documental",
+};
+
 /** Estado da revisão do trecho, separado da relação e da cobertura. */
 export const EVIDENCE_VERIFICATION = {
   verified: "Relação verificada",
   unavailable: "Verificação indisponível",
   unclear: "Verificação inconclusiva",
+  research: "Trecho informado pela pesquisa · sem conferência documental independente",
 };
+
+/** A revisão opcional não substitui a conclusão da pesquisa quando indisponível. */
+export function evidenceReviewLabel(claim) {
+  const review = claim?.evidenceReview;
+  if (!review) return "";
+  if (claim.assessmentBasis === "web_research") {
+    return review.verification === "unavailable"
+      ? "Revisão documental opcional: não realizada/indisponível."
+      : "Revisão documental opcional: sem conclusão documental; avaliação baseada na pesquisa.";
+  }
+  return `Revisão do conjunto: ${EVIDENCE_SUPPORT[review.verdict] ?? "Inconclusiva"}${review.incomplete ? " · cobertura incompleta" : ""}.`;
+}
+
+export function evidenceVerificationLabel(claim, evidence) {
+  if (evidence?.verification === "research") return EVIDENCE_VERIFICATION.research;
+  if (claim?.evidenceReview && evidence?.verification === "verified") return "Trecho do conjunto revisado";
+  return EVIDENCE_VERIFICATION[evidence?.verification] ?? "";
+}
 
 /** Rótulos dos desfechos do servidor, incluindo recusas de política. */
 export const OUTCOME_LABEL = {

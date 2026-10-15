@@ -167,10 +167,25 @@ function registryStepReason(provider, id, step) {
 
 let memory = null;
 let catalogMemory = null;
+let blobConfigLoader = null;
 
 export function __resetAiConfigCaches() {
   memory = null;
   catalogMemory = null;
+}
+
+export function __resetAiConfigCatalogCache() {
+  catalogMemory = null;
+}
+
+/** Injeção usada por testes; `null` restaura a leitura real do Blob. */
+export function __setAiConfigLoader(loader) {
+  blobConfigLoader = typeof loader === "function" ? loader : null;
+}
+
+/** Expira a memória sem descartá-la, para exercitar revalidação em testes. */
+export function __expireAiConfigMemory() {
+  if (memory) memory = { ...memory, loadedAt: 0 };
 }
 
 
@@ -379,7 +394,49 @@ function validState(state, source, persisted, configErrors = null) {
     configErrors,
     updatedAt: state.updatedAt ?? null,
     revision: configRevision(state.config),
+    stale: false,
+    staleReason: null,
+    rawRevision: state.rawRevision ?? null,
+    error: null,
   };
+}
+
+/**
+ * Estado sem configuração determinável com segurança. Nunca carrega um par:
+ * o chamador deve falhar antes da inferência paga, com motivo distinto.
+ */
+function unavailableState({ source, persisted, configErrors = null, error, stale = false, staleReason = null }) {
+  return {
+    config: null,
+    source,
+    persisted,
+    configErrors,
+    updatedAt: null,
+    revision: null,
+    stale,
+    staleReason,
+    rawRevision: null,
+    error,
+  };
+}
+
+function revalidateSnapshot(snapshot, catalog, staleReason = null) {
+  const validation = resolvePairs(snapshot.config, catalog, { strict: true });
+  const staleOnly = validation.errors && Object.values(validation.errors).every((reason) => reason === REASON_MESSAGES.stale_inventory)
+    && STEPS.every((step) => registryStepReason(snapshot.config[step]?.provider, snapshot.config[step]?.model, step).eligible);
+  if (validation.errors && !staleOnly) {
+    return {
+      ...snapshot,
+      config: null,
+      configErrors: validation.errors,
+      error: "ai_config_invalid",
+      stale: Boolean(staleReason ?? snapshot.staleReason),
+      staleReason: staleReason ?? snapshot.staleReason,
+      loadedAt: Date.now(),
+    };
+  }
+  const reason = staleReason ?? (staleOnly ? "catalog_stale" : snapshot.staleReason);
+  return { ...snapshot, stale: Boolean(reason), staleReason: reason, loadedAt: snapshot.loadedAt };
 }
 
 async function loadBlobConfig() {
@@ -396,26 +453,76 @@ async function loadBlobConfig() {
 }
 
 export async function getAiConfigState() {
-  if (memory && (memory.source === "ephemeral" || Date.now() - memory.loadedAt < TTL_MS)) return memory;
+  const cached = memory && (memory.source === "ephemeral" || Date.now() - memory.loadedAt < TTL_MS);
+  // Bootstrap conserva etapas opcionais ainda não configuradas; a credencial
+  // de cada etapa é exigida quando ela é usada. Snapshots explícitos salvos
+  // continuam sujeitos à revalidação integral, mesmo dentro do TTL.
+  if (cached && (!memory.config || memory.source === "factory" || memory.source === "env")) return memory;
   const catalog = await aiConfigCatalog();
+  if (cached) {
+    memory = revalidateSnapshot(memory, catalog);
+    return memory;
+  }
+  let saved = null;
+  let readFailure = null;
   try {
-    const saved = await loadBlobConfig();
-    if (saved) {
-      const validation = resolvePairs(saved.config, catalog, { strict: true });
-      const result = resolvePairs(saved.config, catalog);
-      memory = {
-        ...validState({ config: result.config, updatedAt: saved.updatedAt }, "blob", true, validation.errors ?? null),
-        loadedAt: Date.now(),
-      };
+    saved = await (blobConfigLoader ? blobConfigLoader() : loadBlobConfig());
+  } catch {
+    readFailure = "config_read_failed";
+  }
+  if (readFailure) {
+    // Revalidar o snapshot contra as credenciais e capacidades atuais antes de
+    // reutilizá-lo. Só indisponibilidade de descoberta permite inventário stale.
+    if (memory?.config && memory.persisted) {
+      memory = { ...revalidateSnapshot(memory, catalog, readFailure), loadedAt: Date.now() };
       return memory;
     }
-  } catch {
-    if (memory) return memory;
+    memory = unavailableState({
+      source: "unavailable",
+      persisted: true,
+      error: "ai_config_unavailable",
+      stale: true,
+      staleReason: readFailure,
+    });
+    memory.loadedAt = Date.now();
+    return memory;
   }
+  if (saved) {
+    const rawRevision = configRevision(saved.config);
+    const validation = resolvePairs(saved.config, catalog, { strict: true });
+    if (validation.errors) {
+      // Persistida inválida ou incompatível com o catálogo. Reutiliza um
+      // snapshot apenas quando ele corresponde à MESMA configuração persistida
+      // e o bloqueio veio somente de inventário desatualizado; caso contrário,
+      // não substitui por padrão e expõe motivos distintos por etapa.
+      const reasons = Object.values(validation.errors);
+      const staleOnly = reasons.length > 0 && reasons.every((reason) => reason === REASON_MESSAGES.stale_inventory);
+      if (staleOnly && memory?.config && memory.rawRevision === rawRevision) {
+        memory = { ...revalidateSnapshot(memory, catalog, "catalog_stale"), loadedAt: Date.now() };
+        return memory;
+      }
+      memory = unavailableState({
+        source: "blob",
+        persisted: true,
+        configErrors: validation.errors,
+        error: "ai_config_invalid",
+      });
+      memory.updatedAt = saved.updatedAt ?? null;
+      memory.rawRevision = rawRevision;
+      memory.loadedAt = Date.now();
+      return memory;
+    }
+    memory = {
+      ...validState({ config: validation.config, updatedAt: saved.updatedAt, rawRevision }, "blob", true),
+      loadedAt: Date.now(),
+    };
+    return memory;
+  }
+  // Nunca definida (bootstrap intencional): ambiente ou padrão documentado.
   const rawEnv = envConfig();
   const env = resolvePairs(rawEnv, catalog);
   const hasEnv = Object.keys(rawEnv).length > 0;
-  memory = { ...validState({ config: env.config, updatedAt: null }, hasEnv ? "env" : "factory", false), loadedAt: Date.now() };
+  memory = { ...validState({ config: env.config, updatedAt: null }, hasEnv ? "env" : "factory", false), loadedAt: Date.now(), stale: false, error: null };
   return memory;
 }
 
@@ -447,7 +554,7 @@ export async function saveAiConfig(raw) {
     });
   }
   memory = {
-    ...validState({ config, updatedAt }, token ? "blob" : "ephemeral", Boolean(token)),
+    ...validState({ config, updatedAt, rawRevision: configRevision(config) }, token ? "blob" : "ephemeral", Boolean(token)),
     loadedAt: Date.now(),
   };
   return { saved: config, persisted: Boolean(token), source: memory.source, revision: memory.revision, updatedAt };

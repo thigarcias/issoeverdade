@@ -1,6 +1,8 @@
 // Sistema de pontuação determinística — mesma entrada, mesmo score.
 // O servidor valida vínculos estruturais, sem julgar o significado dos trechos.
 // Ausência de comprovação não recebe pontuação nem representa falsidade.
+import { calculateComparison } from "./comparison.js";
+
 
 export const SCORE_RUBRIC = `POLÍTICA DE EVIDÊNCIA E AVALIAÇÃO:
 
@@ -37,7 +39,7 @@ const BASE_RULES = `Você é um verificador cético e imparcial de afirmações 
 export const SYSTEM_PROMPT_JUDGE = `Primeira avaliação. Determine se o material disponível contém afirmações e evidência suficientes. ${QUESTION_RULES} ${QUESTION_SCOPE_RULES} Se faltar o conteúdo original e não houver hipótese factual identificável, use outcome "insufficient_input" ou "inaccessible_media", verdict null, score null, claims []. Se houver só opinião/previsão, use "no_verifiable_claims", verdict null, score null, claims []. Caso contrário use outcome "checked", extraia todos os claims factuais atômicos (sem omitir silenciosamente alegações), relacione a evidência a cada claim e aplique a rubrica. Claims sem comprovação ficam unproven, score null; omissões exigem partial_coverage e omittedClaimsCount. ${TEMPORAL_RULES} ${BASE_RULES}\n${SCORE_RUBRIC}`;
 
 
-export const PROMPT_VERSION = "fact-check-15";
+export const PROMPT_VERSION = "fact-check-16";
 
 // --- Validação server-side: recalcula e corrige divergências ---
 
@@ -80,13 +82,14 @@ function referencePeriod(value) {
   return validDate(start) && validDate(end) && start <= end ? { start, end } : null;
 }
 
-function validEvidence(evidence, sourceCount, sourceIds) {
+function validEvidence(evidence, sourceCount, sourceIds, assessmentBasis) {
   return Number.isInteger(evidence?.sourceId) &&
     evidence.sourceId >= 0 &&
     evidence.sourceId < sourceCount &&
     sourceIds.includes(evidence.sourceId) &&
     EVIDENCE_RELATIONS.includes(evidence?.relation) &&
-    (evidence.verification == null || evidence.verification === "verified") &&
+    (evidence.verification == null || evidence.verification === "verified" ||
+      (assessmentBasis === "web_research" && evidence.verification === "research")) &&
     typeof evidence?.quote === "string" &&
     evidence.quote.trim().length >= 8;
 }
@@ -137,8 +140,17 @@ export function validateResult(raw) {
       ? [...new Set(claim.sourceIds.filter((id) => Number.isInteger(id) && id >= 0 && id < sourceCount))]
       : [];
     const period = referencePeriod(claim?.referencePeriod);
+    const researchBasis = claim?.assessmentBasis === "web_research";
+    if (researchBasis && status === "context") status = "unproven";
+    if (researchBasis && claim?.referencePeriod != null && !period) {
+      status = "unproven";
+      downgradeReason = "O período de referência da alegação é inválido.";
+    }
     const temporalEvidence = (Array.isArray(claim?.evidence) ? claim.evidence : []).map((item) => {
       const evidencePeriod = referencePeriod(item?.referencePeriod);
+      if (researchBasis && item?.referencePeriod != null && !evidencePeriod) {
+        return { ...item, verification: "unavailable", referencePeriod: null };
+      }
       const disjoint = period && evidencePeriod && (evidencePeriod.end < period.start || evidencePeriod.start > period.end);
       if (disjoint && ["supports", "refutes"].includes(item?.relation)) {
         corrections.push(`claim${i + 1}: período da evidência não corresponde ao claim → context`);
@@ -146,13 +158,14 @@ export function validateResult(raw) {
       }
       return { ...item, referencePeriod: evidencePeriod };
     });
-    const eligibleEvidence = temporalEvidence.filter((item) => validEvidence(item, sourceCount, validIds));
+    const eligibleEvidence = temporalEvidence.filter((item) => validEvidence(item, sourceCount, validIds, claim?.assessmentBasis));
     const group = claim?.evidenceReview;
     const groupIndices = Array.isArray(group?.evidenceIndices) ? group.evidenceIndices : [];
-    const grouped = group?.verification === "verified" && group.incomplete === false &&
+    const grouped = !researchBasis && group?.verification === "verified" && group.incomplete === false &&
       ["supports", "refutes", "context"].includes(group.verdict) && groupIndices.length > 0 &&
       new Set(groupIndices).size === groupIndices.length && groupIndices.every((index) =>
-        Number.isInteger(index) && index >= 0 && validEvidence(temporalEvidence[index], sourceCount, validIds) &&
+        Number.isInteger(index) && index >= 0 && temporalEvidence[index]?.verification !== "research" &&
+        validEvidence(temporalEvidence[index], sourceCount, validIds, claim?.assessmentBasis) &&
         !(period && temporalEvidence[index]?.referencePeriod &&
           (temporalEvidence[index].referencePeriod.end < period.start || temporalEvidence[index].referencePeriod.start > period.end)));
     const supports = grouped ? group.verdict === "supports" : eligibleEvidence.some((item) => item.relation === "supports");
@@ -165,16 +178,30 @@ export function validateResult(raw) {
       if (resolved === "unproven") downgradeReason = String(group.note ?? "").trim() ||
         "O conjunto revisado fornece contexto, mas não documenta todos os componentes da afirmação.";
     }
-    const comparisonConfirmed = comparison?.eligible === true && grouped &&
+    const documentaryComparison = comparison?.eligible === true && grouped &&
       ["supports", "refutes"].includes(group.verdict) && comparison.relation === group.verdict &&
       comparison.groups?.length === 2 && comparison.groups.every((entry) => Array.isArray(entry.rows) &&
         entry.rows.every((row) => groupIndices.some((index) => temporalEvidence[index]?.evidenceId === row.evidenceId)));
-    if (comparison && comparisonConfirmed) status = group.verdict === "supports" ? "true" : "false";
+    const researchCalculation = researchBasis && comparison ? calculateComparison(comparison, {
+      citations: eligibleEvidence.flatMap((item, evidenceIndex) => item.verification === "research" ? [{
+        basis: "web_research", claimIndex: i, evidenceIndex, sourceId: item.sourceId,
+        evidenceId: item.evidenceId, quote: item.quote, excerpt: item.quote,
+      }] : []),
+      claimIndex: i,
+    }) : null;
+    const researchComparison = researchCalculation?.eligible === true &&
+      comparison?.eligible === true && comparison.relation === researchCalculation.relation &&
+      ((status === "true" && comparison.relation === "supports") ||
+        (status === "false" && comparison.relation === "refutes"));
+    const comparisonConfirmed = documentaryComparison || researchComparison;
+    if (documentaryComparison) status = group.verdict === "supports" ? "true" : "false";
     if (comparison && !comparisonConfirmed) {
       status = "unproven";
       downgradeReason = comparison.eligible !== true
         ? String(comparison.reason ?? "").trim() || "Os dados anuais não permitem concluir a comparação."
-        : [String(group?.note ?? "").trim(), "O cálculo não recebeu suporte documental integral e estruturalmente válido para concluir a alegação."].filter(Boolean).join(" ");
+        : researchBasis
+          ? "O cálculo e todos os dados anuais citados precisam ser válidos e concordar com a avaliação da pesquisa."
+          : [String(group?.note ?? "").trim(), "O cálculo não recebeu suporte documental integral e estruturalmente válido para concluir a alegação."].filter(Boolean).join(" ");
     }
     const requiredRelation = status === "true" ? "supports" : status === "false" ? "refutes" : null;
     const hasRequired = grouped ? !requiredRelation || group.verdict === requiredRelation
@@ -188,7 +215,8 @@ export function validateResult(raw) {
       else if (temporalEvidence.length === 0) downgradeReason = "Não foi fornecido um trecho de evidência vinculado à alegação.";
       else if (linkedEvidence.length === 0) downgradeReason = "O índice da fonte na evidência não corresponde a uma fonte vinculada à alegação.";
       else if (quotedEvidence.length === 0) downgradeReason = "O trecho literal vinculado está ausente ou tem menos de 8 caracteres.";
-      else if (quotedEvidence.every((item) => item.verification != null && item.verification !== "verified")) {
+      else if (quotedEvidence.every((item) => item.verification != null &&
+        item.verification !== "verified" && !(researchBasis && item.verification === "research"))) {
         downgradeReason = String(claim?.evidenceReviewReason ?? "").trim() ||
           "A revisão das evidências vinculadas está indisponível ou inconclusiva.";
       } else if (otherPeriod) downgradeReason = `Há trechos vinculados de outro período, mas falta evidência com a relação exigida (${requiredRelation}) no período da alegação (${period.start} a ${period.end}).`;
@@ -214,11 +242,13 @@ export function validateResult(raw) {
       .map((item) => ({ ...item, quote: String(item.quote ?? "").trim().slice(0, 600) }));
     const evidenceSupport = supports && refutes ? "insufficient" : supports ? "supports" : refutes ? "refutes"
       : eligibleEvidence.length > 0 ? "context" : "insufficient";
+    const comparisonForNote = researchComparison ? researchCalculation : comparison;
     const comparisonNote = comparisonConfirmed && status !== "unproven"
-      ? `${comparison.groups.map((entry) => `${entry.label} (${entry.startYear}–${entry.endYear}): ${entry.total} ${comparison.unit}`).join("; ")}. ${comparison.reason ?? ""}`
+      ? `${comparisonForNote.groups.map((entry) => `${entry.label} (${entry.startYear}–${entry.endYear}): ${entry.total} ${comparisonForNote.unit}`).join("; ")}. ${comparisonForNote.reason ?? ""}`
       : "";
     return {
       ...claim,
+      ...(researchComparison ? { comparison: researchCalculation } : {}),
       text,
       referencePeriod: period,
       note: downgradeReason || comparisonNote.slice(0, 800) ||

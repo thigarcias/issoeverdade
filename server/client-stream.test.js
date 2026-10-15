@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { verify } from "../src/lib/api.js";
+import { getPublishedCheck, verify } from "../src/lib/api.js";
 
 const input = { kind: "text", text: "Afirmação", fileName: null };
 const capability = { checkId: "check-stream", recoveryToken: "t".repeat(43) };
@@ -94,6 +94,55 @@ test("recovered comparison metadata and stable evidence IDs survive normalizatio
   });
 });
 
+test("research assessment reaches streamed, recovered and published clients without becoming verified", async (t) => {
+  const data = { ...envelope, createdAt: "2026-10-15T12:00:00.000Z", result: { ...envelope.result,
+    verdict: "true", score: 95,
+    sources: [{ url: "https://evidence.test/report", outlet: "Report" }],
+    claims: [{
+      text: "Afirmação pesquisada", status: "true", score: 95, sourceIds: [0],
+      assessmentBasis: "web_research", assessmentNote: "x".repeat(1000),
+      evidenceReview: { verification: "unavailable", verdict: "unclear" },
+      secret: { token: "PRIVATE CLAIM" },
+      evidence: [{ sourceId: 0, relation: "supports", verification: "research", quote: "Trecho informado pela pesquisa.", raw: { token: "PRIVATE EVIDENCE" } }],
+    }],
+  } };
+  for (const mode of ["stream", "recovery", "public"]) await t.test(mode, async () => {
+    await withFetch(async () => mode === "stream"
+      ? stream([JSON.stringify({ type: "result", checkId: data.checkId, envelope: data })])
+      : Response.json(mode === "recovery" ? { status: "completed", envelope: data } : data), async () => {
+      const result = mode === "public" ? await getPublishedCheck(data.checkId)
+        : (await verify(input, mode === "recovery" ? { recovery: capability } : {})).result;
+      const claim = result.claims[0];
+      assert.equal(claim.status, "true");
+      assert.equal(claim.assessmentBasis, "web_research");
+      assert.equal(claim.assessmentNote, "x".repeat(800));
+      assert.equal(claim.evidence[0].verification, "research");
+      assert.equal(claim.secret, undefined);
+      assert.equal(claim.evidence[0].raw, undefined);
+      assert.doesNotMatch(JSON.stringify(claim), /PRIVATE/);
+    });
+  });
+});
+
+test("client assessment normalization rejects unknown and nested authority fields", async () => {
+  const data = { ...envelope, result: { ...envelope.result,
+    sources: [{ url: "https://evidence.test/report", outlet: "Report" }],
+    claims: ["verified", ["web_research"], { token: "PRIVATE BASIS" }].map((assessmentBasis) => ({
+      text: "Afirmação", assessmentBasis, assessmentNote: { token: "PRIVATE NOTE" }, sourceIds: [0],
+      evidence: [{ sourceId: 0, relation: "context", verification: ["research"], quote: "Trecho com origem citada." }],
+    })),
+  } };
+  await withFetch(async () => Response.json({ status: "completed", envelope: data }), async () => {
+    const { result } = await verify(input, { recovery: capability });
+    for (const claim of result.claims) {
+      assert.equal(claim.assessmentBasis, null);
+      assert.equal(claim.assessmentNote, "");
+      assert.equal(claim.evidence[0].verification, null);
+    }
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
+  });
+});
+
 test("explicit retry reads recovery only; pending and transient failures retain capability", async (t) => {
   for (const response of [() => Response.json({ status: "pending" }, { status: 202 }), () => Response.json({ error: "recovery_unavailable" }, { status: 503 }), () => { throw new TypeError("network"); }]) await t.test("one GET", async () => {
     let calls = 0;
@@ -123,5 +172,42 @@ test("cancellation wins over a complete buffered result and prevents recovery lo
   }, async () => {
     await assert.rejects(verify(input, { signal: controller.signal }), { name: "AbortError" });
     assert.equal(calls, 1);
+  });
+});
+
+test("conexão perdida sem capacidade não tenta GET e informa limitação", async () => {
+  const acceptedWithout = `${JSON.stringify({ type: "accepted", checkId: "check-stream", recoveryAvailable: false, contract: "iev-verify-ndjson/1" })}\n`;
+  const calls = [];
+  await withFetch(async (_url, opts) => {
+    calls.push(opts.method);
+    return stream([acceptedWithout], { error: true });
+  }, async () => {
+    await assert.rejects(verify(input), (error) => error.code === "upstream_error" && error.recovery === null && /recuperável/.test(error.message));
+    assert.deepEqual(calls, ["POST"], "nenhum GET é tentado sem capacidade");
+  });
+});
+
+test("recoveryAvailable true mantém uma leitura de recuperação após perda do terminal", async () => {
+  const acceptedOffered = `${JSON.stringify({ type: "accepted", ...capability, recoveryAvailable: true, contract: "iev-verify-ndjson/1" })}\n`;
+  const calls = [];
+  await withFetch(async (_url, opts) => {
+    calls.push(opts.method);
+    return opts.method === "POST" ? stream([acceptedOffered], { error: true }) : Response.json({ status: "completed", envelope });
+  }, async () => {
+    const out = await verify(input);
+    assert.equal(out.result.recovered, true);
+    assert.deepEqual(calls, ["POST", "GET"]);
+  });
+});
+
+test("token presente com recoveryAvailable falso não é tratado como recuperação", async () => {
+  const acceptedContradictory = `${JSON.stringify({ type: "accepted", checkId: "check-stream", recoveryAvailable: false, recoveryToken: "t".repeat(43), contract: "iev-verify-ndjson/1" })}\n`;
+  const calls = [];
+  await withFetch(async (_url, opts) => {
+    calls.push(opts.method);
+    return stream([acceptedContradictory], { error: true });
+  }, async () => {
+    await assert.rejects(verify(input), (error) => error.recovery === null);
+    assert.deepEqual(calls, ["POST"]);
   });
 });

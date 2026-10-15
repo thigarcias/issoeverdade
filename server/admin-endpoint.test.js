@@ -3,6 +3,12 @@
 const SECRET = "00000000-0000-4000-8000-000000000000";
 process.env.ADMIN_SECRET = SECRET;
 process.env.IEV_LIMITS_MODE = "memory";
+// Isolamento: as expectativas de "log_disabled" valem sem storage configurado,
+// independentemente do ambiente que executa a suíte.
+delete process.env.SUPABASE_URL;
+delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+delete process.env.BLOB_READ_WRITE_TOKEN;
 const { handleAdminRequest, systemState, MIN_SECRET_CHARS, AUTH_FAILURE_LIMIT } = await import("./admin-endpoint.js");
 const { handleHealthRequest } = await import("./health-endpoint.js");
 const { createCorrection, normalizeCorrection } = await import("./corrections.js");
@@ -195,4 +201,119 @@ test("estado do sistema não inclui valores de ambiente sensíveis", () => {
   const serialized = JSON.stringify(state);
   assert.doesNotMatch(serialized, /"x"|"y"/);
   assert.equal(state.limits.mode, "memory");
+});
+
+test("admin entrega estados de IA inválida/indisponível com catálogo e aceita correção explícita", async () => {
+  const ai = await import("./ai-config.js");
+  const previousFetch = globalThis.fetch;
+  const keys = ["OPENCODE_API", "OPENAI_API_KEY", "BLOB_READ_WRITE_TOKEN"];
+  const previousEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const config = {
+    judge: { provider: "opencode", model: "muse-spark-1.3-contributor" },
+    vision: { provider: "opencode", model: "muse-spark-1.3-contributor" },
+    transcribe: { provider: "openai", model: "whisper-1" },
+  };
+  const getConfig = () => handleAdminRequest({ method: "GET", headers: auth, query: { config: "1" } });
+  ai.__resetAiConfigCaches();
+  try {
+    process.env.OPENCODE_API = "test-opencode";
+    process.env.OPENAI_API_KEY = "test-openai";
+    delete process.env.BLOB_READ_WRITE_TOKEN;
+    globalThis.fetch = async (url) => new Response(JSON.stringify({
+      data: (String(url).includes("opencode.ai") ? ["muse-spark-1.3-contributor"] : ["whisper-1"]).map((id) => ({ id })),
+    }), { status: 200 });
+    ai.__setAiConfigLoader(async () => ({ config: { ...config, judge: { provider: "openai", model: "whisper-1" } } }));
+    const invalid = await getConfig();
+    assert.equal(invalid.status, 200);
+    assert.equal(invalid.body.error, "ai_config_invalid");
+    assert.equal(invalid.body.config, null);
+    assert.equal(invalid.body.configErrors.judge, ai.REASON_MESSAGES.other_step);
+    assert.ok(invalid.body.catalog.providers.opencode.models.length > 0, "catálogo permanece disponível para correção explícita");
+
+    const corrected = await handleAdminRequest({ method: "POST", headers: auth, query: { config: "1" }, body: { config } });
+    assert.equal(corrected.status, 200);
+    assert.deepEqual(corrected.body.saved, config);
+    const afterSave = await getConfig();
+    assert.deepEqual(afterSave.body.config, config);
+    assert.equal(afterSave.body.error, null);
+    assert.equal(afterSave.body.configErrors, null);
+    assert.equal(afterSave.body.stale, false);
+    assert.equal(afterSave.body.staleReason, null);
+
+    ai.__resetAiConfigCaches();
+    ai.__setAiConfigLoader(async () => { throw new Error("blob down"); });
+    const unavailable = await getConfig();
+    assert.equal(unavailable.status, 200);
+    assert.equal(unavailable.body.error, "ai_config_unavailable");
+    assert.equal(unavailable.body.config, null);
+    assert.equal(unavailable.body.staleReason, "config_read_failed");
+    assert.ok(unavailable.body.catalog.providers.opencode.models.length > 0);
+  } finally {
+    ai.__setAiConfigLoader(null);
+    ai.__resetAiConfigCaches();
+    globalThis.fetch = previousFetch;
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("admin informa motivo de snapshot stale e não o reutiliza após remoção de credencial", async () => {
+  const ai = await import("./ai-config.js");
+  const previousFetch = globalThis.fetch;
+  const keys = ["OPENCODE_API", "OPENAI_API_KEY", "BLOB_READ_WRITE_TOKEN"];
+  const previousEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const config = {
+    judge: { provider: "opencode", model: "muse-spark-1.3-contributor" },
+    vision: { provider: "opencode", model: "muse-spark-1.3-contributor" },
+    transcribe: { provider: "openai", model: "whisper-1" },
+  };
+  const getConfig = (refresh = false) => handleAdminRequest({ method: "GET", headers: auth, query: { config: "1", ...(refresh ? { refresh: "1" } : {}) } });
+  ai.__resetAiConfigCaches();
+  try {
+    process.env.OPENCODE_API = "test-opencode";
+    process.env.OPENAI_API_KEY = "test-openai";
+    delete process.env.BLOB_READ_WRITE_TOKEN;
+    globalThis.fetch = async (url) => new Response(JSON.stringify({
+      data: (String(url).includes("opencode.ai") ? ["muse-spark-1.3-contributor"] : ["whisper-1"]).map((id) => ({ id })),
+    }), { status: 200 });
+    ai.__setAiConfigLoader(async () => ({ config, updatedAt: "2026-10-01T00:00:00.000Z" }));
+    const first = await getConfig();
+    ai.__expireAiConfigMemory();
+    ai.__setAiConfigLoader(async () => { throw new Error("blob down"); });
+    const stale = await getConfig();
+    assert.equal(stale.body.error, null);
+    assert.equal(stale.body.staleReason, "config_read_failed");
+    assert.equal(stale.body.revision, first.body.revision);
+    assert.deepEqual(stale.body.config, config);
+    delete process.env.OPENCODE_API;
+    const invalid = await getConfig();
+    assert.equal(invalid.body.error, "ai_config_invalid");
+    assert.equal(invalid.body.config, null);
+    assert.equal(invalid.body.configErrors.judge, ai.REASON_MESSAGES.missing_credential);
+    assert.equal(invalid.body.revision, first.body.revision);
+    assert.equal(invalid.body.source, first.body.source);
+    assert.equal(invalid.body.catalog.providers.opencode.hasKey, false);
+
+    ai.__resetAiConfigCaches();
+    process.env.OPENCODE_API = "test-opencode";
+    ai.__setAiConfigLoader(async () => ({ config }));
+    await getConfig();
+    ai.__expireAiConfigMemory();
+    ai.__resetAiConfigCatalogCache();
+    globalThis.fetch = async () => { throw new Error("catalog down"); };
+    const catalogStale = await getConfig(true);
+    assert.equal(catalogStale.body.error, null);
+    assert.equal(catalogStale.body.staleReason, "catalog_stale");
+    assert.deepEqual(catalogStale.body.config, config);
+  } finally {
+    ai.__setAiConfigLoader(null);
+    ai.__resetAiConfigCaches();
+    globalThis.fetch = previousFetch;
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });

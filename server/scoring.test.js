@@ -463,3 +463,63 @@ for (const status of ["true", "false", "context", "unproven"]) {
     });
   }
 }
+
+for (const [status, relation, score] of [["true", "supports", 95], ["false", "refutes", 5]]) {
+  test(`evidência research só sustenta ${status} na avaliação web_research`, () => {
+    const raw = resultFor(status, [evidenceFor(relation, { verification: "research" })]);
+    assertUnknown(validateResult(raw).fixed);
+    raw.claims[0].assessmentBasis = "document_review";
+    assertUnknown(validateResult(raw).fixed);
+    raw.claims[0].assessmentBasis = "web_research";
+    const fixed = validateResult(raw).fixed;
+    assert.equal(fixed.claims[0].status, status);
+    assert.equal(fixed.claims[0].score, score);
+    assert.equal(fixed.claims[0].evidence[0].verification, "research");
+    assert.equal(fixed.claims[0].evidenceSupport, relation);
+    assert.equal(fixed.claims[0].note, raw.claims[0].note);
+  });
+}
+
+test("pesquisa com fonte citada não usa revisão opcional indisponível como refutação", () => {
+  const raw = resultFor("true", [evidenceFor("supports", { verification: "research" })]);
+  raw.claims[0].assessmentBasis = "web_research";
+  raw.claims[0].evidenceReview = { verdict: "unclear", verification: "unavailable", incomplete: false,
+    evidenceIndices: [], note: "Documento indisponível (HTTP 403)." };
+  const fixed = validateResult(raw).fixed;
+  assert.equal(fixed.claims[0].status, "true");
+  assert.equal(fixed.claims[0].note, raw.claims[0].note);
+  assert.match(fixed.claims[0].evidenceReview.note, /HTTP 403/);
+});
+
+test("pesquisa não promove unproven nem mantém context legado como avaliação atual", () => {
+  for (const status of ["context", "unproven"]) {
+    const raw = resultFor(status, [evidenceFor("supports", { verification: "research" })]);
+    raw.claims[0].assessmentBasis = "web_research";
+    assertUnknown(validateResult(raw).fixed);
+  }
+  assert.equal(validateResult(resultFor("context", [evidenceFor("context")])).fixed.claims[0].score, 70);
+});
+
+test("pesquisa continua abstendo por conflito, relação incorreta, período disjunto e malformado", () => {
+  for (const mutate of [
+    (claim) => { claim.evidence.push(evidenceFor("refutes", { verification: "research" })); },
+    (claim) => { claim.evidence[0].relation = "refutes"; },
+    (claim) => { claim.evidence[0].referencePeriod = previousPeriod; },
+    (claim) => { claim.evidence[0].referencePeriod = { start: "2026-02-30", end: "2026-03-02" }; },
+    (claim) => { claim.referencePeriod = { start: "yesterday", end: "today" }; },
+    (claim) => { claim.evidence[0].quote = "curto"; },
+    (claim) => { claim.evidence[0].sourceId = 2; },
+  ]) {
+    const raw = resultFor("true", [evidenceFor("supports", { verification: "research" })]);
+    raw.claims[0].assessmentBasis = "web_research";
+    mutate(raw.claims[0]);
+    assertUnknown(validateResult(raw).fixed);
+  }
+});
+
+test("research não pode se passar por localização documental de grupo verified", () => {
+  const raw = resultFor("unproven", [evidenceFor("supports", { verification: "research" })]);
+  raw.claims[0].assessmentBasis = "web_research";
+  raw.claims[0].evidenceReview = { verdict: "supports", verification: "verified", incomplete: false, evidenceIndices: [0] };
+  assertUnknown(validateResult(raw).fixed);
+});

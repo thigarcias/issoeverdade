@@ -2,7 +2,7 @@
 // Justificativas e citações completas permanecem no resultado e no texto compartilhado.
 // Zero dependências — roda 100% no browser.
 
-import { CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, OUTCOME_LABEL, VERDICTS } from "../data/constants.js";
+import { ASSESSMENT_BASIS, CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, OUTCOME_LABEL, VERDICTS, evidenceReviewLabel, evidenceVerificationLabel } from "../data/constants.js";
 
 const W = 1080;
 const H = 1920;
@@ -108,7 +108,7 @@ function periodText(period) {
   return [period.start, period.end].filter((value) => value != null && value !== "").join(" a ");
 }
 
-function comparisonDetails(comparison) {
+function comparisonDetails(comparison, assessmentBasis) {
   if (!comparison || !["complete", "lower_bound", "partial", "invalid"].includes(comparison.status)) return [];
   const details = [
     `Comparação: ${SCOPE_LABEL[comparison.scope] ?? "Limites da comparação"} · ${comparison.status}.`,
@@ -124,30 +124,32 @@ function comparisonDetails(comparison) {
     }
     if (list(group.coverage?.missingYears).length) details.push(`Anos ausentes ou incompletos: ${group.coverage.missingYears.join(", ")}.`);
   }
-  details.push(text(comparison.reason), "Soma calculada a partir dos trechos localizados. A revisão verifica se métrica, região e períodos permitem a conclusão.");
+  details.push(text(comparison.reason), assessmentBasis === "web_research"
+    ? "Soma calculada a partir dos trechos informados pela pesquisa, sem conferência documental independente. A avaliação considera métrica, região e períodos."
+    : "Soma calculada a partir dos trechos localizados. A revisão verifica se métrica, região e períodos permitem a conclusão.");
   return details.filter(Boolean);
 }
 
 function claimDetails(claim, sources) {
   const details = [];
   if (text(claim.note)) details.push(text(claim.note));
+  if (ASSESSMENT_BASIS[claim.assessmentBasis]) details.push(`Base da avaliação: ${ASSESSMENT_BASIS[claim.assessmentBasis]}.${text(claim.assessmentNote) ? ` ${text(claim.assessmentNote)}` : ""}`);
   if (claim.evidenceSupport) details.push(`Suporte da evidência: ${EVIDENCE_SUPPORT[claim.evidenceSupport] ?? claim.evidenceSupport}.`);
   if (claim.evidenceReview) {
     const review = claim.evidenceReview;
-    details.push(`Revisão do conjunto: ${EVIDENCE_SUPPORT[review.verdict] ?? "Inconclusiva"}${review.verification ? ` · ${EVIDENCE_VERIFICATION[review.verification] ?? review.verification}` : ""}${review.incomplete ? " · cobertura incompleta" : ""}.${text(review.note) ? ` ${text(review.note)}` : ""}`);
+    details.push(`${evidenceReviewLabel(claim)}${claim.assessmentBasis !== "web_research" && review.verification ? ` ${EVIDENCE_VERIFICATION[review.verification] ?? ""}.` : ""}${text(review.note) ? ` ${text(review.note)}` : ""}`);
   }
   if (periodText(claim.referencePeriod)) details.push(`Período da afirmação: ${periodText(claim.referencePeriod)}.`);
-  details.push(...comparisonDetails(claim.comparison));
+  details.push(...comparisonDetails(claim.comparison, claim.assessmentBasis));
   const sourceIds = list(claim.sourceIds);
   if (sourceIds.length) details.push(`Fontes vinculadas: ${sourceIds.map((id) => `[${id + 1}]`).join(", ")}.`);
   for (const evidence of list(claim.evidence)) {
     const source = sources[evidence.sourceId];
     const relation = RELATION_LABEL[evidence.relation] ?? "Evidência";
-    const verification = claim.evidenceReview && evidence.verification === "verified"
-      ? "Trecho do conjunto revisado"
-      : EVIDENCE_VERIFICATION[evidence.verification] ?? text(evidence.verification);
+    const verification = evidenceVerificationLabel(claim, evidence);
     const label = [relation, Number.isInteger(evidence.sourceId) ? `[${evidence.sourceId + 1}] ${sourceHost(source)}` : "Fonte não identificada", verification].filter(Boolean).join(" · ");
-    details.push(`${label}${text(evidence.quote) ? ` · trecho original: “${text(evidence.quote)}”` : " · trecho não informado"}${periodText(evidence.referencePeriod) ? ` · período: ${periodText(evidence.referencePeriod)}` : ""}`);
+    const quoteLabel = evidence.verification === "research" ? "trecho informado pela pesquisa" : "trecho original";
+    details.push(`${label}${text(evidence.quote) ? ` · ${quoteLabel}: “${text(evidence.quote)}”` : " · trecho não informado"}${periodText(evidence.referencePeriod) ? ` · período: ${periodText(evidence.referencePeriod)}` : ""}`);
   }
   return details;
 }
@@ -301,6 +303,9 @@ export async function renderShareCards(result) {
     sources.length
       ? `${sources.length} ${sources.length === 1 ? "fonte" : "fontes"} · justificativas e citações no texto completo.`
       : "Nenhuma fonte documental disponível no resultado.",
+    claims.some((claim) => claim.assessmentBasis === "web_research")
+      ? "Pesquisa com fontes citadas · trechos sem conferência documental independente."
+      : claims.some((claim) => claim.assessmentBasis === "document_review") ? "Base da avaliação: revisão documental." : "",
     hasScore ? "Checagem automática · a nota não é probabilidade calibrada." : "Checagem automática · nota indisponível não significa falsidade.",
   ].flatMap((value) => measure(value, W - M * 2, FOOTER_SIZE));
   if (kind.startsWith("Vídeo") || list(result?.media).some((attempt) => /^(audio|frames|transcribe|vision):/.test(attempt))) {

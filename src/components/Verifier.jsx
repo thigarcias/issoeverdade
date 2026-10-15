@@ -183,8 +183,8 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
       const { result: r } = await verify(snapshot, {
         signal: aborter.current.signal,
         recovery: unchanged ? previous.capability : null,
-        onAccepted: ({ checkId, recoveryToken }) => {
-          if (runId.current !== mine || !recoveryToken) return;
+        onAccepted: ({ checkId, recoveryAvailable: acceptedRecovery = false, recoveryToken }) => {
+          if (runId.current !== mine || !acceptedRecovery || !recoveryToken) return;
           recoveryRef.current = { snapshot, capability: { checkId, recoveryToken } };
           setRecoveryAvailable(true);
         },

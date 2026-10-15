@@ -1,13 +1,12 @@
-import { buildReviewGroups, evidenceConfig, EVIDENCE_REVIEW_INSTRUCTIONS } from "./evidence.js";
+import { buildReviewBatches, evidenceConfig, EVIDENCE_REVIEW_INSTRUCTIONS } from "./evidence.js";
 
 const JEV_URL = "https://opencode.ai/inference/v1/systemone";
 const VERDICTS = ["supports", "refutes", "context", "unclear"];
-const INSTRUCTIONS = `${EVIDENCE_REVIEW_INSTRUCTIONS} Avalie o rumor identificável tal como alegado, sem convertê-lo em anúncio recente ou previsão a provar. Um desmentido explícito documentado por agência de checagem pode refutar o rumor exato quando sujeito, ação, objeto, alcance e condições coincidirem; não exija prova de que uma ação jamais ocorrerá. A data de publicação, isoladamente, não invalida um desmentido do mesmo rumor sem nova ocorrência especificada; distinga publicação e período de referência do fato. Nova medida, declaração, data ou evento na alegação exige evidência correspondente, não apenas desmentido de ocorrência anterior. Um rótulo "fake news" ou texto sobre o mesmo tema não substitui trecho e fundamentação pertinentes. As probabilidades classificam a relação documental do grupo, não são probabilidades de a alegação ser verdadeira.`;
 const CRITERIA = {
-  supports: "Os trechos do grupo, considerados em conjunto, documentam todos os componentes da alegação no escopo afirmado. Para uma declaração atribuída, citação direta com conteúdo correspondente e autoria explicitamente atribuída no documento sustenta que a pessoa fez a declaração; não exige autenticar mídia não alegada nem provar o conteúdo da fala. Relato factual em coluna de opinião ou fonte secundária também pode documentar a declaração; não o descarte só pelo gênero. Não aceite atribuição hipotética, negada, satírica, contestada ou feita a outra pessoa. Comparações qualitativas de posições exigem documentação dos dois lados, mesmo objeto, alcance, condições e contexto temporal pertinente, sem cálculo obrigatório. Quando comparison estiver presente, o cálculo numérico deve ser eligible e relation supports, com operandos e escopos documentados. Um limite inferior não prova previsão ou total completo. Grupo incomplete nunca sustenta a alegação integral.",
-  refutes: "Os trechos documentam negação explícita ou fato incompatível com a alegação no mesmo episódio e escopo, incluindo desmentido direto e fundamentado do mesmo rumor documentado por agência de checagem. Documentar que X fez uma declaração não prova que outra pessoa nunca a fez; mencionar outro cargo, percentual ou data tampouco refuta uma declaração em outro episódio não examinado. Hipótese e sátira não demonstram que a pessoa nunca tenha feito a declaração real. Nesses casos sem incompatibilidade explícita, use context ou unclear, nunca refutes apenas pela falta de suporte. Publicação antiga não impede refutação por si só, mas desmentido de outra ocorrência não resolve nova ocorrência especificada. Posições qualitativas devem ser comparadas no mesmo objeto, alcance, condições e contexto temporal pertinente, sem exigir cálculo. Somente quando comparison estiver presente, exige-se cálculo eligible e relation refutes. Ausência de dados nunca refuta, nem grupo incomplete.",
-  context: "O conjunto fornece contexto pertinente, mas deixa sem suporte pelo menos um componente efetivamente afirmado, incluindo outra pessoa/cargo sem negação explícita da atribuição, dados parciais, estimativas usadas como resultado realizado ou períodos/universos distintos. Não use context apenas porque a evidência é uma coluna, fonte secundária ou declaração citada sem áudio/vídeo: se a alegação é a própria declaração e a atribuição explícita a documenta integralmente, a relação é supports. Uma fala documentada não comprova o conteúdo, a execução ou uma posição atual que o documento não afirma. Não confunda falta de suporte com refutação.",
-  unclear: "Dados insuficientes, não localizados, ambíguos, grupos incompletos ou escopos incompatíveis impedem concluir. Nunca transfira provas entre claims.",
+  supports: "O conjunto implica todos os componentes efetivamente afirmados, preservando atribuição, modalidade, negativa e escopo. Detalhes adicionais compatíveis não exigem identidade integral entre fonte e resumo. Quando comparison existir, exige cálculo eligible e relation supports.",
+  refutes: "O conjunto documenta negação ou incompatibilidade explícita com a alegação no mesmo escopo, não apenas ausência de suporte. Quando comparison existir, exige cálculo eligible e relation refutes.",
+  context: "O conjunto não implica nem contradiz a alegação: falta um componente realmente afirmado ou há outro alcance, modalidade ou período. Não crie lacuna apenas porque a fonte contém mais detalhes compatíveis.",
+  unclear: "Ambiguidade real ou grupo incomplete impede determinar a relação documental. Simples ausência de suporte é context, não uma segunda categoria concorrente. Nunca transfira provas entre claims.",
 };
 const NOTES = {
   supports: "O conjunto dos trechos documenta a alegação no escopo e período informados.",
@@ -24,7 +23,7 @@ function classify(answer) {
   const [top, second] = probabilities;
   if (top.verdict !== answer.choice) return null;
   // Tolerância apenas para o arredondamento binário na fronteira exata de 0,2.
-  if (top.value < 0.8 || top.value - second.value < 0.2 - Number.EPSILON * 4) return "unclear";
+  if (top.value < 0.7 || top.value - second.value < 0.2 - Number.EPSILON * 4) return "unclear";
   return top.verdict;
 }
 
@@ -35,39 +34,49 @@ function tokens(value) {
 /** Revisão de relação textual por JEV; não estima a probabilidade de verdade. */
 export async function reviewWithJev({ claims = [], citations = [], config = evidenceConfig(), fetchImpl = fetch } = {}) {
   const model = config.reviewModel || process.env.IEV_EVIDENCE_REVIEW_MODEL || "jev-1.13-free";
-  const groups = buildReviewGroups({ claims, citations, config });
+  const batches = buildReviewBatches({ claims, citations, config });
   const empty = { result: { claims: [] }, model, provider: "opencode", usage: { input: 0, output: 0, total: 0 } };
-  if (groups.length === 0) return empty;
+  if (batches.length === 0) return empty;
   const key = process.env.OPENCODE_API;
   if (!key) throw Object.assign(new Error("Revisão JEV indisponível: chave não configurada."), { code: "jev_review_failed" });
-  const questions = Object.fromEntries(groups.map(({ claimIndex }) => [String(claimIndex), { type: "choice", instructions: `${INSTRUCTIONS} Avalie somente o grupo claimIndex ${claimIndex} do estado.`, criteria: CRITERIA }]));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.reviewTimeoutMs ?? config.timeoutMs ?? 20_000);
   try {
-    const response = await fetchImpl(JEV_URL, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model, state: JSON.stringify({ claims: groups }), questions }),
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error("http_error");
-    let data;
-    try {
-      data = await response.json();
-    } catch (error) {
-      if (controller.signal.aborted) throw error;
-      data = null;
+    const reviewed = [];
+    let inputTokens = 0;
+    let outputTokens = 0;
+    for (const groups of batches) {
+      if (controller.signal.aborted) throw new Error("timeout");
+      const questions = Object.fromEntries(groups.map(({ claimIndex }) => [String(claimIndex), {
+        type: "choice",
+        instructions: `${EVIDENCE_REVIEW_INSTRUCTIONS} Avalie somente o grupo claimIndex ${claimIndex} do estado. As probabilidades classificam a relação documental, não a verdade do fato.`,
+        criteria: CRITERIA,
+      }]));
+      const response = await fetchImpl(JEV_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, state: JSON.stringify({ claims: groups }), questions }),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("http_error");
+      let data;
+      try {
+        data = await response.json();
+      } catch (error) {
+        if (controller.signal.aborted) throw error;
+        data = null;
+      }
+      for (const { claimIndex, claim, incomplete } of groups) {
+        const classified = !incomplete && typeof claim === "string" && claim.trim() ? classify(data?.answers?.[String(claimIndex)]) : null;
+        const verdict = classified ?? "unclear";
+        const note = classified === null
+          ? "O grupo não recebeu uma classificação válida e completa; não há confirmação nem refutação."
+          : NOTES[verdict];
+        reviewed.push({ claimIndex, verdict, note });
+      }
+      inputTokens += tokens(data?.usage?.input_tokens);
+      outputTokens += tokens(data?.usage?.output_tokens);
     }
-    const reviewed = groups.map(({ claimIndex, claim, incomplete }) => {
-      const classified = !incomplete && typeof claim === "string" && claim.trim() ? classify(data?.answers?.[String(claimIndex)]) : null;
-      const verdict = classified ?? "unclear";
-      const note = classified === null
-        ? "O grupo não recebeu uma classificação válida e completa; não há confirmação nem refutação."
-        : NOTES[verdict];
-      return { claimIndex, verdict, note };
-    });
-    const inputTokens = tokens(data?.usage?.input_tokens);
-    const outputTokens = tokens(data?.usage?.output_tokens);
     return { result: { claims: reviewed }, model, provider: "opencode", usage: { input: inputTokens, output: outputTokens, total: inputTokens + outputTokens } };
   } catch {
     // Não propaga corpo, chave, erro de transporte ou mensagem fornecida pelo serviço.

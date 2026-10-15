@@ -450,3 +450,16 @@ test("texto integral do claim não é truncado durante a validação", () => {
   raw.claims[0].text = `Afirmação literal longa: ${"limite documental ".repeat(60)}sem alterar o escopo final.`;
   assert.equal(validateResult(raw).fixed.claims[0].text, raw.claims[0].text);
 });
+
+for (const status of ["true", "false", "context", "unproven"]) {
+  for (const [verdict, expected, score] of [["supports", "true", 95], ["refutes", "false", 5], ["context", "unproven", null]]) {
+    test(`revisão estruturalmente válida ${verdict} resolve status inicial ${status} de forma canônica`, () => {
+      const raw = resultFor(status, [evidenceFor("context", { verification: "verified" })]);
+      raw.claims[0].evidenceReview = { verdict, verification: "verified", incomplete: false, evidenceIndices: [0] };
+      const fixed = validateResult(raw).fixed;
+      assert.equal(fixed.claims[0].status, expected);
+      assert.equal(fixed.claims[0].score, score);
+      if (score === null) assertUnknown(fixed);
+    });
+  }
+}

@@ -5,10 +5,10 @@
 export const SCORE_RUBRIC = `POLÍTICA DE EVIDÊNCIA E AVALIAÇÃO:
 
 1. Separe opinião, previsão e juízo de valor de afirmações factuais verificáveis. Não pontue material não verificável como evidência contra a pessoa.
-2. Cada claim deve ser literal, atômico e vinculado a evidência específica. Uma fonte sobre o mesmo tema não prova o claim.
+2. Cada claim deve ser literal, atômico, autossuficiente e vinculado a evidência específica. Identifique nominalmente sujeito e objeto, sem depender de "o plano", "ele" ou de outro claim. Separe medidas relativas a programas ou pessoas distintos. Preserve a força da afirmação original: não troque autoria por participação, corte por revisão, certeza por possibilidade, nem proposta por execução/adesão. Explique nuances na justificativa sem confirmar silenciosamente uma versão mais fraca. Uma fonte sobre o mesmo tema não prova o claim.
 3. Cada evidência referencia uma fonte por índice 1-based e informa relation: supports, refutes ou context; inclua trecho literal curto. Use a melhor evidência disponível; não preencha quota de fontes. Inclua suporte e refutação quando existirem.
-4. Status: true exige evidência supports; false exige refutes; context exige evidência verificável supports, refutes ou context e explicação da nuance; unproven significa evidência insuficiente. Fonte inacessível não é evidência de falsidade.
-5. Scores fixos dos claims com evidência válida (não representam probabilidade calibrada): true = 95; context = 70; false = 5. Essas âncoras representam apenas a classificação, não independência, qualidade primária ou intensidade da contradição. Claim unproven tem score null; null significa ausência de pontuação, nunca zero.
+4. Classificação preliminar: true exige suporte da afirmação integral; false exige incompatibilidade explícita no mesmo escopo; unproven significa que falta suporte para componente afirmado. Contexto de fonte, sem comprovação da alegação, não recebe pontuação parcial. Fonte inacessível não é evidência de falsidade. A revisão documental e a validação do servidor prevalecem sobre este palpite inicial.
+5. A pontuação final é fixada no servidor: suporte documental completo = true, 95; refutação completa = false, 5; contexto insuficiente ou inconclusão = unproven, null. A âncora context = 70 pertence ao histórico, não é autorização para dar nota a alegação com componente sem prova. Notas não estimam probabilidade de verdade, independência ou qualidade primária das fontes; null não é zero.
 6. evidenceSupport descreve os trechos elegíveis separadamente da classificação: supports, refutes, context ou insufficient (nenhum trecho elegível ou relações conflitantes). Um claim pode continuar unproven com trechos de contexto. Se qualquer claim estiver unproven ou qualquer alegação tiver sido omitida, score geral = null e verdict = "unproven". Não calcule uma média parcial nem trate falta de evidência como refutação. Só com cobertura completa calcule a média aritmética arredondada dos claims com evidência válida; se houver claim false, limite a média a 64 para preservar a consistência do selo.
 7. coverage = {total, assessed, unproven, omitted}: total inclui alegações omitidas; assessed conta claims com evidência válida; unproven conta claims sem comprovação; omitted conta alegações não incluídas. Use outcome "partial_coverage" e omittedClaimsCount quando houver omissões. Opiniões e previsões puras ficam em notCheckedClaims, não são omissões de claims factuais.
 8. Para scores numéricos, preserve as faixas históricas: 90-100 true; 75-89 mostly_true; 65-74 partially_true; 55-64 distorted; 35-54 unproven; 15-34 misleading; 0-14 false. Essas faixas não atribuem score a claims sem comprovação.
@@ -37,7 +37,7 @@ const BASE_RULES = `Você é um verificador cético e imparcial de afirmações 
 export const SYSTEM_PROMPT_JUDGE = `Primeira avaliação. Determine se o material disponível contém afirmações e evidência suficientes. ${QUESTION_RULES} ${QUESTION_SCOPE_RULES} Se faltar o conteúdo original e não houver hipótese factual identificável, use outcome "insufficient_input" ou "inaccessible_media", verdict null, score null, claims []. Se houver só opinião/previsão, use "no_verifiable_claims", verdict null, score null, claims []. Caso contrário use outcome "checked", extraia todos os claims factuais atômicos (sem omitir silenciosamente alegações), relacione a evidência a cada claim e aplique a rubrica. Claims sem comprovação ficam unproven, score null; omissões exigem partial_coverage e omittedClaimsCount. ${TEMPORAL_RULES} ${BASE_RULES}\n${SCORE_RUBRIC}`;
 
 
-export const PROMPT_VERSION = "fact-check-14";
+export const PROMPT_VERSION = "fact-check-15";
 
 // --- Validação server-side: recalcula e corrige divergências ---
 
@@ -158,6 +158,13 @@ export function validateResult(raw) {
     const supports = grouped ? group.verdict === "supports" : eligibleEvidence.some((item) => item.relation === "supports");
     const refutes = grouped ? group.verdict === "refutes" : eligibleEvidence.some((item) => item.relation === "refutes");
     const comparison = claim?.comparison;
+    if (grouped && !comparison) {
+      const resolved = supports ? "true" : refutes ? "false" : "unproven";
+      if (status !== resolved) corrections.push(`claim${i + 1}: relação documental prevalece sobre status inicial → ${resolved}`);
+      status = resolved;
+      if (resolved === "unproven") downgradeReason = String(group.note ?? "").trim() ||
+        "O conjunto revisado fornece contexto, mas não documenta todos os componentes da afirmação.";
+    }
     const comparisonConfirmed = comparison?.eligible === true && grouped &&
       ["supports", "refutes"].includes(group.verdict) && comparison.relation === group.verdict &&
       comparison.groups?.length === 2 && comparison.groups.every((entry) => Array.isArray(entry.rows) &&

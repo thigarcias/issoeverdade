@@ -265,14 +265,19 @@ captcha, streams protegidos e conteúdo removido continuam limitações externas
 
 ## Metodologia e avaliação
 
-As novas checagens usam `fact-check-14`: investigam alegações implícitas em
+As novas checagens usam `fact-check-15`: investigam alegações implícitas em
 perguntas e justaposições, distinguindo comparação factual, motivação atribuída
 e juízo de valor. Recortes de manchetes também exigem pesquisa da publicação
 original, fidelidade e datas, sem autenticação por OCR/logotipo. O fluxo executa
 uma avaliação factual com busca (`judge`), pesquisa direcionada condicional para
-notícias (`article-research`), documentos (`evidence`) e revisão JEV do conjunto
-(`evidence-review`), seguida de validação determinística. Não há segunda
-avaliação factual/de mídia obrigatória nem geração/revisão editorial por IA.
+notícias (`article-research`), documentos (`evidence`) e revisão documental por
+alegação (`evidence-review`). Uma passagem adicional de cobertura e recuperação
+(`evidence-research`) confronta a entrada original com as hipóteses existentes,
+pesquisa lacunas e propõe citações; não altera as hipóteses existentes. Afirmações
+omitidas só entram com trecho literal localizado na entrada. Novas evidências
+passam pelo saneamento e localização (`evidence-recovered`); apenas conjuntos
+documentalmente alterados são revistos (`evidence-rereview`). Não há repetição do
+mesmo julgamento até obter confirmação nem fallback automático de provedor.
 HTML de reprodução de vídeo sem transcrição fica indisponível como prova de
 fala; a pesquisa prioriza reportagens textuais, documentos e transcrições.
 O coletor reutiliza corpos estruturados de artigos e cache por URL, respeitando
@@ -292,7 +297,7 @@ especificada. Uma nova medida, declaração, data ou evento exige evidência
 correspondente; rótulo “fake news”, notícia sobre o tema e ausência de anúncio
 não bastam. Data de publicação não se confunde com período de referência do fato.
 
-Notas por afirmação com evidência adequada: `true=95`, `context=70`, `false=5`.
+Notas da revisão documental atual: `true=95`, `false=5`; contexto insuficiente fica sem nota. A âncora `context=70` permanece histórica.
 `unproven` recebe `score=null`, não zero. Havendo qualquer afirmação sem
 comprovação ou omitida, a nota global também é `null` e o veredito `unproven`;
 a média só inclui resultados totalmente avaliados. `evidenceSupport`
@@ -303,7 +308,7 @@ avaliação. A interface, o detalhe e o compartilhamento preservam essa distinç
 A revisão de evidências padrão usa JEV `jev-1.13-free` via OpenCode/SystemOne
 (`IEV_EVIDENCE_REVIEW_PROVIDER=jev|judge`), sem fallback automático.
 Uma resposta JEV só determina a relação do grupo com probabilidade máxima de
-classe ≥0,8 e margem ≥0,2; ambiguidade mantém abstenção. A resposta é
+classe ≥0,7 e margem ≥0,2; ambiguidade mantém abstenção. A resposta é
 `{claims:[{claimIndex,verdict,note}]}`; `claim.evidenceReview` registra
 `verdict`, `verification`, `incomplete` e `evidenceIndices`. Na revisão agrupada,
 cada trecho fica `relation: "context"`: sua `verification` é documental, não
@@ -312,7 +317,14 @@ Uma revisão documental completa e verificada com `supports` ou `refutes` resolv
 o status como `true` ou `false`, respectivamente, mesmo que a classificação
 inicial fosse `unproven`, `context` ou a oposta. Contexto sozinho não promove
 uma alegação a verdadeira/falsa; revisão incompleta ou inconclusiva e comparação
-inválida continuam exigindo abstenção. Os limiares permanecem inalterados.
+inválida continuam exigindo abstenção. Na versão 15, o piso de classe passou de 0,8 para 0,7, mantendo a margem de 0,2, após reproduzir abstenção em proposta explicitamente documentada; não é uma garantia de precisão.
+Na versão 15, uma relação documental `context` deixa componente sem suporte e
+resulta em abstenção, independentemente de o modelo inicial ter sugerido
+`true`, `false`, `context` ou `unproven`. A escala histórica de 70 permanece
+legível, mas o contexto da fonte não gera essa nota na revisão documental atual.
+Os grupos são empacotados inteiros; o teto de trechos vale por alegação, sem
+deixar alegações posteriores sem revisão. Falha documental/revisão inconclusiva
+não é reutilizada como abstenção factual durante as 24 horas do cache.
 As janelas documentais preservam contexto antes e depois da citação, dentro do
 teto configurado, para não perder sujeito, data ou ressalva adjacentes.
 Na avaliação e na revisão, uma prisão sob suspeita não exige prova de culpa:
@@ -327,6 +339,7 @@ Isso não comprova o conteúdo da fala, sua sinceridade nem uma posição atual.
 Hipóteses, sátira e atribuições negadas/contestadas não viram suporte automático.
 Auditoria dos registros e controles reais:
 [Sem comprovação — 15/10/2026](docs/auditoria-sem-comprovacao-2026-10-15.md).
+[Revisão integral do fluxo e casos adicionais](docs/revisao-algoritmo-factual-2026-10-15.md).
 
 
 Comparações anuais usam `comparison` com `metric`, `region`, `unit`, `dataset`,

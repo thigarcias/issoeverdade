@@ -43,7 +43,7 @@ function formatDuration(ms) {
 function fileFingerprint(file) {
   return file ? `${file.name}:${file.size}:${file.lastModified}` : null;
 }
-const ACTIVITY_ORDER = ["source-classification", "media-probe", "media-acquisition", "media-upload", "media-metadata", "media-transcription", "media-vision", "judge", "article-research", "evidence", "evidence-review", "cache"];
+const ACTIVITY_ORDER = ["source-classification", "media-probe", "media-acquisition", "media-upload", "media-metadata", "media-transcription", "media-vision", "judge", "article-research", "evidence", "evidence-review", "evidence-research", "evidence-recovered", "evidence-rereview", "cache"];
 function activityDot(state) {
   if (state === "done") return <Check aria-hidden="true" />;
   if (state === "running") return <LoaderCircle className="verifier-spinner" aria-hidden="true" />;

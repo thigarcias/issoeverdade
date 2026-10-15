@@ -20,8 +20,9 @@ async function review(response, overrides = {}) {
 test("limiares de ambiguidade incluem a fronteira decimal exata", async (t) => {
   setEnv(t, "test-only-secret");
   const cases = [
-    [{ supports: 0.799999, refutes: 0.1, context: 0.1, unclear: 0.000001 }, "unclear"],
-    [{ supports: 0.8, refutes: 0.2, context: 0, unclear: 0 }, "supports"],
+    [{ supports: 0.699999, refutes: 0.1, context: 0.2, unclear: 0.000001 }, "unclear"],
+    [{ supports: 0.7, refutes: 0.3, context: 0, unclear: 0 }, "supports"],
+    [{ supports: 0.72, refutes: 0.03, context: 0.21, unclear: 0.04 }, "supports"],
     [{ supports: 0.85, refutes: 0.650001, context: 0, unclear: 0 }, "unclear"],
     [{ supports: 0.85, refutes: 0.65, context: 0, unclear: 0 }, "supports"],
     [{ supports: 0.8, refutes: 0.6, context: 0, unclear: 0 }, "supports"],
@@ -123,4 +124,50 @@ test("timeout de revisão interrompe transporte", async (t) => {
     return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("PRIVATE_BODY")), { once: true }));
   } }), { code: "jev_review_failed" });
   assert.equal(signal.aborted, true);
+});
+
+test("revisão em batches alcança o último claim e mantém os vínculos originais", async (t) => {
+  setEnv(t, "test-only-secret");
+  const claims = Array.from({ length: 15 }, (_, index) => ({ text: `A proposta ${index} foi apresentada.` }));
+  const citations = claims.flatMap((_, claimIndex) => claimIndex === 0 ? [] : [{
+    ...citation, claimIndex,
+  }]);
+  const calls = [];
+  const result = await review(null, {
+    claims, citations, config: { ...config, maxReviewItems: 12 },
+    fetchImpl: async (_url, options) => {
+      const groups = JSON.parse(JSON.parse(options.body).state).claims;
+      calls.push(groups.map((group) => group.claimIndex));
+      const answers = Object.fromEntries(groups.map(({ claimIndex }) => [
+        String(claimIndex), claimIndex === 14 ? validRefutation : answer("supports", { supports: 0.95, refutes: 0.01, context: 0.02, unclear: 0.02 }),
+      ]));
+      answers["0"] = validRefutation;
+      return { ok: true, json: async () => ({ answers, usage: { input_tokens: 10, output_tokens: 2 } }) };
+    },
+  });
+  assert.deepEqual(calls.map((batch) => batch.length), [12, 2]);
+  assert.deepEqual(result.result.claims.map((item) => item.claimIndex), Array.from({ length: 14 }, (_, index) => index + 1));
+  assert.equal(result.result.claims[13].verdict, "refutes");
+  assert.ok(result.result.claims.slice(0, 13).every((item) => item.verdict === "supports"));
+  assert.deepEqual(result.usage, { input: 20, output: 4, total: 24 });
+});
+
+test("falha em batch posterior não devolve conclusão parcial nem transforma erro em refutação", async (t) => {
+  setEnv(t, "test-only-secret");
+  let calls = 0;
+  await assert.rejects(review(null, {
+    claims: [{ text: "Primeira alegação." }, { text: "Segunda alegação." }],
+    citations: [{ ...citation, claimIndex: 0 }, { ...citation, claimIndex: 1 }],
+    config: { ...config, maxReviewItems: 1 },
+    fetchImpl: async () => {
+      calls++;
+      if (calls === 2) throw new Error("PRIVATE_BODY");
+      return { ok: true, json: async () => ({ answers: { "0": validRefutation } }) };
+    },
+  }), (error) => {
+    assert.equal(error.code, "jev_review_failed");
+    assert.doesNotMatch(error.message, /PRIVATE_BODY|test-only-secret/);
+    return true;
+  });
+  assert.equal(calls, 2);
 });

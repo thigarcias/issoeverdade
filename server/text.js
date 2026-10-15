@@ -56,6 +56,8 @@ export function textFromHtml(html) {
   return text
     .replace(/\r\n?/g, "\n")
     .replace(/[ \t\f\v\u00a0]+/g, " ")
+    // Tags inline não devem criar "nome ," onde o documento dizia "nome,".
+    .replace(/([\p{L}"')]) (?=[,.;:!?])/gu, "$1")
     .replace(/ ?\n ?/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -181,15 +183,20 @@ const MAX_OMISSION_SPAN = 1000;
 const TRIVIAL_ANCHORS = new Set(["para", "como", "mais", "isso", "isto", "essa", "esse", "esta", "este", "pela", "pelo", "pelas", "pelos", "entre", "sobre", "mesmo", "tambem", "apenas"]);
 
 /**
- * Omissões editoriais exigem 2–4 fragmentos literais, cada um com duas palavras,
- * seis letras/dígitos e uma âncora não trivial de quatro caracteres. O conjunto
- * exige 40 caracteres e oito palavras. Não há fuzzy dentro dos fragmentos.
- * A busca é ordenada, limitada a 240 caracteres normalizados/dobrados por omissão,
- * 1000 no intervalo e 128 candidatos; nunca combina documentos ou retorna colagem.
+ * Omissões editoriais exigem 1–4 fragmentos literais, cada um com duas palavras,
+ * seis letras/dígitos e uma âncora não trivial de quatro caracteres. Só nas bordas,
+ * um marcador pode substituir texto sem outra âncora; pontuação editorial externa
+ * não faz parte do trecho. O conjunto exige 40 caracteres e oito palavras.
+ * Não há fuzzy dentro dos fragmentos nem reconstrução do texto cortado nas bordas.
+ * A busca é ordenada, limitada a 240 caracteres normalizados/dobrados por omissão
+ * interna, 1000 no intervalo e 128 candidatos; nunca combina documentos ou retorna colagem.
  */
 function locateEditorialOmission(haystack, quote) {
   const fragments = quote.split(EDITORIAL_OMISSION).map((part) => foldForMatch(part));
-  if (fragments.length < 2 || fragments.length > 4 || fragments.join(" ").length < 40) return null;
+  const editorialEdge = /^[\s.,;:!?'"-]*$/u;
+  if (fragments.length > 1 && editorialEdge.test(fragments[0])) fragments.shift();
+  if (fragments.length > 1 && editorialEdge.test(fragments.at(-1))) fragments.pop();
+  if (fragments.length < 1 || fragments.length > 4 || fragments.join(" ").length < 40) return null;
   let wordCount = 0;
   for (const fragment of fragments) {
     const words = fragment.match(/[\p{L}\p{N}]+/gu) ?? [];

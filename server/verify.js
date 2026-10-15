@@ -13,6 +13,7 @@ import { getCached, setCached } from "./cache.js";
 import {
   EVIDENCE_REVIEW_INSTRUCTIONS,
   applyReview,
+  buildReviewBatches,
   buildReviewInput,
   collectEvidence,
   createEvidenceFetcher,
@@ -20,6 +21,9 @@ import {
   reviewableCitations,
 } from "./evidence.js";
 import { reviewWithJev } from "./jev.js";
+import {
+  EVIDENCE_RESEARCH_INSTRUCTIONS, buildEvidenceResearchInput, mergeEvidenceResearch, changedEvidenceClaims,
+} from "./evidence-research.js";
 import { applyComparisons } from "./comparison.js";
 import { recordCheck } from "./metrics.js";
 import { getAiConfigState, providerKey, providerUrl } from "./ai-config.js";
@@ -777,6 +781,9 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     vision: { id: "media-vision", parent: null },
     judge: { id: "judge", parent: null },
     "article-research": { id: "article-research", parent: "judge" },
+    "evidence-research": { id: "evidence-research", parent: "evidence" },
+    "evidence-recovered": { id: "evidence-recovered", parent: "evidence" },
+    "evidence-rereview": { id: "evidence-rereview", parent: "evidence" },
     evidence: { id: "evidence", parent: null },
     "evidence-review": { id: "evidence-review", parent: "evidence" },
   };
@@ -1269,29 +1276,95 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       collectEvidence({ sources: finalResult.sources, claims: finalResult.claims, config: evCfg, fetchImpl: evidenceFetcher }),
     ).catch(() => null);
   }
-  const citations = evidenceDossier?.citations ?? [];
+  let citations = evidenceDossier?.citations ?? [];
   finalResult = { ...finalResult, claims: applyComparisons({ claims: finalResult.claims, citations }) };
   if (needsEvidence) {
-    const reviewable = reviewableCitations(citations, evCfg);
-    let review = null;
-    if (evCfg.reviewEnabled && reviewable.length > 0) {
-      review = await phase("evidence-review", () =>
-        evCfg.reviewProvider === "jev"
-          ? reviewWithJev({ claims: finalResult.claims, citations, config: evCfg })
-          : callModel({
+    const reviewEvidence = async (reviewCitations, phaseName) => {
+      if (!evCfg.reviewEnabled || reviewableCitations(reviewCitations, evCfg).length === 0) return null;
+      const review = await phase(phaseName, async () => {
+        if (evCfg.reviewProvider === "jev") {
+          return reviewWithJev({ claims: finalResult.claims, citations: reviewCitations, config: evCfg });
+        }
+        const items = [];
+        const usage = { input: 0, output: 0 };
+        let last;
+        const deadline = Date.now() + evCfg.reviewTimeoutMs;
+        for (const groups of buildReviewBatches({ claims: finalResult.claims, citations: reviewCitations, config: evCfg })) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) throw Object.assign(new Error("Revisão documental excedeu o prazo."), { code: "evidence_review_timeout" });
+          last = await callModel({
             aiCfg, step: "judge", instructions: EVIDENCE_REVIEW_INSTRUCTIONS,
-            input: buildReviewInput({ claims: finalResult.claims, citations, config: evCfg }),
-            timeoutMs, sessionId: id, webSearch: false,
-          }),
-      ).catch(() => null);
+            input: buildReviewInput({ groups }), timeoutMs: Math.min(timeoutMs, remaining), sessionId: id, webSearch: false,
+          });
+          items.push(...(Array.isArray(last.result?.claims) ? last.result.claims : []));
+          usage.input += last.usage?.input || 0;
+          usage.output += last.usage?.output || 0;
+        }
+        return { ...last, result: { claims: items }, usage };
+      }).catch(() => null);
       if (review) {
         addUsage(review);
-        recordModel("evidence-review", review);
+        recordModel(phaseName, review);
       } else {
         evidenceCorrections.push("revisão de evidências indisponível; nenhum outro modelo foi usado como substituto");
       }
+      return review?.result ?? null;
+    };
+    let review = await reviewEvidence(citations, "evidence-review");
+    const originalMaterial = [input?.kind === "text" ? input.text : "", input?.context, mediaContext].filter(Boolean).join("\n");
+    const provisional = applyReview({ claims: finalResult.claims, citations, review, config: evCfg });
+    const provisionalResult = validateResult({ ...finalResult, claims: provisional.claims }).fixed;
+    const unresolved = provisionalResult.claims.flatMap((claim, index) => claim.status === "unproven" ? [index] : []);
+    // Uma recuperação documental, não uma repetição do mesmo julgamento até obter confirmação.
+    if (evCfg.reviewEnabled) {
+      const research = await phase("evidence-research", () => callModel({
+        aiCfg, step: "judge", instructions: EVIDENCE_RESEARCH_INSTRUCTIONS,
+        input: buildEvidenceResearchInput({
+          claims: finalResult.claims, indices: unresolved, dossier: evidenceDossier, candidates: resultCitations,
+          material: originalMaterial,
+        }),
+        timeoutMs, sessionId: id, webSearch: true, requireWebSearch: true,
+      })).catch(() => null);
+      if (research) {
+        addUsage(research);
+        recordModel("evidence-research", research);
+        recordQueries(research, "evidence-research");
+        resultCitations = [...new Map([...resultCitations, ...(research.citations ?? [])]
+          .map((citation) => [citation.url, citation])).values()];
+        const candidate = mergeEvidenceResearch(finalResult, research.result, unresolved, citations, originalMaterial);
+        const recoveredClean = sanitizeSources(candidate.sources, candidate.claims, resultCitations);
+        candidate.sources = recoveredClean.sources;
+        clean.dropped.push(...recoveredClean.dropped);
+        for (const claim of candidate.claims) {
+          const seen = new Set();
+          claim.evidence = claim.evidence.filter((item) => {
+            const key = `${item.sourceId}:${item.quote}`;
+            if (item.evidenceId.startsWith("recovered-") && seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          claim.sourceIds = [...new Set(claim.evidence.map((item) => item.sourceId))];
+        }
+        const recovered = await phase("evidence-recovered", () =>
+          collectEvidence({ sources: candidate.sources, claims: candidate.claims, config: evCfg, fetchImpl: evidenceFetcher }),
+        ).catch(() => null);
+        if (recovered) {
+          const targets = [...unresolved, ...candidate.claims.flatMap((_claim, index) => index >= finalResult.claims.length ? [index] : [])];
+          const changed = changedEvidenceClaims(citations, recovered.citations, targets);
+          finalResult = { ...finalResult, ...candidate, claims: applyComparisons({ claims: candidate.claims, citations: recovered.citations }) };
+          citations = recovered.citations;
+          evidenceDossier = recovered;
+          if (changed.length > 0) {
+            const rereview = await reviewEvidence(citations.filter((citation) => changed.includes(citation.claimIndex)), "evidence-rereview");
+            review = { claims: [
+              ...(review?.claims ?? []).filter((item) => !changed.includes(item.claimIndex)),
+              ...(rereview?.claims ?? []),
+            ] };
+          }
+        }
+      }
     }
-    const applied = applyReview({ claims: finalResult.claims, citations, review: review?.result, config: evCfg });
+    const applied = applyReview({ claims: finalResult.claims, citations, review, config: evCfg });
     finalResult = { ...finalResult, claims: applied.claims };
     evidenceCorrections.push(...applied.corrections);
     if (evidenceDossier) evidenceDossier.verification = applied.summary;

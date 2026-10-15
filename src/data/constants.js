@@ -91,6 +91,9 @@ export const ACTIVITY_TEXT = {
   "article-research": { title: "Pesquisando a publicação e suas alegações…", hint: "URL, título, site e alegações disponíveis." },
   evidence: { title: "Consultando os documentos das fontes…", hint: "URLs do dossiê sendo obtidas." },
   "evidence-review": { title: "Conferindo se os trechos sustentam as afirmações…", hint: "Revisão da fidelidade das citações." },
+  "evidence-research": { title: "Conferindo a cobertura e buscando evidências…", hint: "Uma pesquisa documental, preservando as afirmações originais." },
+  "evidence-recovered": { title: "Validando as novas citações nos documentos…", hint: "Trechos novos precisam ser localizados nas fontes." },
+  "evidence-rereview": { title: "Revisando os conjuntos com novas evidências…", hint: "Somente grupos cujo conteúdo documental mudou." },
   cache: { title: "Resultado recuperado do cache", hint: "Trabalho já feito; sem animação falsa." },
 };
 

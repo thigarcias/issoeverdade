@@ -221,6 +221,78 @@ test("omissão editorial preserva acentos em NFC e encontra fragmentos repetidos
   assert.equal(located.excerpt, sourceSpan.normalize("NFC"));
 });
 
+test("localiza corte editorial final confirmado no texto da NF Notícias sem reconstruir o corte", () => {
+  // https://www.nfnoticias.com.br/noticia-56943/pf-prende-deputado-marcio-canella-e-ex-secretario-de-policia-civil
+  const literal = "Além do crime de organização criminosa armada, os investigados responderão, na medida de suas responsabilidades, por lavagem de dinheiro";
+  const document = `${literal}, corrupção ativa e passiva, violação de sigilo funcional, venda ilegal de combustíveis e formação de cartel, além de outros que poderão surgir no decorrer das investigações.`;
+  for (const omission of ["[...]", "[…]", "[ ... ]", "(...)"]) {
+    const located = locateQuote(document, `${literal} ${omission}.`, { excerptChars: 20 });
+    assert.equal(located.found, true, omission);
+    assert.equal(located.kind, "approximate");
+    assert.equal(located.similarity, 1);
+    assert.equal(located.index, 0);
+    assert.equal(located.excerpt, literal);
+    assert.equal(document.includes(located.excerpt), true);
+    assert.equal(located.excerpt.endsWith("."), false, "não inventa o ponto editorial na fonte");
+  }
+});
+
+test("localiza cortes editoriais iniciais e em ambas as bordas com restante literal significativo", () => {
+  const literal = "é suspeito de movimentar mais de R$ 7,6 bilhões.";
+  const prefix = "O grupo, segundo a Polícia Federal, ";
+  const document = `${prefix}${literal} Encerramento.`;
+  for (const quote of [`[...] ${literal}`, `[…] ${literal} [...]`, `(...)${literal}(...)`]) {
+    const located = locateQuote(document, quote, { excerptChars: 20 });
+    assert.equal(located.found, true, quote);
+    assert.equal(located.kind, "approximate");
+    assert.equal(located.index, prefix.length);
+    assert.equal(located.excerpt, literal);
+  }
+  const sourceSpan = "O grupo, cuja culpa não foi estabelecida e que não foi condenado, é suspeito de movimentar mais de R$ 7,6 bilhões.";
+  const located = locateQuote(`Introdução. ${sourceSpan} Encerramento.`,
+    "[...] o grupo [...] é suspeito de movimentar mais de R$ 7,6 bilhões. [...].", { excerptChars: 20 });
+  assert.equal(located.found, true);
+  assert.equal(located.excerpt, sourceSpan);
+  assert.match(located.excerpt, /culpa não foi estabelecida e que não foi condenado/);
+});
+
+test("cortes de borda não promovem restante trivial, inventado ou palavras incompletas", () => {
+  const literal = "A investigação policial documentou os valores relacionados à operação financeira";
+  const document = `${literal}, sem conclusão final.`;
+  const rejected = [
+    `${literal} e comprovou a culpa de todos os investigados [...].`,
+    `[...] ${literal} e comprovou a culpa de todos os investigados.`,
+    `[...] ${literal} [...] houve condenação definitiva [...].`,
+    `[...] [...] ${literal}`,
+    `${literal} [...] [...]`,
+  ];
+  for (const quote of rejected) {
+    const located = locateQuote(document, quote);
+    assert.equal(located.found, false, quote);
+    assert.equal(located.kind, "missing", quote);
+  }
+  for (const trivial of ["para isso", "A polícia prendeu suspeitos", "para isso como mais sobre entre mesmo apenas"]) {
+    assert.equal(locateQuote(`Antes. ${trivial}. Depois.`, `[...] ${trivial} [...].`).found, false, trivial);
+  }
+  assert.equal(locateQuote("Suposto grupo é suspeito de movimentar mais de R$ 7,6 bilhões.",
+    "[...] o grupo é suspeito de movimentar mais de R$ 7,6 bilhões.").found, false);
+  assert.equal(locateQuote("O grupo é suspeito de movimentar mais de R$ 7,6 bilhões",
+    "O grupo é suspeito de movimentar mais de R$ 7,6 bilhõe [...].").found, false);
+  const oversized = `A investigação ${"detalhada ".repeat(110)}documentou os valores relacionados à operação financeira`;
+  assert.equal(locateQuote(oversized, `[...] ${oversized} [...].`).found, false);
+});
+
+test("cortes de borda preservam negação literal sem permitir supressão ou inserção não marcada", () => {
+  const denied = "A investigação não confirmou que os valores tenham origem criminosa";
+  const affirmed = "A investigação confirmou que os valores tenham origem criminosa";
+  const located = locateQuote(`Introdução. ${denied}. Encerramento.`, `[...] ${denied} [...].`, { excerptChars: 20 });
+  assert.equal(located.found, true);
+  assert.equal(located.excerpt, denied);
+  assert.match(located.excerpt, /não confirmou/);
+  assert.equal(locateQuote(`${denied}.`, `[...] ${affirmed} [...].`).found, false);
+  assert.equal(locateQuote(`${affirmed}.`, `[...] ${denied} [...].`).found, false);
+});
+
 test("omissão editorial recusa invenção, inversão, fragmentos triviais e omissão não marcada", () => {
   const document = "O grupo, segundo a Polícia Federal, é suspeito de movimentar mais de R$ 7,6 bilhões.";
   const quotes = [
@@ -230,7 +302,6 @@ test("omissão editorial recusa invenção, inversão, fragmentos triviais e omi
     "o [...] é suspeito de movimentar mais de R$ 7,6 bilhões.",
     "de uma [...] é suspeito de movimentar mais de R$ 7,6 bilhões.",
     "o grupo [...] bilhões",
-    "[...] é suspeito de movimentar mais de R$ 7,6 bilhões.",
     "o grupo é suspeito de movimentar mais de R$ 7,6 bilhões.",
     "o grupo ... é suspeito de movimentar mais de R$ 7,6 bilhões.",
   ];
@@ -409,8 +480,8 @@ test("contexto documental não resolve abstenção inicial", () => {
   assert.equal(fixed.score, null);
 });
 
-for (const status of ["true", "false"]) {
-  test(`contexto agrupado não mantém classificação decisiva ${status}`, () => {
+for (const status of ["true", "false", "context", "unproven"]) {
+  test(`mesmo contexto documental termina sem nota independentemente do status inicial ${status}`, () => {
     const quote = "A pessoa pediu apoio financeiro; a notícia não documenta pagamento.";
     const claim = { text: "A pessoa recebeu o dinheiro.", status, sourceIds: [0], evidence: [{ sourceId: 0, relation: "supports", quote }] };
     const applied = evidence.applyReview({
@@ -528,4 +599,90 @@ test("metadados estruturados sem articleBody documentam apenas título e data", 
   assert.equal(result.ok, true);
   assert.ok(locateQuote(result.text, title).found);
   assert.equal(locateQuote(result.text, "A entrevistada confirmou a promessa de votar favoravelmente.").found, false);
+});
+
+test("teto por alegação não deixa o último claim sem revisão", () => {
+  const quote = "O documento registra a proposta atribuída ao plano.";
+  const claims = Array.from({ length: 14 }, (_, index) => ({
+    text: `O plano ${index} propõe a medida.`, status: "true", sourceIds: [0],
+    evidence: [{ sourceId: 0, quote, relation: "supports" }],
+  }));
+  const citations = claims.map((_, claimIndex) => ({
+    claimIndex, evidenceIndex: 0, quote, excerpt: quote, locator: { found: true },
+  }));
+  const config = { ...evidence.evidenceConfig(), maxReviewItems: 12 };
+  const batches = evidence.buildReviewBatches({ claims, citations, config });
+  assert.deepEqual(batches.map((batch) => batch.length), [12, 2]);
+  assert.deepEqual(batches.flat().map((group) => group.claimIndex), claims.map((_, index) => index));
+  const applied = evidence.applyReview({
+    claims, citations, config,
+    review: { claims: claims.map((_, claimIndex) => ({ claimIndex, verdict: "supports" })) },
+  });
+  const { fixed } = validateResult({ outcome: "checked", claims: applied.claims, sources: [{}] });
+  assert.equal(fixed.claims[13].status, "true");
+  assert.equal(fixed.coverage.assessed, 14);
+});
+
+test("batches preservam grupo indivisível e explicitam excesso por claim", () => {
+  const quote = "Trecho documental localizado sobre a proposta.";
+  const claims = [{ text: "Primeira proposta." }, { text: "Segunda proposta." }];
+  const citations = [0, 0, 0, 1, 1].map((claimIndex, index) => ({
+    claimIndex, evidenceIndex: claimIndex === 0 ? index : index - 3,
+    quote, excerpt: quote, locator: { found: true },
+  }));
+  const config = { ...evidence.evidenceConfig(), maxReviewItems: 4 };
+  const batches = evidence.buildReviewBatches({ claims, citations, config });
+  assert.deepEqual(batches.map((batch) => batch.map((group) => [group.claimIndex, group.snippets.length])), [[[0, 3]], [[1, 2]]]);
+  assert.ok(batches.flat().every((group) => !group.incomplete));
+  const bounded = evidence.buildReviewGroups({ claims, citations, config: { ...config, maxReviewItems: 2 } });
+  assert.equal(bounded[0].incomplete, true);
+  assert.equal(bounded[0].locatedCount, 3);
+  assert.equal(bounded[1].incomplete, false);
+  assert.equal(bounded[1].snippets.length, 2);
+});
+
+test("ausência de resposta é indisponibilidade do próprio claim, não dos outros", () => {
+  const quote = "A proposta foi apresentada e não foi aprovada.";
+  const claims = Array.from({ length: 3 }, () => ({
+    text: "A proposta foi aprovada.", status: "true", sourceIds: [0],
+    evidence: [{ sourceId: 0, quote, relation: "supports" }],
+  }));
+  const citations = [0, 1].map((claimIndex) => ({
+    claimIndex, evidenceIndex: 0, quote, excerpt: quote, locator: { found: true },
+  }));
+  const applied = evidence.applyReview({
+    claims, citations, review: { claims: [{ claimIndex: 0, verdict: "refutes" }] },
+  });
+  assert.deepEqual(applied.claims.map((claim) => claim.status), ["false", "unproven", "unproven"]);
+  assert.deepEqual(applied.claims.map((claim) => claim.evidenceReview.verification), ["verified", "unavailable", "unavailable"]);
+  assert.equal(applied.claims[1].evidence[0].verification, "unavailable");
+});
+
+test("limitações mantêm HTTP e citação inválida em documento acessível", () => {
+  const quote = "Trecho literal atribuído à reportagem sobre a operação.";
+  const claims = [{
+    text: "A pessoa foi presa como suspeita.", status: "true", sourceIds: [0, 1],
+    evidence: [0, 1].map((sourceId) => ({ sourceId, quote, relation: "supports" })),
+  }];
+  const citations = [
+    { claimIndex: 0, evidenceIndex: 0, quote, document: { ok: false, reason: "http-403" }, locator: { found: false, kind: "document_unavailable", reason: "http-403" } },
+    { claimIndex: 0, evidenceIndex: 1, quote, document: { ok: true }, locator: { found: false, kind: "missing" } },
+  ];
+  const applied = evidence.applyReview({ claims, citations, review: { claims: [] } });
+  assert.equal(applied.claims[0].status, "unproven");
+  assert.equal(applied.claims[0].evidenceReview.verification, "unavailable");
+  assert.match(applied.claims[0].evidenceReview.note, /HTTP 403/);
+  assert.match(applied.claims[0].evidenceReview.note, /Citação não localizada em documento acessível/);
+});
+
+test("tags inline não tornam uma citação longa literal apenas um prefixo parcial", async () => {
+  const first = "A candidata recebeu um plano econômico que propõe elevar a idade mínima, rever critérios e mudar benefícios futuros com transição para homens e mulheres.";
+  const second = "As medidas fazem parte do Projeto Horizonte, apresentado durante o encontro, sem provar adoção oficial ou execução das propostas.";
+  const quote = `${first} ${second}`;
+  const extracted = await evidence.extractDocumentText(htmlResponse(`<html><body><p>${first}</p><p>As medidas fazem parte do <strong>Projeto Horizonte</strong>, apresentado durante o encontro, sem provar adoção oficial ou execução das propostas.</p><p>Valores: 10 , 5 e 10.5 não são intercambiáveis.</p></body></html>`));
+  const match = locateQuote(extracted.text, quote);
+  assert.equal(match.found, true);
+  assert.ok(match.excerpt.includes(second));
+  assert.ok(extracted.text.includes("10 , 5"), "normalização não junta números separados em decimal");
+  assert.equal(locateQuote(extracted.text, quote.replace("sem provar adoção", "com adoção comprovada")).found, false);
 });

@@ -101,11 +101,16 @@ async function ensurePrivateCutover() {
   await legacyCleanup;
 }
 
+function reusable(value) {
+  return !(value?.result?.claims ?? []).some((claim) => claim.status === "unproven" &&
+    claim.evidenceReview?.verification !== "verified");
+}
+
 export async function getCached(input, namespace) {
   const key = cacheKey(input, namespace);
   const epoch = await currentEpoch();
   const mem = memory.get(key);
-  if (mem && Date.now() - mem.savedAt < TTL_MS && mem.epoch === epoch) return { ...mem.value, cached: true, cachedFrom: mem.value.checkId ?? null };
+  if (mem && reusable(mem.value) && Date.now() - mem.savedAt < TTL_MS && mem.epoch === epoch) return { ...mem.value, cached: true, cachedFrom: mem.value.checkId ?? null };
   memory.delete(key);
   const token = blobToken();
   if (!token) return null;
@@ -119,7 +124,7 @@ export async function getCached(input, namespace) {
     const response = await fetch(item.url, { headers: { Authorization: `Bearer ${token}` } });
     if (!response.ok) return null;
     const body = await response.json();
-    if (body?.namespace !== namespace || !body?.value) return null;
+    if (body?.namespace !== namespace || !body?.value || !reusable(body.value)) return null;
     if ((body?.epoch ?? "initial") !== epoch) return null;
     memory.set(key, { value: body.value, savedAt: Date.now(), epoch });
     return { ...body.value, cached: true, cachedFrom: body.value.checkId ?? null };
@@ -130,6 +135,11 @@ export async function getCached(input, namespace) {
 
 export async function setCached(input, value, namespace) {
   const key = cacheKey(input, namespace);
+  // Uma falha documental/revisão inconclusiva não deve congelar a abstenção por 24h.
+  if (!reusable(value)) {
+    memory.delete(key);
+    return;
+  }
   const epoch = await currentEpoch();
   const entry = { value, namespace, savedAt: Date.now(), epoch };
   memory.set(key, entry);

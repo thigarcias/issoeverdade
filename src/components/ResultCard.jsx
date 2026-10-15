@@ -199,7 +199,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
       <p className="score-legend">
         {result.score == null
           ? "Nota indisponível: há afirmações sem comprovação ou sem análise. Falta de evidência não significa falsidade."
-          : "Notas por afirmação com evidência adequada: verdade 95 · precisa de contexto 70 · falso 5. A nota não é probabilidade calibrada; registros históricos preservam a escala original."}
+          : "Revisão documental: confirmação 95 · refutação 5 · contexto insuficiente ou inconclusão sem nota. A escala anterior é preservada nos registros históricos; a nota não é probabilidade calibrada."}
       </p>
 
       {result.summary?.trim() && <p className="result-summary">{result.summary}</p>}

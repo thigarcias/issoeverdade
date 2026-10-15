@@ -326,12 +326,14 @@ export async function processUploadedMedia(fileBuffer, mime) {
 
 let ytdlpAvailable = null;
 
-export async function hasYtDlp() {
+export async function hasYtDlp({ timeoutMs = 4_000 } = {}) {
   if (ytdlpAvailable !== null) return ytdlpAvailable;
   try {
-    await execFileAsync("yt-dlp", ["--version"], { timeout: 4_000 });
+    await execFileAsync("yt-dlp", ["--version"], { timeout: Math.min(4_000, timeoutMs) });
     ytdlpAvailable = true;
-  } catch {
+  } catch (error) {
+    // Um orçamento curto não prova que o executável está ausente.
+    if (error?.killed) return false;
     ytdlpAvailable = false;
   }
   return ytdlpAvailable;
@@ -345,12 +347,16 @@ function pickText(...candidates) {
 }
 
 /** Camada 1: metadados completos via yt-dlp (sem baixar o arquivo). */
-export async function probeWithYtDlp(url) {
-  if (!(await hasYtDlp())) return { ok: false, reason: "no-ytdlp" };
+export async function probeWithYtDlp(url, { timeoutMs = 60_000 } = {}) {
+  const startedAt = Date.now();
+  const available = await hasYtDlp({ timeoutMs });
+  const remainingMs = timeoutMs - (Date.now() - startedAt);
+  if (remainingMs <= 0) return { ok: false, reason: "ytdlp-timeout" };
+  if (!available) return { ok: false, reason: "no-ytdlp" };
   const run = await runLimited(
     "yt-dlp",
     ["--no-playlist", "--dump-json", "--no-warnings", "--socket-timeout", "20", "--retries", "1", url],
-    { timeoutMs: 60_000, maxOutputBytes: 8 * 1024 * 1024 },
+    { timeoutMs: remainingMs, maxOutputBytes: 8 * 1024 * 1024 },
   );
   if (!run.ok) {
     return { ok: false, reason: run.reason === "timeout" ? "ytdlp-timeout" : "ytdlp-failed", detail: sanitizeDiagnostic(run.stderr, 200) };
@@ -395,7 +401,9 @@ const NO_MEDIA_PATTERN = /no video could be found|no video formats|no media foun
 export async function probeMediaPresence(url, { timeoutMs = mediaLimits().presenceTimeoutMs } = {}) {
   const attempts = [];
   if (WORKER_URL) {
-    const data = await workerPost("/fetch", { url }, { timeoutMs });
+    // O subprocesso deve terminar e liberar a vaga antes do timeout HTTP.
+    const workerBudgetMs = Math.max(1, Math.floor(timeoutMs - Math.min(1000, timeoutMs / 5)));
+    const data = await workerPost("/fetch", { url, timeout_ms: workerBudgetMs }, { timeoutMs });
     if (data?.ok) {
       const media = data.media ?? {};
       const hasMedia = media.hasVideo === true || media.hasAudio === true;
@@ -408,7 +416,7 @@ export async function probeMediaPresence(url, { timeoutMs = mediaLimits().presen
     attempts.push(diagnosticAttempt("worker-presence", data));
     return { ok: false, hasMedia: noMedia ? false : null, reason: data?.reason ?? "worker-presence-failed", attempts };
   }
-  const yt = await probeWithYtDlp(url);
+  const yt = await probeWithYtDlp(url, { timeoutMs });
   if (yt.ok) {
     const hasMedia = yt.hasVideo === true || yt.hasAudio === true;
     const none = yt.hasVideo === false && yt.hasAudio === false;

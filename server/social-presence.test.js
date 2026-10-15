@@ -65,6 +65,7 @@ test("tweet sem áudio/vídeo não anuncia nem baixa mídia e segue com o texto"
     assert.ok(!ids.has("media-transcription"));
     assert.ok(!ids.has("media-vision"));
     assert.equal(workerRequests.includes("/media"), false, "ausência definitiva não dispara download");
+    assert.ok(events.filter((event) => event.type === "content").every((event) => event.coverage.videoLinkDetected !== true));
     assert.ok(out.media.some((entry) => String(entry).startsWith("worker-presence:no-media")));
     assert.ok(out.media.some((entry) => String(entry).includes("attachments:none")));
   });
@@ -84,5 +85,26 @@ test("tweet com vídeo mantém o anúncio e a tentativa de aquisição", async (
     assert.ok(ids.has("media-transcription"));
     assert.ok(ids.has("media-vision"));
     assert.ok(workerRequests.includes("/media"), "presença confirmada tenta adquirir o arquivo");
+    const warningIndex = events.findIndex((event) => event.type === "content" && event.coverage.videoLinkDetected === true);
+    const acquisitionIndex = events.findIndex((event) => event.type === "activity" && event.id === "media-acquisition");
+    assert.ok(warningIndex >= 0 && warningIndex < acquisitionIndex, "vídeo confirmado avisa antes da aquisição");
+    assert.equal(events.filter((event) => event.type === "content").at(-1).coverage.videoLinkDetected, true);
   });
 });
+
+for (const [label, payload, status] of [
+  ["áudio sem vídeo", { ok: true, media: { hasAudio: true, hasVideo: false } }, "2110480203315331555"],
+  ["presença indeterminada", { ok: false, reason: "probe-failed" }, "2110480203315331556"],
+]) {
+  test(`post com ${label} não anuncia vídeo identificado`, async () => {
+    presencePayload = payload;
+    const events = [];
+    await withControlledModels(async () => {
+      await runVerify(
+        { kind: "link", text: `https://x.com/eixopolitico/status/${status}` },
+        { onProgress: (event) => events.push(event) },
+      );
+      assert.ok(events.filter((event) => event.type === "content").every((event) => event.coverage.videoLinkDetected !== true));
+    });
+  });
+}

@@ -534,6 +534,19 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
               </p>
             )}
 
+          {!file && content?.coverage?.videoLinkDetected && (
+            <div className="video-link-warning" role="status">
+              <CircleAlert size={20} aria-hidden="true" />
+              <div>
+                <strong>Vídeo identificado no link: prefira enviar o arquivo</strong>
+                <p>O acesso ao vídeo pelo link pode falhar por bloqueios da plataforma. Recomendamos enviar o arquivo diretamente.</p>
+                <button type="button" className="quiet-link" onClick={() => { reset(); setTab("video"); }}>
+                  Enviar arquivo de vídeo
+                </button>
+              </div>
+            </div>
+          )}
+
           {running && !result && (
             <div className="processing-hero">
               <span className="processing-symbol" aria-hidden="true"><SearchCheck size={30} /></span>

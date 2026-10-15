@@ -303,6 +303,30 @@
   margin-bottom: 30px;
 }
 
+.home-page .verifier-workspace .video-link-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  margin-bottom: 24px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: var(--panel-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.home-page .verifier-workspace .video-link-warning > svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent-deep);
+}
+
+.home-page .verifier-workspace .video-link-warning p {
+  margin: 5px 0 8px;
+  color: var(--fg-3);
+}
+
 .home-page .verifier-workspace .pipe-step {
   grid-template-columns: 32px minmax(0, 1fr);
   gap: 16px;

@@ -113,6 +113,13 @@ node scripts/fetch-media.mjs <url> --audio    # + baixa o MP3
    download de áudio/vídeo. A obtenção/revisão dos documentos citados ainda pode
    executar etapas adicionais de evidência.
 
+Quando o pipeline identifica vídeo em um link, a interface avisa que bloqueios
+da plataforma podem impedir a extração e recomenda enviar o arquivo diretamente.
+O botão do aviso cancela a tentativa atual e abre a aba de upload. A tentativa
+por link continua até essa ação; o aviso permanece se houver falha. Posts
+ambíguos só recebem o aviso após confirmação de vídeo; áudio sem vídeo e uploads
+não recebem essa recomendação.
+
 ## Transcrição (API da OpenAI)
 
 - `server/transcribe.js` envia o modelo OpenAI selecionado na configuração.

@@ -514,7 +514,10 @@ async function enrichWithMedia(maybeUrl, opts = {}) {
   const [media, downloaded] = await Promise.all([
     directAsset
       ? Promise.resolve({ ok: false, attempts: [`source:${sourceInfo.type}`] })
-      : measure("media-metadata", () => fetchMediaContext(maybeUrl, { sourceInfo })),
+      : measure("media-metadata", () => fetchMediaContext(maybeUrl, { sourceInfo })).then((metadata) => {
+        if (metadata.media?.hasVideo === true) opts.onVideoDetected?.();
+        return metadata;
+      }),
     measure("media-download", () => downloadMedia(mediaUrl, "./media-tmp", directAsset ? sourceInfo.type : null)),
   ]);
   const { audio, frameResult } = downloaded;
@@ -525,6 +528,7 @@ async function enrichWithMedia(maybeUrl, opts = {}) {
   ].filter(Boolean).join("\n\n");
   const attempts = [...(media.attempts ?? []), ...(downloaded.attempts ?? [])].slice(0, 20);
   const hasVideo = audio?.hasVideo === true || frameResult?.hasVideo === true || media.media?.hasVideo === true;
+  if (hasVideo) opts.onVideoDetected?.();
   const expectFrames = canExtractFrames && (hasVideo ||
     (audio?.hasVideo !== false && frameResult?.hasVideo !== false && media.media?.hasVideo !== false));
   const metadataGate = media.ok && media.context && opts.moderateText
@@ -824,6 +828,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   const mediaTarget = videoTarget || audioTarget || socialMediaCandidate;
   const imageTarget = input?.kind === "image" || (input?.kind === "link" && sourceInfo?.type === "image");
   const articleTarget = input?.kind === "link" && isUrl && sourceInfo?.type === "html";
+  let videoLinkDetected = isUrl && !input.fileBuffer && videoTarget;
   progress.content(
     !isUrl || (!wantsMedia && input?.kind !== "image") ? "text"
       : imageTarget ? "image"
@@ -835,8 +840,13 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       : sourceInfo?.type === "social" ? "social-post"
       : "link",
     true,
-    { kind: input?.kind ?? null, hasUpload: Boolean(input?.fileBuffer), sourceType: sourceInfo?.type ?? null },
+    { kind: input?.kind ?? null, hasUpload: Boolean(input?.fileBuffer), sourceType: sourceInfo?.type ?? null, videoLinkDetected },
   );
+  const announceVideoLink = () => {
+    if (videoLinkDetected || !isUrl || input.fileBuffer) return;
+    videoLinkDetected = true;
+    progress.content("video", true, { kind: input?.kind ?? null, hasUpload: false, sourceType: sourceInfo?.type ?? null, videoLinkDetected });
+  };
   const modelsUsed = {};
   trace.modelsUsed = modelsUsed;
   if (input?.fileBuffer) {
@@ -1006,6 +1016,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       // O path do post é ambíguo: confirma áudio/vídeo antes de anunciar ou baixar mídia.
       const presence = await phase("media-presence", () => probeMediaPresence(sourceInfo?.finalUrl ?? maybeUrl)).catch(() => null);
       mediaDebug.push(...(presence?.attempts ?? []));
+      if (presence?.media?.hasVideo === true) announceVideoLink();
       mediaTextOnly = presence?.hasMedia === false;
       if (!mediaTextOnly) {
         progress.activity("media-acquisition", "pending", null, "Aquisição da mídia");
@@ -1039,6 +1050,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
           checkVideoCoverage: () => checkVideoCoverage(modCfg),
           phase: (name, fn) => phase(name, fn, "enrich"),
           onTranscribeProgress: transcribeProgressNote,
+          onVideoDetected: announceVideoLink,
           textOnly: mediaTextOnly,
         }),
       ).catch((error) => {
@@ -1080,6 +1092,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       if (enriched.ok !== false && !mediaTextOnly) markActivityDone("media-download", { ok: true }, via ? `via ${via}` : undefined);
       progress.content(videoTarget ? "video" : audioTarget ? "audio" : "social-post", false, {
         kind: input?.kind ?? null,
+        videoLinkDetected,
         hasAudio: transcript?.ok === true,
         hasFrames: mediaFrameCount > 0,
         hasVision: Boolean(vision),

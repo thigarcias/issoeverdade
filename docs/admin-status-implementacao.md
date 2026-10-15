@@ -4,6 +4,26 @@ Execução do [plano](admin-overview-plano.md) nas fases 1–5. Cada linha apont
 evidência verificável no código e a verificação executada. Registros antigos
 continuam sendo evidência da execução preservada, não prova de comportamento atual.
 
+## Remodelação visual do painel
+
+O admin usa `src/admin.css`, com estilos restritos ao painel, login, diálogo
+e portais dos seletores. Mantém os tokens creme/vermelho e as fontes Faustina/Geist
+do site. Ícones são de `lucide-react`; todos os seletores administrativos usam
+`@radix-ui/react-select` por meio de `AdminSelect.jsx`, com navegação por teclado,
+rolagem e opções incompatíveis desabilitadas.
+
+- Barra de busca separada dos filtros, navegação com ícones, botões e painéis
+  consistentes nas seis seções.
+- Resultado e nota empilhados na tabela: “Sem nota” não disputa espaço com o selo.
+  Tabelas largas têm rolagem local; checagens viram cards até 700px.
+- Verificação no navegador com respostas de API simuladas e isoladas: seis seções
+  em 1536, 1280, 768 e 390px, sem overflow horizontal da página; busca, filtro
+  por vídeo e sincronização da URL, abertura/fechamento de detalhe, seletor de
+  estado dos reportes e mudança de modelo por teclado exercitados.
+- Build concluído; lint sem erros, com seis avisos em efeitos/renderização de
+  `Admin.jsx`, `Verifier.jsx` e `ShareDialog.jsx`. Persistência real e provedores
+  externos não foram exercitados nesta verificação visual.
+
 ## Fase 1 — Contratos críticos
 
 | Entrega | Onde | Verificação |

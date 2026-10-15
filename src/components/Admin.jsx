@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, VERDICTS, migrateVerdict } from "../data/constants.js";
 import ComparisonDetails from "./ComparisonDetails.jsx";
+import { Activity, ArrowUpRight, BookOpen, ClipboardCheck, Copy, LayoutDashboard, LogOut, MessageSquare, RefreshCw, Search, Settings2, ShieldCheck } from "lucide-react";
+import AdminSelect from "./AdminSelect.jsx";
+import "../admin.css";
 
 const SECRET_KEY = "iev-admin-secret";
 const PAGE_SIZE = 15;
@@ -84,6 +87,7 @@ function CopyButton({ text, showToast, label = "Copiar" }) {
         }
       }}
     >
+      <Copy size={14} aria-hidden="true" />
       {label}
     </button>
   );
@@ -547,14 +551,14 @@ function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSa
           return (
             <div key={step} className="admin-ai-row">
               <span className="admin-ai-step">{STEP_LABEL[step] ?? step}</span>
-              <label>Provedor<select value={pair.provider ?? ""} disabled={saving} onChange={(e) => {
-                const next = providers[e.target.value] ?? {};
+              <label>Provedor<AdminSelect value={pair.provider ?? ""} disabled={saving} onValueChange={(value) => {
+                const next = providers[value] ?? {};
                 const model = (next.models ?? []).find((m) => (m.eligibleSteps ?? []).includes(step));
-                setStep(step, { provider: e.target.value, model: model?.id ?? "" });
+                setStep(step, { provider: value, model: model?.id ?? "" });
               }}>
                 {availableProviders.map(([id, p]) => <option key={id} value={id}>{p.label}</option>)}
-              </select></label>
-              <label>Modelo<select value={eligible ? pair.model : ""} disabled={saving || !models.length} onChange={(e) => setStep(step, { model: e.target.value })}>
+              </AdminSelect></label>
+              <label>Modelo<AdminSelect value={eligible ? pair.model : ""} disabled={saving || !models.length} onValueChange={(value) => setStep(step, { model: value })}>
                 <option value="" disabled>Selecione um modelo elegível</option>
                 {sorted.map((model) => {
                   const canUse = (model.eligibleSteps ?? []).includes(step);
@@ -562,7 +566,7 @@ function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSa
                   const suffix = canUse ? "" : ` — ${reason?.message ?? model.ineligibleReason ?? "incompatível com esta etapa"}`;
                   return <option key={model.id} value={model.id} disabled={!canUse}>{model.label ?? model.id}{suffix}</option>;
                 })}
-              </select></label>
+              </AdminSelect></label>
               {!eligible && visibleReason && <p className="admin-ai-warning" role="status">{visibleReason}</p>}
             </div>
           );
@@ -749,8 +753,8 @@ function AdminCorrections({ data, loading, error, statuses, detail, detailLoadin
       </div>
       {data && <p className="admin-notice" role="status">{pending} {pending === 1 ? "pedido pendente" : "pedidos pendentes"} na fila retida · {visibleItems.length} exibidos de {items.length}.</p>}
       <div className="admin-check-toolbar">
-        <label className="admin-sort">Tipo de problema<select value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}><option value="all">Todos</option>{kinds.map((kind) => <option key={kind.id} value={kind.id}>{kind.label}</option>)}</select></label>
-        <label className="admin-sort">Estado<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">Todos</option>{statuses.map((status) => <option key={status.id} value={status.id}>{status.label}</option>)}</select></label>
+        <label className="admin-sort">Tipo de problema<AdminSelect value={kindFilter} onValueChange={setKindFilter}><option value="all">Todos</option>{kinds.map((kind) => <option key={kind.id} value={kind.id}>{kind.label}</option>)}</AdminSelect></label>
+        <label className="admin-sort">Estado<AdminSelect value={statusFilter} onValueChange={setStatusFilter}><option value="all">Todos</option>{statuses.map((status) => <option key={status.id} value={status.id}>{status.label}</option>)}</AdminSelect></label>
         {(kindFilter !== "all" || statusFilter !== "all") && <button className="btn ghost" type="button" onClick={() => { setKindFilter("all"); setStatusFilter("all"); }}>Limpar filtros</button>}
       </div>
       {cacheOpen && <section className="admin-cache-panel" aria-label="Invalidar cache de checagens">
@@ -830,10 +834,10 @@ function AdminCorrections({ data, loading, error, statuses, detail, detailLoadin
                   {entry.note && <q>{entry.note}</q>}
                 </li>)}</ol>}
               <div className="admin-corr-form">
-                <label>Novo estado<select value={draft.status} disabled={saving} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value }))}>
+                <label>Novo estado<AdminSelect value={draft.status} disabled={saving} onValueChange={(value) => setDraft((current) => ({ ...current, status: value }))}>
                   {statuses.length === 0 && <option value={draft.status}>{draft.status}</option>}
                   {statuses.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
-                </select></label>
+                </AdminSelect></label>
                 <label>Nota interna<textarea rows={3} value={draft.note} disabled={saving} onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))} placeholder="Descreva o que foi apurado, sem expor dados pessoais além do necessário." /></label>
                 <div className="admin-ai-actions">
                   <button className="btn primary" type="button" onClick={save} disabled={saving || (draft.status === detail.status && !draft.note.trim())}>{saving ? "Salvando…" : "Salvar estado"}</button>
@@ -979,12 +983,12 @@ function AdminMetrics({ data, loading, error, onReload }) {
 }
 
 const ADMIN_SECTIONS = [
-  { id: "overview", label: "Visão geral" },
-  { id: "checks", label: "Checagens" },
-  { id: "corrections", label: "Reportes e correções" },
-  { id: "metrics", label: "Métricas" },
-  { id: "models", label: "Modelos & provedores" },
-  { id: "methodology", label: "Metodologia" },
+  { id: "overview", label: "Visão geral", icon: LayoutDashboard },
+  { id: "checks", label: "Checagens", icon: ClipboardCheck },
+  { id: "corrections", label: "Reportes e correções", icon: MessageSquare },
+  { id: "metrics", label: "Métricas", icon: Activity },
+  { id: "models", label: "Modelos & provedores", icon: Settings2 },
+  { id: "methodology", label: "Metodologia", icon: BookOpen },
 ];
 
 function currentAdminSection() {
@@ -1434,14 +1438,16 @@ export default function Admin({ showToast }) {
     <header className="admin-shell-header">
       <a className="admin-brand" href="/">isso é verdade<span>?</span><small>ADMINISTRAÇÃO</small></a>
       <div className="admin-actions">
-        <button className="btn ghost" type="button" onClick={() => { load({}); loadAi({ preserveDraft: true }); if (section === "corrections") loadCorrections(); if (section === "metrics") loadMetrics(); }} disabled={refreshing || loading}>{refreshing || loading ? "Atualizando…" : "Atualizar dados"}</button>
-        <a className="btn" href="/">Voltar ao site</a>
-        <button className="btn ghost" type="button" onClick={logout}>Sair</button>
+        <button className="btn ghost" type="button" onClick={() => { load({}); loadAi({ preserveDraft: true }); if (section === "corrections") loadCorrections(); if (section === "metrics") loadMetrics(); }} disabled={refreshing || loading}><RefreshCw size={15} aria-hidden="true" className={refreshing || loading ? "admin-spinning" : undefined} />{refreshing || loading ? "Atualizando…" : "Atualizar dados"}</button>
+        <a className="btn" href="/">Voltar ao site<ArrowUpRight size={15} aria-hidden="true" /></a>
+        <button className="btn ghost" type="button" onClick={logout}><LogOut size={15} aria-hidden="true" />Sair</button>
       </div>
     </header>
     <div className="admin-shell">
       <nav className="admin-nav" aria-label="Seções administrativas">
-        {ADMIN_SECTIONS.map((entry) => <button key={entry.id} type="button" aria-current={section === entry.id ? "page" : undefined} onClick={() => navigateSection(entry.id)}>{entry.label}</button>)}
+        <p className="admin-nav-label">ESPAÇO DE TRABALHO</p>
+        {ADMIN_SECTIONS.map((entry) => <button key={entry.id} type="button" aria-current={section === entry.id ? "page" : undefined} onClick={() => navigateSection(entry.id)}><entry.icon size={18} aria-hidden="true" /><span>{entry.label}</span></button>)}
+        <div className="admin-nav-footer"><ShieldCheck size={16} aria-hidden="true" /><span>Acesso administrativo<br /><small>Sessão restrita a este navegador</small></span></div>
       </nav>
       <section className="admin-content" aria-label="Conteúdo administrativo">
         {section === "overview" && <>
@@ -1461,19 +1467,19 @@ export default function Admin({ showToast }) {
           </section>
         </>}
         {section === "checks" && <section aria-labelledby="admin-checks-title">
-          <div className="admin-section-heading"><p className="admin-eyebrow">Registros retidos</p><h1 id="admin-checks-title">Checagens</h1></div>
+          <div className="admin-section-heading"><p className="admin-eyebrow">Registros retidos</p><h1 id="admin-checks-title">Checagens</h1><p>Explore os resultados, acompanhe execuções e consulte as evidências de cada análise.</p></div>
           {loadError && <div className="admin-error-state" role="alert"><p>{loadError}</p><button className="btn" type="button" onClick={() => load({})}>Tentar novamente</button></div>}
-          <div className="admin-check-toolbar"><div className="search-box"><input type="search" placeholder="Buscar por texto, ID ou tipo…" aria-label="Buscar checagens" value={query} onChange={(e) => { setQuery(e.target.value); setPage(0); updateAdminUrl({ q: e.target.value, page: null }); }} /></div>
-            <label className="admin-sort">Ordenar<select value={sort} onChange={(e) => { setSort(e.target.value); updateAdminUrl({ sort: e.target.value }); }}>{SORTS.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}</select></label>
-            <label className="admin-sort">Estado da execução<select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(0); updateAdminUrl({ status: e.target.value === "all" ? null : e.target.value, page: null }); }}><option value="all">Todos</option>{operationalStatuses.map((status) => <option key={status} value={status}>{OUTCOME_LABEL[status] ?? status}</option>)}</select></label>
-            <label className="admin-sort">Tipo de entrada<select value={kindFilter} onChange={(e) => { setKindFilter(e.target.value); setPage(0); updateAdminUrl({ kind: e.target.value === "all" ? null : e.target.value, page: null }); }}><option value="all">Todos</option>{inputKinds.map((kind) => <option key={kind} value={kind}>{KIND_LABEL[kind] ?? kind}</option>)}</select></label>
+          <div className="admin-check-toolbar"><div className="search-box"><Search size={17} aria-hidden="true" /><input type="search" placeholder="Buscar por texto, ID ou tipo…" aria-label="Buscar checagens" value={query} onChange={(e) => { setQuery(e.target.value); setPage(0); updateAdminUrl({ q: e.target.value, page: null }); }} /></div>
+            <label className="admin-sort">Ordenar<AdminSelect value={sort} onValueChange={(value) => { setSort(value); updateAdminUrl({ sort: value }); }}>{SORTS.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}</AdminSelect></label>
+            <label className="admin-sort">Estado da execução<AdminSelect value={statusFilter} onValueChange={(value) => { setStatusFilter(value); setPage(0); updateAdminUrl({ status: value === "all" ? null : value, page: null }); }}><option value="all">Todos</option>{operationalStatuses.map((status) => <option key={status} value={status}>{OUTCOME_LABEL[status] ?? status}</option>)}</AdminSelect></label>
+            <label className="admin-sort">Tipo de entrada<AdminSelect value={kindFilter} onValueChange={(value) => { setKindFilter(value); setPage(0); updateAdminUrl({ kind: value === "all" ? null : value, page: null }); }}><option value="all">Todos</option>{inputKinds.map((kind) => <option key={kind} value={kind}>{KIND_LABEL[kind] ?? kind}</option>)}</AdminSelect></label>
           </div>
           <div className="filters" role="group" aria-label="Filtrar checagens">{FILTERS.map((entry) => <button key={entry.id} type="button" aria-pressed={filter === entry.id} onClick={() => { setFilter(entry.id); setPage(0); updateAdminUrl({ filter: entry.id, page: null }); }}>{VERDICTS[entry.id] && <i style={{ background: VERDICTS[entry.id].color }} />}{entry.label}<span className="count">{counts[entry.id] ?? 0}</span></button>)}</div>
           <div className="results-meta"><p>{filtered.length} {filtered.length === 1 ? "checagem" : "checagens"}{query.trim() && <> para “{query.trim()}”</>}</p>{hasFilter && <button type="button" onClick={() => { setQuery(""); setFilter("all"); setStatusFilter("all"); setKindFilter("all"); setPage(0); updateAdminUrl({ q: null, filter: null, status: null, kind: null, page: null }); }}>Limpar filtros</button>}</div>
           {loading || !items ? <ul className="admin-skel" aria-label="Carregando checagens"><li /><li /><li /></ul>
             : filtered.length === 0 ? <div className="empty"><h3>{loadError ? "Lista indisponível" : items.length === 0 ? "Nenhum registro retido" : "Nenhuma checagem encontrada"}</h3><p>{loadError || (items.length === 0 ? "A API não disponibilizou checagens." : "Ajuste a busca ou os filtros.")}</p></div>
               : <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Resultado</th><th>Afirmação / entrada</th><th>Tipo</th><th>Data</th><th>Duração</th><th>Modelo</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id} tabIndex="0" onClick={() => openDetail(item.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(item.id); } }}>
-                <td><div className="admin-result-cell"><VerdictChip verdict={item.verdict} error={item.error} outcome={item.outcome} /><b>{item.score == null ? "sem nota" : item.score}</b></div>{(item.outcome || item.resultStatus || item.error) && <small className="admin-op-status">{OUTCOME_LABEL[item.outcome ?? item.resultStatus] ?? (item.error ? "Erro registrado" : item.resultStatus)}</small>}</td><td className="admin-table-preview" title={item.inputPreview || item.id}>{item.inputPreview || "(sem texto)"}<small>{item.id}</small></td><td>{KIND_LABEL[item.kind] ?? item.kind ?? "—"}</td><td><time title={fmtFullTime(item.at)}>{fmtTime(item.at)}</time></td><td>{fmtMs(item.totalMs)}</td><td>{item.model ?? item.provider ?? "—"}</td>
+                <td><div className="admin-result-cell"><VerdictChip verdict={item.verdict} error={item.error} outcome={item.outcome} /><b className="admin-score-value">{item.score == null ? "Sem nota" : `${item.score}/100`}</b></div>{(item.outcome || item.resultStatus || item.error) && <small className="admin-op-status">{OUTCOME_LABEL[item.outcome ?? item.resultStatus] ?? (item.error ? "Erro registrado" : item.resultStatus)}</small>}</td><td className="admin-table-preview" title={item.inputPreview || item.id}>{item.inputPreview || "(sem texto)"}<small>{item.id}</small></td><td>{KIND_LABEL[item.kind] ?? item.kind ?? "—"}</td><td><time title={fmtFullTime(item.at)}>{fmtTime(item.at)}</time></td><td>{fmtMs(item.totalMs)}</td><td>{item.model ?? item.provider ?? "—"}</td>
               </tr>)}</tbody></table>
               <ul className="admin-cards">{visible.map((item) => <li key={item.id}><button type="button" className="admin-card-row" onClick={() => openDetail(item.id)}><span className="admin-result-cell"><VerdictChip verdict={item.verdict} error={item.error} outcome={item.outcome}/><b>{item.score == null ? "sem nota" : item.score}</b></span><strong>{item.inputPreview || "(sem texto)"}</strong><span>{KIND_LABEL[item.kind] ?? item.kind ?? "—"} · {fmtTime(item.at)}</span><span>{item.outcome ? OUTCOME_LABEL[item.outcome] ?? item.outcome : "Registro legado"} · {fmtMs(item.totalMs)} · {item.model ?? item.provider ?? "Modelo não registrado"}</span><small>{item.id}</small></button></li>)}</ul></div>}
           {pages > 1 && <nav className="admin-pages" aria-label="Paginação"><button className="btn ghost" type="button" disabled={!safePage} onClick={() => { const next = safePage - 1; setPage(next); updateAdminUrl({ page: next || null }); }}>← Anterior</button><span>Página {safePage + 1} de {pages}</span><button className="btn ghost" type="button" disabled={safePage >= pages - 1} onClick={() => { const next = safePage + 1; setPage(next); updateAdminUrl({ page: next }); }}>Próxima →</button></nav>}

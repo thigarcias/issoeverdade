@@ -40,6 +40,7 @@ trailer
 
 test("limites de mídia vêm do ambiente com valores padrão", () => {
   assert.equal(media.mediaLimits({}).maxMediaSeconds, 900);
+  assert.equal(media.mediaLimits({}).presenceTimeoutMs, 30_000);
   assert.equal(media.mediaLimits({ IEV_MAX_DOWNLOAD_BYTES: "1024" }).maxTransferBytes, 1024);
   assert.equal(media.mediaLimits({ IEV_MAX_MEDIA_SECONDS: "0" }).maxMediaSeconds, 900);
 });
@@ -507,6 +508,44 @@ test("contrato conjunto worker preserva busy, rejeita duração ausente e inform
       const invalid = await remote.downloadMedia("https://example.org/video");
       assert.equal(invalid.ok, false);
       assert.equal(invalid.reason, "worker-audio-invalid");
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+});
+
+test("probe de presença confirma áudio/vídeo, reconhece ausência definitiva e não bloqueia falha operacional", async () => {
+  const previous = Object.fromEntries(["MEDIA_WORKER_URL", "IEV_ALLOW_PRIVATE_WORKER"].map((name) => [name, process.env[name]]));
+  let response = { status: 200, body: { ok: true, media: { hasVideo: true, hasAudio: true } } };
+  await comServidor((req, res) => {
+    assert.equal(req.url, "/fetch");
+    res.writeHead(response.status, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(response.body));
+  }, async (port) => {
+    process.env.MEDIA_WORKER_URL = `http://127.0.0.1:${port}`;
+    process.env.IEV_ALLOW_PRIVATE_WORKER = "1";
+    try {
+      const remote = await import("./media.js?presence-probe");
+      const target = "https://x.com/perfil/status/123";
+      const comVideo = await remote.probeMediaPresence(target);
+      assert.equal(comVideo.hasMedia, true);
+      assert.match(comVideo.attempts[0], /^worker-presence:ok:media$/);
+
+      response = { status: 200, body: { ok: true, media: { hasVideo: false, hasAudio: false } } };
+      assert.equal((await remote.probeMediaPresence(target)).hasMedia, false);
+
+      response = { status: 200, body: { ok: false, reason: "no-media", detail: "no video" } };
+      assert.equal((await remote.probeMediaPresence(target)).hasMedia, false);
+
+      // Worker antigo (sem o motivo dedicado): o detalhe sanitizado ainda identifica a ausência.
+      response = { status: 200, body: { ok: false, reason: "probe-failed", detail: "ERROR: [twitter] 123: No video could be found in this tweet" } };
+      assert.equal((await remote.probeMediaPresence(target)).hasMedia, false);
+
+      response = { status: 503, body: { ok: false, reason: "worker-busy" } };
+      assert.equal((await remote.probeMediaPresence(target)).hasMedia, null);
     } finally {
       for (const [name, value] of Object.entries(previous)) {
         if (value === undefined) delete process.env[name];

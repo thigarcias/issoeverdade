@@ -40,6 +40,7 @@ export function mediaLimits(env = process.env) {
     maxDocBytes: int(env.IEV_MAX_DOC_BYTES, 8 * 1024 * 1024),
     ytdlpTimeoutMs: int(env.IEV_YTDLP_TIMEOUT_MS, 150_000),
     workerTimeoutMs: int(env.IEV_WORKER_TIMEOUT_MS, 180_000),
+    presenceTimeoutMs: int(env.IEV_MEDIA_PRESENCE_TIMEOUT_MS, 30_000),
   };
 }
 
@@ -377,6 +378,46 @@ export async function probeWithYtDlp(url) {
   } catch (err) {
     return { ok: false, reason: "ytdlp-bad-json", detail: clip(err?.message ?? err, 300) };
   }
+}
+
+/**
+ * Sinais definitivos do yt-dlp de que o alvo não tem áudio/vídeo (não é falha
+ * operacional). O worker novo também devolve reason "no-media"; o padrão no
+ * detalhe sanitizado cobre worker antigo durante a transição de implantação.
+ */
+const NO_MEDIA_PATTERN = /no video could be found|no video formats|no media found/i;
+
+/**
+ * Confirma presença de áudio/vídeo antes de anunciar a aquisição. `hasMedia`
+ * `true`/`false` são conclusivos; `null` é indeterminado (falha operacional) e
+ * nunca bloqueia o fluxo normal de download.
+ */
+export async function probeMediaPresence(url, { timeoutMs = mediaLimits().presenceTimeoutMs } = {}) {
+  const attempts = [];
+  if (WORKER_URL) {
+    const data = await workerPost("/fetch", { url }, { timeoutMs });
+    if (data?.ok) {
+      const media = data.media ?? {};
+      const hasMedia = media.hasVideo === true || media.hasAudio === true;
+      const none = media.hasVideo === false && media.hasAudio === false;
+      attempts.push(`worker-presence:ok:${hasMedia ? "media" : none ? "no-media" : "unknown"}`);
+      return { ok: true, hasMedia: hasMedia ? true : none ? false : null, media, attempts };
+    }
+    const noMedia = data?.reason === "no-media" ||
+      (data?.reason !== "worker-timeout" && NO_MEDIA_PATTERN.test(String(data?.detail ?? "")));
+    attempts.push(diagnosticAttempt("worker-presence", data));
+    return { ok: false, hasMedia: noMedia ? false : null, reason: data?.reason ?? "worker-presence-failed", attempts };
+  }
+  const yt = await probeWithYtDlp(url);
+  if (yt.ok) {
+    const hasMedia = yt.hasVideo === true || yt.hasAudio === true;
+    const none = yt.hasVideo === false && yt.hasAudio === false;
+    attempts.push(`yt-dlp-presence:ok:${hasMedia ? "media" : none ? "no-media" : "unknown"}`);
+    return { ok: true, hasMedia: hasMedia ? true : none ? false : null, media: yt, attempts };
+  }
+  const noMedia = NO_MEDIA_PATTERN.test(String(yt.detail ?? ""));
+  attempts.push(diagnosticAttempt("yt-dlp-presence", yt));
+  return { ok: false, hasMedia: noMedia ? false : null, reason: yt.reason, attempts };
 }
 
 /**

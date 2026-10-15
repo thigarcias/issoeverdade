@@ -122,7 +122,15 @@ async function probe(url) {
     timeoutMs: 60_000,
     maxOutputBytes: 8 * 1024 * 1024,
   });
-  if (!run.ok) return { ok: false, reason: run.reason === "timeout" ? "probe-timeout" : "probe-failed", detail: safeDetail(run.stderr) };
+  if (!run.ok) {
+    // "Post sem áudio/vídeo" é conclusivo e não deve ser confundido com falha operacional.
+    const noMedia = /no video could be found|no video formats|no media found/i.test(run.stderr ?? "");
+    return {
+      ok: false,
+      reason: noMedia ? "no-media" : run.reason === "timeout" ? "probe-timeout" : "probe-failed",
+      detail: safeDetail(run.stderr),
+    };
+  }
   const info = JSON.parse(run.stdout);
   const desc = [info.description, info.title].find((s) => typeof s === "string" && s.trim()) ?? "";
   const media = {

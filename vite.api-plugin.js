@@ -149,8 +149,9 @@ export function apiVerifyPlugin() {
       });
       server.middlewares.use("/api/admin", async (req, res) => {
         res.setHeader("Content-Type", "application/json");
-        const send = (status, obj) => {
+        const send = (status, obj, extra = {}) => {
           res.statusCode = status;
+          for (const [key, value] of Object.entries(extra ?? {})) res.setHeader(key, value);
           res.end(JSON.stringify(obj));
         };
         let body = null;
@@ -167,8 +168,9 @@ export function apiVerifyPlugin() {
           headers: req.headers,
           query: Object.fromEntries(params.entries()),
           body,
+          socketAddress: req.socket?.remoteAddress,
         });
-        return send(out.status, out.body);
+        return send(out.status, out.body, out.headers);
       });
     },
   };

@@ -1,8 +1,9 @@
 // Regressões do painel administrativo e do endpoint de saúde: autenticação,
 // métricas, fila de correções, invalidação de cache e limites públicos.
-process.env.ADMIN_SECRET = "segredo-de-teste";
+const SECRET = "00000000-0000-4000-8000-000000000000";
+process.env.ADMIN_SECRET = SECRET;
 process.env.IEV_LIMITS_MODE = "memory";
-const { handleAdminRequest, systemState } = await import("./admin-endpoint.js");
+const { handleAdminRequest, systemState, MIN_SECRET_CHARS, AUTH_FAILURE_LIMIT } = await import("./admin-endpoint.js");
 const { handleHealthRequest } = await import("./health-endpoint.js");
 const { createCorrection, normalizeCorrection } = await import("./corrections.js");
 const { recordCheck, resetMetrics } = await import("./metrics.js");
@@ -10,7 +11,7 @@ const { recordCheck, resetMetrics } = await import("./metrics.js");
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-const auth = { authorization: "Bearer segredo-de-teste" };
+const auth = { authorization: `Bearer ${SECRET}` };
 
 test("admin exige segredo configurado e Bearer correto", async () => {
   const semSecret = await handleAdminRequest({ method: "GET", headers: {}, query: {}, env: {} });
@@ -20,6 +21,67 @@ test("admin exige segredo configurado e Bearer correto", async () => {
   assert.equal(semAuth.status, 401);
   const errado = await handleAdminRequest({ method: "GET", headers: { authorization: "Bearer outro" }, query: {} });
   assert.equal(errado.status, 401);
+  // Comparação por hash antes do timingSafeEqual: tamanhos diferentes não estouram.
+  const mesmoTamanho = await handleAdminRequest({ method: "GET", headers: { authorization: `Bearer ${"0".repeat(SECRET.length)}` }, query: {} });
+  assert.equal(mesmoTamanho.status, 401);
+});
+
+test("segredo abaixo do mínimo é recusado (fail-closed) em vez de aceito", async () => {
+  const fraco = "segredo-forte-do-painel";
+  const curto = await handleAdminRequest({ method: "GET", headers: { authorization: `Bearer ${fraco}` }, query: {}, env: { ADMIN_SECRET: fraco } });
+  assert.equal(curto.status, 503);
+  assert.equal(curto.body.error, "admin_secret_too_weak");
+  assert.equal(curto.body.minLength, MIN_SECRET_CHARS);
+  const naLinha = "a".repeat(MIN_SECRET_CHARS);
+  const aceito = await handleAdminRequest({ method: "GET", headers: { authorization: `Bearer ${naLinha}` }, query: { metrics: "1" }, env: { ADMIN_SECRET: naLinha } });
+  assert.equal(aceito.status, 200);
+});
+
+test("dez falhas bloqueiam qualquer credencial apenas na origem afetada", async () => {
+  const origem = { "x-forwarded-for": "203.0.113.9" };
+  const errada = { authorization: "Bearer chave-errada", ...origem };
+  for (let i = 0; i < AUTH_FAILURE_LIMIT; i++) {
+    assert.equal((await handleAdminRequest({ method: "GET", headers: errada, query: {} })).status, 401);
+  }
+  const bloqueada = await handleAdminRequest({ method: "GET", headers: errada, query: {} });
+  assert.equal(bloqueada.status, 429);
+  assert.equal(bloqueada.body.error, "too_many_attempts");
+  assert.ok(Number(bloqueada.headers["Retry-After"]) > 0);
+  // Outra origem continua apenas recusada: a trava é por IP, não global.
+  const outraOrigem = await handleAdminRequest({ method: "GET", headers: { authorization: "Bearer chave-errada", "x-forwarded-for": "198.51.100.7" }, query: {} });
+  assert.equal(outraOrigem.status, 401);
+  assert.equal((await handleAdminRequest({ method: "GET", headers: { ...auth, ...origem }, query: { metrics: "1" } })).status, 429);
+  assert.equal((await handleAdminRequest({ method: "GET", headers: { ...auth, "x-forwarded-for": "198.51.100.7" }, query: { metrics: "1" } })).status, 200);
+});
+
+test("sem backend compartilhado a trava vale por instância", async () => {
+  const env = { ADMIN_SECRET: SECRET, IEV_LIMITS_MODE: "blocked", VERCEL_ENV: "production" };
+  const errada = { authorization: "Bearer chave-errada", "x-forwarded-for": "198.51.100.55" };
+  for (let i = 0; i < AUTH_FAILURE_LIMIT; i++) {
+    assert.equal((await handleAdminRequest({ method: "GET", headers: errada, query: {}, env })).status, 401);
+  }
+  assert.equal((await handleAdminRequest({ method: "GET", headers: errada, query: {}, env })).status, 429);
+  assert.equal((await handleAdminRequest({ method: "GET", headers: { ...errada, ...auth }, query: { metrics: "1" }, env })).status, 429);
+});
+
+test("credenciais válidas não gastam tentativas e o bloqueio expira sem renovação", async (t) => {
+  const inicio = Date.now();
+  t.mock.method(Date, "now", () => inicio);
+  const origem = { "x-forwarded-for": "203.0.113.42" };
+  const request = (authorization) => handleAdminRequest({ method: "GET", headers: { ...origem, authorization }, query: { metrics: "1" } });
+  for (let i = 0; i < AUTH_FAILURE_LIMIT + 1; i++) {
+    assert.equal((await request(auth.authorization)).status, 200);
+  }
+  for (let i = 0; i < AUTH_FAILURE_LIMIT; i++) {
+    assert.equal((await request("Bearer errada")).status, 401);
+  }
+  t.mock.method(Date, "now", () => inicio + 899_000);
+  const bloqueada = await request(auth.authorization);
+  assert.equal(bloqueada.status, 429);
+  assert.equal(bloqueada.headers["Retry-After"], "1");
+  t.mock.method(Date, "now", () => inicio + 900_000);
+  assert.equal((await request(auth.authorization)).status, 200);
+  assert.equal((await request("Bearer errada")).status, 401);
 });
 
 test("métricas somam desfechos e trazem estado do sistema", async () => {

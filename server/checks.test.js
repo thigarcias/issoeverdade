@@ -11,7 +11,7 @@ import { evidenceConfig } from "./evidence.js";
 import { PROMPT_VERSION } from "./scoring.js";
 
 const guard = { config: { correctionsPerWindow: 100, windowSec: 60 }, rateLimit: async () => ({ allowed: true }) };
-const auth = { authorization: "Bearer admin-test" };
+const auth = { authorization: "Bearer 00000000-0000-4000-8000-000000000001" };
 const entry = (id = "private-check") => ({ id, kind: "text", outcome: "checked", verdict: "true", score: 95, inputPreview: "PRIVATE INPUT", phases: [{ name: "judge", ms: 12, ok: true }], totalMs: 12 });
 const envelope = (id = "private-check") => ({
   checkId: id,
@@ -26,7 +26,7 @@ async function withStore(fn, extraEnv = {}) {
   const names = ["SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "BLOB_READ_WRITE_TOKEN", "ADMIN_SECRET", ...Object.keys(extraEnv)];
   const before = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   const previousFetch = globalThis.fetch;
-  Object.assign(process.env, { SUPABASE_URL: "https://store.example", SUPABASE_SERVICE_ROLE_KEY: "server-secret", NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-must-not-be-used", ADMIN_SECRET: "admin-test", ...extraEnv });
+  Object.assign(process.env, { SUPABASE_URL: "https://store.example", SUPABASE_SERVICE_ROLE_KEY: "server-secret", NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-must-not-be-used", ADMIN_SECRET: "00000000-0000-4000-8000-000000000001", ...extraEnv });
   delete process.env.BLOB_READ_WRITE_TOKEN;
   const rows = new Map();
   const requests = [];

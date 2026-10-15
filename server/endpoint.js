@@ -6,6 +6,7 @@
 //   - mapeamento de erro para o contrato da interface.
 // Sem controles ativos em produção o endpoint RECUSA a checagem (fail-closed).
 import { activeGuard, blockedPayload, LimitsExceeded, LimitsUnavailable } from "./limits.js";
+import { clientIp } from "./client-ip.js";
 import { randomUUID } from "node:crypto";
 import { startRecovery, completeRecovery, failRecovery, readRecovery, RecoveryUnavailable } from "./recovery.js";
 import { parseUrlStrict } from "./net.js";
@@ -15,18 +16,6 @@ import { runVerify } from "./verify.js";
 export const MAX_REQUEST_BYTES = 4_300_000;
 const KINDS = new Set(["link", "text", "video", "image"]);
 const RECOVERY = { start: startRecovery, complete: completeRecovery, fail: failRecovery };
-
-/** IP do cliente conforme o proxy confiável da hospedagem. */
-export function clientIp(headers, socketAddress, env = process.env) {
-  const trustProxy = env.IEV_TRUST_PROXY !== "0";
-  if (trustProxy) {
-    const header = String(env.IEV_TRUST_PROXY_HEADER || "x-forwarded-for").toLowerCase();
-    const raw = headers?.[header] ?? headers?.["x-real-ip"] ?? "";
-    const value = String(Array.isArray(raw) ? raw[0] : raw).split(",")[0].trim();
-    if (value) return value.slice(0, 64);
-  }
-  return String(socketAddress ?? "").split(",")[0].trim().slice(0, 64) || "unknown";
-}
 
 function jsonError(status, body, headers = {}) {
   return { status, body, headers };

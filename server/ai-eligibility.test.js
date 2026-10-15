@@ -135,10 +135,10 @@ test("precedência: credencial ausente supera inventário; inventário desatuali
 
 test("backend publica contrato de três etapas e recusa pares inválidos com fields por motivo", async () => {
   setKeys({ opencode: OPENCODE, openai: OPENAI });
-  process.env.ADMIN_SECRET = "segredo-de-teste";
+  process.env.ADMIN_SECRET = "00000000-0000-4000-8000-000000000002";
   const ai = await load();
   const { handleAdminRequest } = await import("./admin-endpoint.js?eligibility");
-  const auth = { authorization: "Bearer segredo-de-teste" };
+  const auth = { authorization: "Bearer 00000000-0000-4000-8000-000000000002" };
   const catalog = await ai.aiConfigCatalog();
   const published = await handleAdminRequest({ method: "GET", headers: auth, query: { config: "1" } });
   assert.equal(published.status, 200);

@@ -1,5 +1,5 @@
 import { activeGuard, blockedPayload, LimitsExceeded, LimitsUnavailable } from "./limits.js";
-import { clientIp } from "./endpoint.js";
+import { clientIp } from "./client-ip.js";
 import { getPublishedCheck, publishCheck, validCheckId, logEnabled, logMode } from "./checklog.js";
 import { reportStorageError } from "./supabase.js";
 

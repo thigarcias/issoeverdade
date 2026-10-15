@@ -1,7 +1,7 @@
 // Endpoint público de contestação: POST cria o protocolo, GET consulta o estado.
 // Compartilhado entre a Vercel (api/corrections.js) e o servidor de dev.
 import { activeGuard, blockedPayload, LimitsExceeded, LimitsUnavailable } from "./limits.js";
-import { clientIp } from "./endpoint.js";
+import { clientIp } from "./client-ip.js";
 import {
   correctionsForCheck,
   correctionsMode,

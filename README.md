@@ -265,7 +265,7 @@ captcha, streams protegidos e conteúdo removido continuam limitações externas
 
 ## Metodologia e avaliação
 
-As novas checagens usam `fact-check-13`: investigam alegações implícitas em
+As novas checagens usam `fact-check-14`: investigam alegações implícitas em
 perguntas e justaposições, distinguindo comparação factual, motivação atribuída
 e juízo de valor. Recortes de manchetes também exigem pesquisa da publicação
 original, fidelidade e datas, sem autenticação por OCR/logotipo. O fluxo executa
@@ -321,6 +321,10 @@ Título e data extraídos do documento acompanham o contexto da revisão, sem
 confundir data de publicação com data do fato. Omissões editoriais explícitas
 podem ser localizadas por fragmentos ordenados e limitados; o texto intermediário
 real, inclusive ressalvas, permanece na janela enviada ao revisor.
+Uma citação direta factual atribuída em reportagem ou coluna pode documentar
+uma declaração, sem exigir autenticação de um vídeo que não é o objeto do claim.
+Isso não comprova o conteúdo da fala, sua sinceridade nem uma posição atual.
+Hipóteses, sátira e atribuições negadas/contestadas não viram suporte automático.
 Auditoria dos registros e controles reais:
 [Sem comprovação — 15/10/2026](docs/auditoria-sem-comprovacao-2026-10-15.md).
 

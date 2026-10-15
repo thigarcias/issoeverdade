@@ -21,7 +21,7 @@ Crie um `.env` na raiz (já ignorado pelo git). O arquivo
 ```bash
 OPENAI_API_KEY=...            # avaliação factual/visão, transcrição e moderação
 OPENCODE_API=...              # provedor alternativo (OpenCode Go)
-ADMIN_SECRET=...              # habilita /admin
+ADMIN_SECRET=...              # habilita /admin (mínimo 32 caracteres aleatórios)
 BLOB_READ_WRITE_TOKEN=...     # opcional: cache/recuperação/correções/config privados na Vercel Blob
 NEXT_PUBLIC_SUPABASE_URL=...  # URL do projeto existente (SUPABASE_URL também é aceita)
 SUPABASE_SERVICE_ROLE_KEY=... # somente servidor: checagens/logs privados
@@ -108,6 +108,14 @@ continuam sendo por instância; não são agregações históricas da Supabase.
   recusa (fail-closed). Conciliação pós-checagem cobra unidades pelos tokens
   observados (`IEV_TOKENS_PER_UNIT`). Chave de interrupção operacional:
   `IEV_LIMITS_MODE=off` para novas checagens mantendo as páginas públicas no ar.
+- **Painel administrativo** (`server/admin-endpoint.js`): toda ação exige
+  `Authorization: Bearer ADMIN_SECRET` com mínimo de 32 caracteres — abaixo disso
+  o endpoint responde `503 admin_secret_too_weak` em vez de aceitar a chave.
+  A comparação é em tempo constante (SHA-256 + `timingSafeEqual`) e as falhas por
+  origem entram numa trava de 10 tentativas a cada 15 minutos (`429
+  too_many_attempts` com `Retry-After`), no armazenamento compartilhado quando
+  configurado ou por instância quando não há backend. A chave viaja em header
+  (imune a CSRF), fica em `sessionStorage` e nunca no bundle.
 - **Moderação** (`server/moderation.js`): triagem de propósito, moderação de
   texto e de imagens/frames, recusa só de conteúdo que não pode ser processado
   (abuso sexual infantil, sexual explícito) e cobertura de vídeo declarada

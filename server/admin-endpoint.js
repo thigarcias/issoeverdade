@@ -1,11 +1,14 @@
 // Endpoint administrativo compartilhado (Vercel e dev): registros de checagem,
 // catálogo/configuração de IA, fila de correções, métricas operacionais e
-// invalidação de cache. Toda ação exige ADMIN_SECRET.
+// invalidação de cache. Toda ação exige o Bearer de ADMIN_SECRET: comparação em
+// tempo constante, mínimo de tamanho e trava por origem nas falhas.
+import { createHash, timingSafeEqual } from "node:crypto";
 import { appendCorrectionToLog, getCheckLog, listCheckLogs, logEnabled, logMode } from "./checklog.js";
 import { reportStorageError, storageFailureMessage } from "./supabase.js";
 import { aiConfigCatalog, getAiConfigState, saveAiConfig } from "./ai-config.js";
 import { invalidateCache } from "./cache.js";
-import { activeGuard } from "./limits.js";
+import { activeGuard, createGuard, limitsConfig } from "./limits.js";
+import { clientIp } from "./client-ip.js";
 import { mediaLimits } from "./media.js";
 import { snapshot as metricsSnapshot, recordCorrection } from "./metrics.js";
 import { moderationConfig } from "./moderation.js";
@@ -48,6 +51,48 @@ function jsonError(status, body) {
   return { status, body };
 }
 
+/** Mínimo de ADMIN_SECRET: 32 caracteres aleatórios (UUID v4, openssl rand -hex 32…). */
+export const MIN_SECRET_CHARS = 32;
+/** Falhas de chave toleradas por origem dentro da janela da trava. */
+export const AUTH_FAILURE_LIMIT = 10;
+export const AUTH_FAILURE_WINDOW_SEC = 15 * 60;
+
+const AUTH_BUCKET = "admin-auth";
+// Contador por instância para quando não há backend compartilhado (produção sem
+// Redis/KV resolve para "blocked" e fica sem store no guard ativo).
+const localAuthGuard = createGuard({ ...limitsConfig(), mode: "memory" });
+
+/** Comparação em tempo constante: hashes de tamanho fixo antes do timingSafeEqual. */
+function secretMatches(authorization, secret) {
+  const provided = createHash("sha256").update(String(authorization ?? "")).digest();
+  const expected = createHash("sha256").update(`Bearer ${secret}`).digest();
+  return timingSafeEqual(provided, expected);
+}
+
+/**
+ * Cobra a falha de autenticação na trava por origem e devolve o `Retry-After`
+ * quando o limite foi esgotado. Só é chamada depois de uma chave recusada, então
+ * nunca consome tentativas legítimas nem permite bloquear o acesso com a chave
+ * correta.
+ */
+async function noteAuthFailure({ headers, socketAddress, env }) {
+  const identity = clientIp(headers, socketAddress, env);
+  const options = { bucket: AUTH_BUCKET, max: AUTH_FAILURE_LIMIT, windowSec: AUTH_FAILURE_WINDOW_SEC };
+  const guard = activeGuard(env);
+  if (guard.store) {
+    try {
+      const rate = await guard.rateLimit(identity, options);
+      return rate.allowed ? null : rate.retryAfterSec ?? AUTH_FAILURE_WINDOW_SEC;
+    } catch (error) {
+      // Contador compartilhado indisponível: cai no contador local em vez de
+      // liberar tentativas sem trava.
+      reportStorageError("admin-auth-limit", logMode(), error);
+    }
+  }
+  const local = await localAuthGuard.rateLimit(identity, options);
+  return local.allowed ? null : local.retryAfterSec ?? AUTH_FAILURE_WINDOW_SEC;
+}
+
 /** Estado operacional exibido no painel: modos e limites, sem segredos. */
 export function systemState(env = process.env) {
   const guard = activeGuard(env);
@@ -77,10 +122,15 @@ export function systemState(env = process.env) {
   };
 }
 
-export async function handleAdminRequest({ method, headers = {}, query = {}, body = null, env = process.env } = {}) {
+export async function handleAdminRequest({ method, headers = {}, query = {}, body = null, socketAddress, env = process.env } = {}) {
   const secret = env.ADMIN_SECRET || "";
   if (!secret) return jsonError(503, { error: "admin_disabled" });
-  if (String(headers.authorization ?? "") !== `Bearer ${secret}`) return jsonError(401, { error: "unauthorized" });
+  if (secret.length < MIN_SECRET_CHARS) return jsonError(503, { error: "admin_secret_too_weak", minLength: MIN_SECRET_CHARS, message: `ADMIN_SECRET tem menos de ${MIN_SECRET_CHARS} caracteres. O painel fica desabilitado até configurar um segredo aleatório maior (openssl rand -hex 32).` });
+  if (!secretMatches(headers.authorization, secret)) {
+    const retryAfterSec = await noteAuthFailure({ headers, socketAddress, env });
+    if (retryAfterSec) return { status: 429, body: { error: "too_many_attempts", message: `Chave recusada repetidamente desta origem. Tente novamente em ${retryAfterSec}s.` }, headers: { "Retry-After": String(retryAfterSec) } };
+    return jsonError(401, { error: "unauthorized" });
+  }
 
   if (query.metrics !== undefined && query.metrics !== "0") {
     if (method !== "GET") return jsonError(405, { error: "method_not_allowed" });

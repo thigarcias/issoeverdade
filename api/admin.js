@@ -27,6 +27,8 @@ export default async function handler(req, res) {
     headers: req.headers,
     query: req.query ?? {},
     body,
+    socketAddress: req.socket?.remoteAddress,
   });
+  for (const [key, value] of Object.entries(out.headers ?? {})) res.setHeader(key, value);
   return res.status(out.status).json(out.body);
 }

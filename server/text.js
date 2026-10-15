@@ -181,7 +181,13 @@ export function locateQuote(documentText, quote, { excerptChars = 400 } = {}) {
     result.kind = normalizedQuote.length === 0 ? "empty" : "missing";
     return result;
   }
-  const excerptFrom = (start, end) => haystack.slice(start, Math.max(end, start + excerptChars));
+  const excerptFrom = (start, end) => {
+    const size = Math.max(excerptChars, end - start);
+    const before = Math.floor((size - (end - start)) / 2);
+    const windowStart = Math.max(0, start - before);
+    const windowEnd = Math.min(haystack.length, windowStart + size);
+    return haystack.slice(Math.max(0, windowEnd - size), windowEnd);
+  };
   const exactIndex = haystack.toLowerCase().indexOf(normalizedQuote.toLowerCase());
   if (exactIndex >= 0) {
     return {

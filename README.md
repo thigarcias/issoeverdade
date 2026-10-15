@@ -234,7 +234,7 @@ após validar duração e trilhas, com transcrição/OCR parciais. Sem conteúdo
 não há score/veredito.
 Links diretos são encaminhados por modalidade: PDF textual ao `unpdf`, JPEG/PNG/WebP
 à moderação e visão, áudio/vídeo ao processador audiovisual. A revisão de extração
-`article-content-v4` invalida cache anterior; as regras de perguntas e ações futuras introduzidas em `fact-check-5` permanecem em `fact-check-11`.
+`article-content-v4` invalida cache anterior; as regras de perguntas e ações futuras introduzidas em `fact-check-5` são refinadas em `fact-check-12`.
 O cronômetro da interface mede a duração da checagem iniciada, não o tempo desde a época Unix.
 
 Links comuns de notícias passam por extração HTML pública com limites de rede,
@@ -254,7 +254,7 @@ captcha, streams protegidos e conteúdo removido continuam limitações externas
 
 ## Metodologia e avaliação
 
-As novas checagens usam `fact-check-11`: investigam alegações implícitas em
+As novas checagens usam `fact-check-12`: investigam alegações implícitas em
 perguntas e justaposições, distinguindo comparação factual, motivação atribuída
 e juízo de valor. Recortes de manchetes também exigem pesquisa da publicação
 original, fidelidade e datas, sem autenticação por OCR/logotipo. O fluxo executa
@@ -273,6 +273,14 @@ Registros e smokes anteriores preservam sua versão histórica.
 A síntese é construída deterministicamente a partir das classificações e
 alegações validadas, com limites de cobertura; não executa nova chamada ao modelo.
 
+Perguntas sobre rumores identificáveis verificam o próprio rumor, sem inventar
+anúncio recente ou período atual. Desmentido direto e fundamentado, inclusive
+de agência de checagem, pode refutar o mesmo boato ainda que antigo, se sujeito,
+ação, objeto, alcance e condições coincidirem e não houver nova ocorrência
+especificada. Uma nova medida, declaração, data ou evento exige evidência
+correspondente; rótulo “fake news”, notícia sobre o tema e ausência de anúncio
+não bastam. Data de publicação não se confunde com período de referência do fato.
+
 Notas por afirmação com evidência adequada: `true=95`, `context=70`, `false=5`.
 `unproven` recebe `score=null`, não zero. Havendo qualquer afirmação sem
 comprovação ou omitida, a nota global também é `null` e o veredito `unproven`;
@@ -289,6 +297,13 @@ classe ≥0,8 e margem ≥0,2; ambiguidade mantém abstenção. A resposta é
 `verdict`, `verification`, `incomplete` e `evidenceIndices`. Na revisão agrupada,
 cada trecho fica `relation: "context"`: sua `verification` é documental, não
 prova semântica independente. Esses limiares não são probabilidades calibradas.
+Uma revisão documental completa e verificada com `supports` ou `refutes` resolve
+o status como `true` ou `false`, respectivamente, mesmo que a classificação
+inicial fosse `unproven`, `context` ou a oposta. Contexto sozinho não promove
+uma alegação a verdadeira/falsa; revisão incompleta ou inconclusiva e comparação
+inválida continuam exigindo abstenção. Os limiares permanecem inalterados.
+As janelas documentais preservam contexto antes e depois da citação, dentro do
+teto configurado, para não perder sujeito, data ou ressalva adjacentes.
 
 Comparações anuais usam `comparison` com `metric`, `region`, `unit`, `dataset`,
 `operator` e dois `groups` (`label`, `startYear`, `endYear`, `rows`). Cada linha

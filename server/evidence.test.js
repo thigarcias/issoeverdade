@@ -133,6 +133,29 @@ test("extrai entidades latinas preservando caixa e localiza citação no HTML", 
   assert.equal(decodeEntities("&Aacute;&aacute;&Otilde;&otilde;&copy;&unknown;&#231;"), "ÁáÕõ©&unknown;ç");
 });
 
+test("janela da citação preserva sujeito anterior e ressalva posterior para a revisão", () => {
+  const before = "Em 2022, Lula falou sobre liberdade religiosa. ";
+  const quote = "O Estado deve proteger todas as igrejas.";
+  const after = " A fala não defende o fechamento dos templos.";
+  const document = `${"Introdução. ".repeat(30)}${before}${quote}${after}${"Rodapé. ".repeat(30)}`;
+  const located = locateQuote(document, quote, { excerptChars: 200 });
+  assert.equal(located.found, true);
+  assert.ok(located.excerpt.includes(before.trim()));
+  assert.ok(located.excerpt.includes(quote));
+  assert.ok(located.excerpt.includes(after.trim()));
+  assert.equal(located.excerpt.length, 200);
+});
+
+test("janela próxima às bordas mantém a citação inteira dentro do teto", () => {
+  const quote = "A declaração completa registra o contexto e a ressalva.";
+  for (const document of [`${quote} ${"Após. ".repeat(80)}`, `${"Antes. ".repeat(80)}${quote}`]) {
+    const located = locateQuote(document, quote, { excerptChars: 100 });
+    assert.equal(located.found, true);
+    assert.ok(located.excerpt.includes(quote));
+    assert.equal(located.excerpt.length, 100);
+  }
+});
+
 test("listas null ou ausentes são listas vazias nos contratos do dossiê", async () => {
   assert.deepEqual(evidence.prioritizeSources(null, null), []);
   assert.deepEqual(evidence.prioritizeSources(undefined, undefined), []);
@@ -234,6 +257,62 @@ test("conjunto de dois operandos sustenta claim sem atribuir conclusão a cada t
   assert.equal(fixed.claims[0].status, "true");
   assert.equal(fixed.claims[0].evidenceSupport, "supports");
   assert.equal(fixed.score, 95);
+});
+
+for (const [verdict, expectedStatus, expectedScore] of [["supports", "true", 95], ["refutes", "false", 5]]) {
+  for (const status of ["unproven", "context", verdict === "supports" ? "false" : "true"]) {
+    test(`revisão conclusiva ${verdict} resolve classificação inicial ${status}`, () => {
+      const quote = "O vídeo foi editado e não contém a declaração atribuída ao presidente.";
+      const note = "O documento permite concluir a alegação, sem manter a avaliação preliminar.";
+      const claim = {
+        text: "O presidente fez a declaração atribuída no vídeo.", status,
+        note: "A avaliação preliminar não tinha prova suficiente.", sourceIds: [0],
+        evidence: [{ sourceId: 0, quote, relation: "context" }],
+      };
+      const applied = evidence.applyReview({
+        claims: [claim],
+        citations: [{ claimIndex: 0, evidenceIndex: 0, quote, excerpt: quote, locator: { found: true } }],
+        review: { claims: [{ claimIndex: 0, verdict, note }] },
+      });
+      const { fixed } = validateResult({ outcome: "checked", claims: applied.claims, sources: [{}] });
+      assert.equal(fixed.verdict, expectedStatus);
+      assert.equal(fixed.score, expectedScore);
+      assert.equal(fixed.claims[0].text, claim.text);
+      assert.equal(fixed.claims[0].note, note);
+      assert.equal(fixed.coverage.unproven, 0);
+    });
+  }
+}
+
+test("revisão conclusiva não promove comparação com cálculo inválido", () => {
+  const quote = "Os valores usam indicadores diferentes e não permitem comparação.";
+  const claim = {
+    text: "A supera B no total.", status: "unproven", sourceIds: [0],
+    comparison: { eligible: false, reason: "Indicadores incompatíveis." },
+    evidence: [{ sourceId: 0, quote, relation: "context" }],
+  };
+  const applied = evidence.applyReview({
+    claims: [claim],
+    citations: [{ claimIndex: 0, evidenceIndex: 0, quote, excerpt: quote, locator: { found: true } }],
+    review: { claims: [{ claimIndex: 0, verdict: "supports" }] },
+  });
+  const { fixed } = validateResult({ outcome: "checked", claims: applied.claims, sources: [{}] });
+  assert.equal(fixed.verdict, "unproven");
+  assert.equal(fixed.score, null);
+});
+
+test("contexto documental não resolve abstenção inicial", () => {
+  const quote = "O documento registra somente uma discussão sobre a proposta.";
+  const claim = { text: "A proposta foi aprovada.", status: "unproven", sourceIds: [0],
+    evidence: [{ sourceId: 0, quote, relation: "context" }] };
+  const applied = evidence.applyReview({
+    claims: [claim],
+    citations: [{ claimIndex: 0, evidenceIndex: 0, quote, excerpt: quote, locator: { found: true } }],
+    review: { claims: [{ claimIndex: 0, verdict: "context" }] },
+  });
+  const { fixed } = validateResult({ outcome: "checked", claims: applied.claims, sources: [{}] });
+  assert.equal(fixed.verdict, "unproven");
+  assert.equal(fixed.score, null);
 });
 
 for (const status of ["true", "false"]) {

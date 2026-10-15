@@ -347,9 +347,16 @@ export function applyReview({ claims = [], citations = [], review = null, config
           ? "verified" : citation?.locator?.found === true && review ? "unclear" : "unavailable",
       };
     });
+    const resolvedStatus = verdict === "supports" ? "true" : verdict === "refutes" ? "false" : null;
+    const comparisonValid = !claim.comparison || (claim.comparison.eligible === true && claim.comparison.relation === verdict);
+    if (evidenceReview.verification === "verified" && resolvedStatus && comparisonValid) {
+      if (claim.status !== resolvedStatus) {
+        corrections.push(`claim${claimIndex + 1}: revisão documental conclusiva → ${resolvedStatus}`);
+      }
+      return { ...claim, status: resolvedStatus, evidence, evidenceReview, note: evidenceReview.note };
+    }
     const expected = claim.status === "true" ? "supports" : claim.status === "false" ? "refutes" : null;
     const confirmed = evidenceReview.verification === "verified" && (!expected || verdict === expected);
-    const comparisonValid = !claim.comparison || (claim.comparison.eligible === true && claim.comparison.relation === verdict);
     if ((claim.status === "unproven" || confirmed) && comparisonValid) {
       return { ...claim, evidence, evidenceReview, ...(!confirmed ? { note: evidenceReview.note || reviewLimitation } : {}) };
     }

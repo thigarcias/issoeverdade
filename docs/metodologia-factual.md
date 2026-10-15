@@ -4,7 +4,7 @@
 
 ## Fluxo efetivo e versão
 
-As novas checagens usam `fact-check-10`. O fluxo configura/cacheia a entrada, aplica triagem de propósito e moderação, extrai mídia quando necessário, executa julgamento com busca web, revisa com dossiê, **obtém os documentos das fontes vinculadas para localizar os trechos citados**, calcula comparações anuais documentadas e revisa **o conjunto de evidências de cada claim** antes de validar pontuação/veredito. Para imagens/vídeos, a etapa final recebe material, claims, fontes elegíveis, URLs estruturadas, consultas e uma prévia documental com trechos e impossibilidades concretas. Classificações preliminares não encerram a pesquisa se houver citação não localizada ou documento indisponível; lacunas habilitam busca na revisão. Sem lacunas e com classificação sustentada, a ferramenta de busca fica desabilitada. Texto e links comuns usam o julgamento. Não são dois pesquisadores independentes.
+As novas checagens usam `fact-check-11`. O fluxo configura/cacheia a entrada, aplica triagem de propósito e moderação, extrai mídia quando necessário e executa uma avaliação factual com busca web (`judge`). Notícias podem receber pesquisa direcionada condicional (`article-research`), preservando os gatilhos de pesquisa já existentes; isso não é uma reavaliação obrigatória. Em seguida, o servidor **obtém os documentos das fontes vinculadas para localizar os trechos citados** (`evidence`), calcula comparações anuais documentadas, revisa **o conjunto de evidências de cada claim** com JEV por padrão (`evidence-review`) e valida pontuação/veredito deterministicamente. Não há segunda avaliação factual/de mídia `final` nem chamadas de geração e revisão editoriais. A avaliação factual e a visão usam GPT-6 Luna por padrão; transcrição, moderação e revisão JEV mantêm configurações próprias. Os três seletores ativos são avaliação factual, visão e transcrição. Campos da etapa `final` permanecem legíveis apenas em registros históricos.
 
 Ordem das etapas de segurança: (1) política de URL no endpoint; (2) triagem de propósito (pedido direto ao assistente não é afirmação verificável); (3) moderação de texto/imagem antes das chamadas caras; (4) cobertura de vídeo declarada; (5) moderação da transcrição e dos frames amostrados antes da visão; (6) análise factual; (7) dossiê de evidências; (8) validação e registro.
 
@@ -45,7 +45,7 @@ o artigo integral não foi lido. Uma notícia não termina como mídia inacessí
 só por falha de acesso: sem alegações identificáveis, `insufficient_input`;
 claims identificados sem evidência suficiente ficam `unproven`. A revisão de
 extração `article-content-v4` integra o cache; as regras de perguntas e ações futuras introduzidas em
-`fact-check-5` permanecem na metodologia atual `fact-check-10`. Resultados do namespace anterior
+`fact-check-5` permanecem na metodologia atual `fact-check-11`. Resultados do namespace anterior
 continuam históricos, não são apagados nem reaproveitados como cache atual.
 
 #### Evidência local de extração e pesquisa
@@ -88,11 +88,11 @@ Smoke real da pergunta “o lula vai fechar a minha igreja???”: `checked`, cla
 
 ## Fontes e limites de evidência
 
-Uma fonte só permanece quando sua URL HTTP(S) específica aparece em uma anotação `url_citation`, em `web_search_call.action.sources` ou em uma ação `open_page` concluída retornada pelo provedor, não é uma homepage genérica e está vinculada a uma afirmação. A requisição de busca solicita `include: ["web_search_call.action.sources"]`. A revisão final pode reutilizar a proveniência da primeira avaliação; URLs que aparecem apenas no JSON escrito pelo modelo não são aceitas. URLs inválidas, genéricas, sem proveniência ou sem vínculo são descartadas.
+Uma fonte só permanece quando sua URL HTTP(S) específica aparece em uma anotação `url_citation`, em `web_search_call.action.sources` ou em uma ação `open_page` concluída retornada pelo provedor, não é uma homepage genérica e está vinculada a uma afirmação. A requisição de busca solicita `include: ["web_search_call.action.sources"]`. A pesquisa direcionada condicional pode reutilizar a proveniência da avaliação factual; URLs que aparecem apenas no JSON escrito pelo modelo não são aceitas. URLs inválidas, genéricas, sem proveniência ou sem vínculo são descartadas.
 
-A evidência usa relação `supports`, `refutes` ou `context`, identificador de fonte e trecho. O servidor valida o vínculo estrutural, a relação e um trecho não vazio de pelo menos oito caracteres. Depois da revisão final, ele **obtém o documento da fonte** (até `IEV_EVIDENCE_MAX_DOCS` por checagem, com teto de bytes por documento e por job), extrai texto de HTML ou PDF e **localiza o trecho citado** por comparação literal, normalizada (sem acentos/caixa) ou aproximada (mesmos tokens com pontuação diferente). O resultado de cada citação é registrado como `exact`, `normalized`, `approximate`, `prefix`, `tokens`, `missing`, `empty_quote`, `document_unavailable` ou `not_fetched`.
+A evidência usa relação `supports`, `refutes` ou `context`, identificador de fonte e trecho. O servidor valida o vínculo estrutural, a relação e um trecho não vazio de pelo menos oito caracteres. Depois da avaliação factual e da eventual pesquisa direcionada, ele **obtém o documento da fonte** (até `IEV_EVIDENCE_MAX_DOCS` por checagem, com teto de bytes por documento e por job), extrai texto de HTML ou PDF e **localiza o trecho citado** por comparação literal, normalizada (sem acentos/caixa) ou aproximada (mesmos tokens com pontuação diferente). O resultado de cada citação é registrado como `exact`, `normalized`, `approximate`, `prefix`, `tokens`, `missing`, `empty_quote`, `document_unavailable` ou `not_fetched`.
 
-Em imagens/vídeos, a prévia obtém no máximo metade do teto de documentos (mínimo um), reservando capacidade para fontes encontradas na revisão. Prévia e dossiê final compartilham o mesmo cache por URL, teto de documentos e orçamento de bytes; o mesmo documento não é baixado duas vezes. Trechos de até 4.000 caracteres por documento e o estado de cada citação orientam a revisão, sem promover trechos não localizados a prova. Esgotar o teto mantém `document-limit`; isso não prova falsidade. HTML com `NewsArticle`/`Article` reutiliza a extração de `articleBody`, título e data publicados no JSON-LD; outros scripts continuam descartados. Isso recupera conteúdo fornecido pela página, não autentica a publicação nem contorna paywall.
+O coletor compartilha cache por URL, teto de documentos e orçamento de bytes na checagem; o mesmo documento não é baixado duas vezes. A revisão recebe os trechos localizados, sem promover trechos não localizados a prova. Esgotar o teto mantém `document-limit`; isso não prova falsidade. HTML com `NewsArticle`/`Article` reutiliza a extração de `articleBody`, título e data publicados no JSON-LD; outros scripts continuam descartados. Isso recupera conteúdo fornecido pela página, não autentica a publicação nem contorna paywall.
 
 URLs identificadas como reprodução de vídeo/áudio não passam por extração de HTML como prova de fala: sem transcrição disponível no caminho documental, registram `media-transcript-unavailable`. A pesquisa orienta localizar reportagem textual, documento ou transcrição verificável, sem simular leitura audiovisual. Citações continuam exigindo localização em conteúdo obtido; sem documento apto, o resultado registra a impossibilidade em `claim.note`/`evidenceReview.note` e mantém a abstenção, sem trocar provedor de revisão ou inventar fallback.
 
@@ -124,19 +124,15 @@ O servidor soma os operandos com aritmética decimal exata, não com um total pr
 
 ### Síntese legível e compartilhamento
 
-`fact-check-8` mantém a exigência de resumo e justificativa com fatos e limites em pt-BR, não comentários internos sobre extração de claims, revisão ou ajustes de nota. Pedido, negociação, promessa e recebimento de dinheiro são ações distintas; uma notícia sobre suspeita ou investigação não comprova, por si, o fato investigado. Fontes indiretas e compilações devem ter seu alcance explicado e não substituem automaticamente o documento original. Os trechos citados continuam literais no idioma da fonte; a justificativa explica seu significado em português, sem inventar uma tradução literal.
+As justificativas mantêm fatos e limites em pt-BR, não comentários internos sobre extração de claims, revisão ou ajustes de nota. Pedido, negociação, promessa e recebimento de dinheiro são ações distintas; uma notícia sobre suspeita ou investigação não comprova, por si, o fato investigado. Fontes indiretas e compilações devem ter seu alcance explicado e não substituem automaticamente o documento original. Os trechos citados continuam literais no idioma da fonte; a justificativa explica seu significado em português, sem inventar uma tradução literal.
 
-Em `fact-check-9`, toda checagem com alegações avaliadas solicita uma síntese editorial à IA depois da consolidação final, sem pesquisa adicional e sem alterar classificações, notas, fontes ou justificativas. O contexto contém apenas o resultado validado, não o resumo anterior. Se a geração ou a revisão falhar, o resumo é omitido: não há reconstrução de frases por contagens/parser. Os cards de alegações, justificativas e fontes permanecem disponíveis. Estados de abstenção mantêm mensagens operacionais e limitações de cobertura.
+Em `fact-check-11`, a síntese das checagens avaliadas é construída deterministicamente depois da validação: apresenta contagens por classificação e até três alegações com seus estados finais, sem reutilizar o resumo preliminar do modelo. Afirmações omitidas e limitações de leitura de artigos/posts continuam declaradas. Quando a classificação muda, justificativas incompatíveis não são reaproveitadas: usam os limites documentais consolidados ou a nota da revisão do próprio grupo. Não há geração editorial nem uma segunda chamada para revisar a síntese. Estados sem avaliação factual conservam suas mensagens operacionais.
 
-Em `fact-check-10`, as mesmas chamadas editoriais também consolidam as justificativas, sem alterar status, notas numéricas, textos, períodos ou fontes. O editor recebe os rascunhos anteriores à validação como candidatos não confiáveis, junto dos limites finais, comparações calculadas e apenas trechos localizados de grupos validamente revisados. Deve preservar detalhes fiéis (versão, alcance, condições, datas desconhecidas e original não localizado) e corrigir suporte que deixou de ser válido. A revisão avalia cada justificativa contra **todo o resultado**, impedindo que um claim declare outra fala comprovada enquanto ela permanece sem comprovação. Cada justificativa só é aplicada com aprovação individual única; resposta ausente, rejeitada, duplicada ou inválida deixa apenas a nota documental consolidada. Esse estado de falha não reutiliza confirmação preliminar. A aprovação de justificativas é independente da aprovação da síntese; não há novas chamadas de pesquisa ou um segundo fluxo editorial.
-
-A síntese editorial deve ser um parágrafo de texto simples de até 1.000 caracteres; HTML, Markdown e quebras de linha são rejeitados. Uma chamada adicional ao modelo de revisão, sem pesquisa, verifica fidelidade às alegações finais e à cobertura da mídia; contradições, fatos novos, revisão incompleta ou falha operacional omitem a síntese. Essa revisão reduz o risco, mas não garante precisão semântica. A cobertura da imagem é fornecida explicitamente ao julgamento, à revisão factual e à síntese: ausência do arquivo bruto nas etapas posteriores não significa que a etapa visual falhou. Autenticidade, autoria e data continuam exigindo provas externas. Limitações de leitura de artigos/posts permanecem presentes; contagens técnicas de localização de citações ficam no dossiê, não no resumo público.
-
-O endpoint tem regressões em `server/endpoint.test.js` para rejeição de HTML/Markdown, múltiplos parágrafos, contradição apontada pela revisão, revisão inválida e aceitação de síntese fiel, preservando a ressalva de artigo inacessível.
+**Histórico, não fluxo atual:** `fact-check-9` e `fact-check-10` usavam chamadas de geração e revisão editoriais depois da consolidação; `fact-check-10` também revisava justificativas. Esse contrato foi substituído em `fact-check-11`. Os smokes dessas versões ao fim deste documento descrevem somente aquelas execuções.
 
 O PNG e o texto compartilhado usam a alegação efetivamente checada como título, em vez de uma pergunta que possa insinuar um fato mais amplo. O card prioriza a justificativa em português, identifica citações como trechos originais e mantém a fonte atribuída; para uma alegação sem comprovação, o trecho aparece como contexto, não como prova. O texto compartilhado também inclui a síntese e o endereço de correções. Estados sem avaliação factual não recebem nota nem selo de verdade no compartilhamento. O PNG é uma síntese de espaço limitado; o resultado completo conserva as alegações e fontes.
 
-Regressões de contrato estão em `server/scoring.test.js`, `server/evidence.test.js`, `server/verify.test.js` e `server/share-card.test.js`: invalidação de resumo após mudança factual, contexto versus prova, pedido versus recebimento e omissão de síntese contraditória sobre uma imagem examinada. Essas entradas controladas não demonstram precisão factual em casos reais nem substituem revisão humana.
+Regressões de contrato estão em `server/scoring.test.js`, `server/evidence.test.js`, `server/verify.test.js`, `server/endpoint.test.js` e `server/share-card.test.js`. Entradas controladas não demonstram precisão factual em casos reais nem substituem revisão humana.
 
 
 
@@ -170,7 +166,7 @@ O resultado inclui `coverage: { total, assessed, unproven, omitted }`, distingui
 
 Suporte e classificação não são aliases: uma alegação ainda não comprovada pode ter `evidenceSupport: "context"` ou trechos de suporte, sem receber nota automaticamente. Trechos indisponíveis/inconclusivos não contam como evidência elegível. Suporte e refutação simultâneos são registrados como relação agregada insuficiente e impedem uma classificação pontuada enquanto o conflito não for resolvido.
 
-A revisão final de imagens/vídeos recebe identificadores estáveis e não pode substituir o texto ou o período das afirmações da primeira avaliação. Uma afirmação omitida ou reformulada permanece no resultado como não comprovada; a conclusão sobre outra pergunta não é reaproveitada. Ela pode acrescentar claims factuais presentes no material mas omitidos na prévia, com identificadores `claim-new-N` distintos, sem substituir os existentes; esses claims passam pela mesma localização documental, revisão e validação.
+Cada afirmação é validada contra suas próprias fontes, texto e período. Não existe segunda avaliação de imagens/vídeos para reformular ou acrescentar claims; uma conclusão sobre outra pergunta não substitui o objeto avaliado. Ausência de suporte documental mantém a abstenção.
 
 Só quando todas as afirmações têm evidência adequada e nenhuma foi omitida o score geral é a média aritmética arredondada das notas. Se houver qualquer claim sem comprovação ou omitido, o resultado se abstém: `score: null`, `verdict: "unproven"`. Afirmações, justificativas e fontes continuam disponíveis na interface e no detalhe; não há anel de nota para um resultado sem nota.
 
@@ -223,7 +219,7 @@ O card compartilhável inclui o **ID da checagem**, a indicação de que a anál
 
 ## Avaliação reproduzível
 
-O repositório inclui `scripts/evaluate-factual.mjs`, um harness que lê JSONL e calcula métricas por versão metodológica, configuração de modelo e modalidade. Nenhum corpus humano foi entregue nesta implementação; portanto, **não há resultados, taxa de precisão ou benchmark a publicar**. A recomendação inicial é reunir pelo menos 200 casos únicos, com cobertura por modalidade e categoria, antes de interpretar métricas como avaliação ampla.
+O repositório inclui `scripts/evaluate-factual.mjs`, um harness que lê JSONL e calcula métricas por versão metodológica, configuração de modelo e modalidade. Nenhum corpus humano foi entregue nesta implementação; portanto, **não há benchmark factual de corpus nem taxa de precisão a publicar**. Smokes e comparações operacionais de casos individuais não substituem esse benchmark. A recomendação inicial é reunir pelo menos 200 casos únicos, com cobertura por modalidade e categoria, antes de interpretar métricas como avaliação ampla.
 
 Executar sobre corpus já anotado:
 
@@ -242,6 +238,26 @@ O relatório inclui matriz de confusão, acurácia e macro-F1, falso positivo ac
 `independent: true` e a adjudicação são declarações no corpus: o script valida estrutura e consistência entre execuções, mas não autentica pessoas, independência real, qualidade das anotações, representatividade ou autenticidade das fontes. Atingir 200 casos só cumpre um limiar de volume, não torna o corpus um benchmark representativo. Os casos devem ser anotados por duas pessoas independentemente e adjudicados por uma pessoa competente; modelo de IA não serve como gabarito.
 
 Consulte também [Correções](politica-correcoes.md), [Privacidade](privacidade-dados-ia.md) e o [plano e registro de implementação](admin-overview-plano.md) com o [status por fase](admin-status-implementacao.md).
+
+## Evidência de integração — `fact-check-11`, 14/10/2026
+
+Benchmark local real do [post do Estadão](https://x.com/Estadao/status/2110508020958405042), em três processos com cache novo, na ordem abaixo:
+
+| Fluxo / modelo | Tempo de parede | Tokens reportados | Afirmações / fontes | Resultado |
+|---|---:|---:|---:|---|
+| Anterior (`fact-check-10`) / GPT-6 Luna | 69.097 ms | 59.227 | 4 / 2 | `checked` / `unproven` |
+| Simplificado (`fact-check-11`) / Muse Spark 1.3 | 50.641 ms | 200.452 | 3 / 2 | `checked` / `unproven` |
+| Simplificado (`fact-check-11`) / GPT-6 Luna | 34.253 ms | 28.612 | 3 / 1 | `partial_coverage` / `unproven` |
+
+No Luna, a redução observada de tempo foi de **50,43%**. Uma execução por condição não permite estimar desempenho típico nem precisão factual. O campo `totalMs` anterior registrou 54.521 ms porque excluía as chamadas editoriais; os valores novos foram 50.639 ms (Muse) e 34.251 ms (Luna). A comparação usa tempo de parede.
+
+Não houve chamada `final`, geração editorial nem revisão editorial nas duas rodadas novas. Muse retornou fontes YouTube sem transcrição; nenhuma citação ficou apta à revisão, portanto JEV não foi chamado. Luna localizou uma reportagem do Painel/Folha, mas a validação documental/JEV não confirmou a classificação proposta; as três afirmações terminaram sem comprovação. O baseline confirmou uma declaração pública, mas também não confirmou a alegação central. Isso comprova simplificação e limites preservados, **não melhoria da qualidade factual ou equivalência entre as conclusões**.
+
+As três rodadas usaram ambiente local sem Blob e sem worker configurado; nenhuma leu áudio ou frames. Não é comparação direta com o histórico da implantação de produção. A pesquisa e as fontes podem variar entre execuções. Resultados completos, fases, diagnósticos e modelos efetivos estão em `tmp-dl/benchmark-estadao-comparison.json` e `tmp-dl/{baseline-luna,simplified-muse,simplified-luna}.json`.
+
+Chromium exercitou o painel real em *Modelos & provedores*: três etapas — avaliação factual, visão e transcrição —, GPT-6 Luna selecionado em avaliação factual/visão e subtítulo sem a etapa de conclusão removida. Essa observação verifica a superfície de configuração, não o processamento de todas as modalidades.
+
+Verificação integrada informada nesta atualização: **237 testes aprovados**, nenhum erro ou teste ignorado (**78,7 s**); build concluído; lint sem erros, com **6 avisos React**. Esses checks verificam contratos e integração de engenharia, não precisão factual.
 
 ## Smoke histórico de integração e paridade — `fact-check-7`, 14/10/2026
 

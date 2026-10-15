@@ -7,7 +7,7 @@ const KEY = "iev-config/ai-v2.json";
 const CATALOG_KEY = "iev-config/catalog-v1.json";
 const TTL_MS = 60_000;
 const CATALOG_TTL_MS = 15 * 60_000;
-const STEPS = ["judge", "final", "vision", "transcribe"];
+const STEPS = ["judge", "vision", "transcribe"];
 const PROVIDERS = {
   opencode: {
     label: "OpenCode Go",
@@ -26,9 +26,8 @@ const PROVIDERS = {
 };
 
 const FACTORY = {
-  judge: { provider: "opencode", model: "muse-spark-1.3-contributor" },
-  final: { provider: "opencode", model: "muse-spark-1.3-contributor" },
-  vision: { provider: "opencode", model: "muse-spark-1.3-contributor" },
+  judge: { provider: "opencode", model: "gpt-6-luna" },
+  vision: { provider: "opencode", model: "gpt-6-luna" },
   transcribe: { provider: "openai", model: "whisper-1" },
 };
 // Registro explícito de modelos com adapter implementado e capacidades
@@ -142,7 +141,7 @@ export const REASON_MESSAGES = {
 function eligibleStepsFor(capabilities) {
   if (capabilities.includes("transcription")) return ["transcribe"];
   const steps = [];
-  if (capabilities.includes("text-output")) steps.push("judge", "final");
+  if (capabilities.includes("text-output")) steps.push("judge");
   if (capabilities.includes("image-input")) steps.push("vision");
   return steps;
 }
@@ -275,7 +274,7 @@ async function getCatalogState(force = false) {
   for (const [id, current] of Object.entries(providers)) {
     if (current.models === null) {
       const last = previous[id];
-      current.models = last?.models?.length ? last.models : fallbackInventory(id);
+      current.models = last?.models?.length ? last.models.map((model) => modelInfo(id, model.id)) : fallbackInventory(id);
       current.updatedAt = last?.updatedAt ?? null;
       current.stale = true;
     } else {

@@ -114,7 +114,7 @@ export async function fetchDocument(url, { config = evidenceConfig(), budget = n
   }
 }
 
-/** Compartilha limites e documentos entre a prévia e a checagem final. */
+/** Aplica limites e orçamento compartilhados à obtenção dos documentos. */
 export function createEvidenceFetcher(config = evidenceConfig(), fetchImpl = fetchDocument) {
   const fetched = new Map();
   const budget = byteBudget(config.maxTotalBytes);
@@ -128,26 +128,6 @@ export function createEvidenceFetcher(config = evidenceConfig(), fetchImpl = fet
   };
 }
 
-/** Material documental para corrigir lacunas na revisão, sem promover citações. */
-export function buildResearchEvidence(dossier, claims = []) {
-  const citations = dossier?.citations ?? [];
-  return {
-    summary: dossier?.summary ?? null,
-    documents: (dossier?.documents ?? []).map(({ text, ...document }) => ({
-      ...document, text: text ? text.slice(0, 4000) : null, excerpted: Boolean(text && text.length > 4000),
-    })),
-    citations,
-    gaps: claims.flatMap((claim, claimIndex) => {
-      const linked = citations.filter((item) => item.claimIndex === claimIndex);
-      if (linked.length && linked.every((item) => item.locator?.found === true)) return [];
-      return [{
-        claimId: `claim-${claimIndex + 1}`, text: claim.text,
-        reasons: linked.length ? [...new Set(linked.filter((item) => item.locator?.found !== true)
-          .map((item) => item.locator?.reason ?? item.locator?.kind ?? "not_fetched"))] : ["no_documentary_citation"],
-      }];
-    }),
-  };
-}
 
 /** Fontes que interessam ao dossiê: as usadas por claims confirmados/refutados primeiro. */
 export function prioritizeSources(sources = [], claims = []) {

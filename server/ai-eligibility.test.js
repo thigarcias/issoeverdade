@@ -29,10 +29,10 @@ async function load() {
   return mod;
 }
 
-test("registro explícito: gpt-4o elegível para judge/final/vision; whisper-1 só transcribe; desconhecido sem etapas", async () => {
+test("registro explícito: gpt-4o elegível para judge/vision; whisper-1 só transcribe; desconhecido sem etapas", async () => {
   const { modelInfo } = await load();
   const gpt4o = modelInfo("openai", "gpt-4o");
-  assert.deepEqual([...gpt4o.eligibleSteps].sort(), ["final", "judge", "vision"]);
+  assert.deepEqual([...gpt4o.eligibleSteps].sort(), ["judge", "vision"]);
   assert.ok(gpt4o.capabilities.includes("web-search"));
   assert.equal(gpt4o.protocol, "responses");
   const whisper = modelInfo("openai", "whisper-1");
@@ -42,7 +42,7 @@ test("registro explícito: gpt-4o elegível para judge/final/vision; whisper-1 s
   const unknown = modelInfo("openai", "gpt-99-xyz-search-vision");
   assert.deepEqual(unknown.eligibleSteps, []);
   assert.equal(unknown.protocol, "unknown");
-  for (const step of ["judge", "final", "vision", "transcribe"]) {
+  for (const step of ["judge", "vision", "transcribe"]) {
     assert.equal(unknown.stepReasons[step].eligible, false);
     assert.equal(unknown.stepReasons[step].reason, "no_adapter");
   }
@@ -65,7 +65,7 @@ test("famílias sondadas: gpt-5/o3/o4-mini elegíveis; legados sem web_search fo
   const { modelInfo } = await load();
   for (const id of ["gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-6-luna", "o3", "o4-mini"]) {
     const info = modelInfo("openai", id);
-    assert.deepEqual([...info.eligibleSteps].sort(), ["final", "judge", "vision"]);
+    assert.deepEqual([...info.eligibleSteps].sort(), ["judge", "vision"]);
     assert.ok(info.capabilities.includes("web-search"));
   }
   for (const id of ["gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "o1", "gpt-4o-search-preview"]) {
@@ -73,6 +73,33 @@ test("famílias sondadas: gpt-5/o3/o4-mini elegíveis; legados sem web_search fo
     assert.deepEqual(info.eligibleSteps, []);
     assert.equal(info.protocol, "unknown");
   }
+});
+
+test("contrato público expõe três etapas, padrões Luna e ignora chave final persistida", async () => {
+  setKeys();
+  const { aiConfigCatalog, modelInfo, resolvePairs } = await load();
+  const catalog = await aiConfigCatalog();
+  assert.deepEqual(catalog.steps, ["judge", "vision", "transcribe"]);
+  assert.deepEqual(Object.keys(catalog.factory), catalog.steps);
+  for (const step of ["judge", "vision"]) {
+    assert.deepEqual(catalog.factory[step], { provider: "opencode", model: "gpt-6-luna" });
+  }
+  assert.deepEqual(catalog.factory.transcribe, { provider: "openai", model: "whisper-1" });
+  assert.equal(Object.hasOwn(modelInfo("opencode", "gpt-6-luna").stepReasons, "final"), false);
+  const pairs = {
+    judge: { provider: "opencode", model: "gpt-6-luna" },
+    vision: { provider: "opencode", model: "gpt-6-luna" },
+    transcribe: { provider: "openai", model: "gpt-transcribe" },
+    final: { provider: "obsolete", model: "unused" },
+  };
+  const result = resolvePairs(pairs, catalogWith({
+    opencode: [modelInfo("opencode", "gpt-6-luna")],
+    openai: [modelInfo("openai", "gpt-transcribe")],
+  }), { strict: true });
+  assert.equal(result.errors, undefined);
+  assert.deepEqual(Object.keys(result.config), catalog.steps);
+  assert.equal(Object.hasOwn(result.config, "final"), false);
+  assert.deepEqual(result.config.transcribe, pairs.transcribe);
 });
 
 test("precedência: credencial ausente supera inventário; inventário desatualizado distingue-se de ausente", async () => {
@@ -106,13 +133,18 @@ test("precedência: credencial ausente supera inventário; inventário desatuali
   assert.equal(missingKey.errors.judge, mod.REASON_MESSAGES.missing_credential);
 });
 
-test("backend recusa 400 com fields por motivo; par válido passa", async () => {
+test("backend publica contrato de três etapas e recusa pares inválidos com fields por motivo", async () => {
   setKeys({ opencode: OPENCODE, openai: OPENAI });
   process.env.ADMIN_SECRET = "segredo-de-teste";
   const ai = await load();
   const { handleAdminRequest } = await import("./admin-endpoint.js?eligibility");
   const auth = { authorization: "Bearer segredo-de-teste" };
   const catalog = await ai.aiConfigCatalog();
+  const published = await handleAdminRequest({ method: "GET", headers: auth, query: { config: "1" } });
+  assert.equal(published.status, 200);
+  assert.deepEqual(published.body.catalog.steps, ["judge", "vision", "transcribe"]);
+  assert.deepEqual(Object.keys(published.body.config), published.body.catalog.steps);
+  assert.equal(Object.hasOwn(published.body.config, "final"), false);
   const validPair = {};
   for (const step of catalog.steps) validPair[step] = { ...catalog.factory[step] };
   const invalid = {

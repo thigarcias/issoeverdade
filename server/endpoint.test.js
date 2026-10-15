@@ -211,7 +211,7 @@ test("notícias inacessíveis são pesquisadas e não descartam claims por needs
   }
 });
 
-test("síntese editorial inválida não elimina limites nem recupera conclusões descartadas", async (t) => {
+test("resumo consolidado preserva limites sem recuperar conclusões descartadas", async () => {
   const names = ["OPENCODE_API", "OPENAI_API_KEY", "MODERATION_MODE", "IEV_EVIDENCE_FETCH", "IEV_ALLOW_PRIVATE_HOSTS", "IEV_HTTP_PORTS"];
   const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   const originalFetch = globalThis.fetch;
@@ -226,48 +226,25 @@ test("síntese editorial inválida não elimina limites nem recupera conclusões
     if (String(url).endsWith("/responses")) {
       const next = responses.shift();
       assert.ok(next, "chamada de modelo inesperada");
-      const body = JSON.parse(options.body);
-      if (/Você é um editor factual/.test(body.instructions)) {
-        const context = JSON.parse(body.input);
-        assert.equal(Object.hasOwn(context, "summary_before"), false);
-        assert.equal(context.claims[0].status, "unproven");
-        assert.ok(context.limitations.some((text) => text.includes("não pôde ser lido")));
-      }
       return new Response(JSON.stringify({ output: [
-        ...(/Você é um editor factual|Revise a fidelidade/.test(body.instructions) ? [] : [{ type: "web_search_call", status: "completed", action: { type: "search", query: "escolas municipais", sources: [] } }]),
+        { type: "web_search_call", status: "completed", action: { type: "search", query: "escolas municipais", sources: [] } },
         { type: "message", content: [{ type: "output_text", text: JSON.stringify(next) }] },
       ] }));
     }
     return originalFetch(url, options);
   };
   try {
-    const cases = [
-      { name: "HTML", candidate: "<b>Confirmado: sete escolas.</b>" },
-      { name: "Markdown", candidate: "**Confirmado: sete escolas.**" },
-      { name: "múltiplos parágrafos", candidate: "Sete escolas.\n\nConfirmado." },
-      { name: "contradição factual", candidate: "A prefeitura inaugurou sete escolas.", review: { faithful: false, unsupported: [], contradictions: ["A alegação não foi comprovada."] } },
-      { name: "revisão inválida", candidate: "Não há comprovação suficiente.", review: { faithful: true } },
-      { name: "síntese fiel", candidate: "Não há comprovação suficiente da inauguração das sete escolas.", review: { faithful: true, unsupported: [], contradictions: [] }, accepted: true },
+    responses = [
+      { outcome: "checked", summary: "A inauguração das sete escolas foi confirmada.", claims: [{ text: "A prefeitura inaugurou sete escolas.", status: "true", score: 95, note: "A inauguração foi confirmada.", evidence: [] }], sources: [] },
     ];
-    for (const scenario of cases) {
-      await t.test(scenario.name, async () => {
-        responses = [
-          { outcome: "checked", summary: "A inauguração das sete escolas foi confirmada.", claims: [{ text: "A prefeitura inaugurou sete escolas.", status: "true", score: 95, note: "Não foi encontrada prova suficiente.", evidence: [] }], sources: [] },
-          { summary: scenario.candidate, claimNotes: [{ claimIndex: 0, note: "Não há prova suficiente da inauguração das sete escolas." }] },
-          ...(scenario.review ? [{ ...scenario.review, noteReviews: [{ claimIndex: 0, faithful: true }] }] : [{ faithful: false, unsupported: ["Formato inválido da síntese."], contradictions: [], noteReviews: [{ claimIndex: 0, faithful: true }] }]),
-        ];
-        const out = await handleVerifyRequest(post({ kind: "link", text: `http://127.0.0.1:${port}/noticia-escolas/${encodeURIComponent(scenario.name)}` }, { guard: guardWith() }));
-        assert.equal(out.status, 200);
-        assert.equal(out.body.result.claims[0].status, "unproven");
-        assert.match(out.body.result.summary, /O artigo não pôde ser lido diretamente/);
-        if (scenario.accepted) assert.ok(out.body.result.summary.endsWith(scenario.candidate));
-        else {
-          assert.equal(out.body.result.summary, "O artigo não pôde ser lido diretamente; checagem baseada nas alegações identificadas pela pesquisa do URL/publicação.");
-          assert.doesNotMatch(out.body.result.summary, /Confirmado|foi confirmada|<b>|\*\*/);
-        }
-        assert.equal(responses.length, 0);
-      });
-    }
+    const out = await handleVerifyRequest(post({ kind: "link", text: `http://127.0.0.1:${port}/noticia-escolas/sem-comprovacao` }, { guard: guardWith() }));
+    assert.equal(out.status, 200);
+    assert.equal(out.body.result.claims[0].status, "unproven");
+    assert.match(out.body.result.summary, /O artigo não pôde ser lido diretamente/);
+    assert.match(out.body.result.summary, /Sem comprovação.*sete escolas/);
+    assert.doesNotMatch(out.body.result.summary, /foi confirmada/);
+    assert.doesNotMatch(out.body.result.claims[0].note, /foi confirmada/);
+    assert.equal(responses.length, 0);
   } finally {
     globalThis.fetch = originalFetch;
     await new Promise((resolve) => server.close(resolve));

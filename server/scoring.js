@@ -34,9 +34,8 @@ const BASE_RULES = `Você é um verificador cético e imparcial de afirmações 
 
 export const SYSTEM_PROMPT_JUDGE = `Primeira avaliação. Determine se o material disponível contém afirmações e evidência suficientes. ${QUESTION_RULES} ${QUESTION_SCOPE_RULES} Se faltar o conteúdo original e não houver hipótese factual identificável, use outcome "insufficient_input" ou "inaccessible_media", verdict null, score null, claims []. Se houver só opinião/previsão, use "no_verifiable_claims", verdict null, score null, claims []. Caso contrário use outcome "checked", extraia todos os claims factuais atômicos (sem omitir silenciosamente alegações), relacione a evidência a cada claim e aplique a rubrica. Claims sem comprovação ficam unproven, score null; omissões exigem partial_coverage e omittedClaimsCount. ${TEMPORAL_RULES} ${BASE_RULES}\n${SCORE_RUBRIC}`;
 
-export const SYSTEM_PROMPT_FINAL = `Revisão final do material e do dossiê da primeira avaliação. ${QUESTION_RULES} ${QUESTION_SCOPE_RULES} O dossiê é uma prévia, nunca autoridade: confira cada vínculo e preserve os claims e fontes elegíveis, sem omitir fatos já identificados. Não repita buscas resolvidas; pesquise somente lacunas e conflitos quando a ferramenta estiver disponível. Quando não houver busca, use apenas as fontes do dossiê. Metadados não substituem artigo/vídeo integral; transcrição não substitui texto na tela. Se faltar material e não houver hipótese factual identificável, use outcome "insufficient_input" ou "inaccessible_media", verdict null, score null. Se não houver afirmação factual verificável, use "no_verifiable_claims", verdict null, score null. Caso contrário outcome "checked"; mantenha claims sem comprovação como unproven, score null, e omissões como partial_coverage com omittedClaimsCount. Qualquer claim unproven ou omitido impede pontuação global e exige verdict unproven. Preserve limitações e claims não verificáveis sem pontuá-los como fatos. Responda apenas JSON no schema informado. ${TEMPORAL_RULES} ${BASE_RULES}\n${SCORE_RUBRIC}`;
 
-export const PROMPT_VERSION = "fact-check-10";
+export const PROMPT_VERSION = "fact-check-11";
 
 // --- Validação server-side: recalcula e corrige divergências ---
 
@@ -258,4 +257,3 @@ export function validateResult(raw) {
   };
 }
 
-export const EDITORIAL_SUMMARY_MAX = 1000;

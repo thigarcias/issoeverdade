@@ -1,5 +1,7 @@
 # Plano: síntese por IA após a validação final
 
+**Plano histórico, substituído em `fact-check-11`.** As novas checagens não executam geração nem revisão editorial por IA; a síntese é construída deterministicamente a partir das alegações e classificações validadas. O conteúdo abaixo registra a proposta anterior, não o contrato ativo. Consulte [Metodologia factual](metodologia-factual.md).
+
 ## Problema
 
 O modelo já devolve `summary`, mas o servidor pode substituí-lo quando as classificações mudam ou quando o campo está ausente. A substituição atual, `rebuildResultSummary()` em `server/scoring.js`, concatena as três primeiras alegações e suas justificativas com espaços. Isso duplica os cards e produz um parágrafo longo, em vez de uma síntese.

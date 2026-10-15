@@ -19,7 +19,7 @@ Crie um `.env` na raiz (já ignorado pelo git). O arquivo
 [.env.example](.env.example) lista todas as variáveis com os valores padrão.
 
 ```bash
-OPENAI_API_KEY=...            # julgamento/final/visão, transcrição e moderação
+OPENAI_API_KEY=...            # avaliação factual/visão, transcrição e moderação
 OPENCODE_API=...              # provedor alternativo (OpenCode Go)
 ADMIN_SECRET=...              # habilita /admin
 BLOB_READ_WRITE_TOKEN=...     # opcional: cache/logs/correções/config privados na Vercel Blob
@@ -87,7 +87,7 @@ Deep-link do detalhe: `/admin?detail=<id>` (restaurado no carregamento e no
 ## Chaves e modelos
 
 As chaves ficam somente no servidor. Modelos são escolhidos **por etapa**
-(julgamento, conclusão, visão/OCR, transcrição) em *Modelos & provedores*, a
+(avaliação factual, visão/OCR, transcrição) em *Modelos & provedores*, a
 partir do inventário descoberto nos provedores configurados:
 - Elegibilidade vem de um registro explícito de protocolos/capacidades por
   provedor (`server/ai-config.js`), compartilhado pelo catálogo e pela
@@ -102,9 +102,15 @@ partir do inventário descoberto nos provedores configurados:
   registrada como erro operacional e o par escolhido é o que executa.
 - A configuração é versionada (revisão) e a revisão integra o namespace do
   cache, então uma nova revisão não reaproveita resultado antigo.
+- Os padrões de avaliação factual e visão são OpenCode Go / GPT-6 Luna
+  (`gpt-6-luna`); o padrão de transcrição permanece OpenAI / `whisper-1`.
+  Preferências persistidas válidas prevalecem sobre os padrões.
+- Não existe seletor de segunda avaliação `final`. Uma chave extra em
+  configurações antigas é ignorada; o painel conserva a leitura dessa etapa
+  somente no detalhe de execuções históricas.
 
-Variáveis opcionais de compatibilidade: `IEV_<ETAPA>` (JSON por etapa) e
-`OPENAI_TRANSCRIBE_MODEL`.
+Variáveis opcionais: `IEV_JUDGE`, `IEV_VISION` e `IEV_TRANSCRIBE` (JSON
+`{"provider":"...","model":"..."}` por etapa), além de `OPENAI_TRANSCRIBE_MODEL`.
 
 ## Dados e privacidade
 
@@ -179,7 +185,7 @@ após validar duração e trilhas, com transcrição/OCR parciais. Sem conteúdo
 não há score/veredito.
 Links diretos são encaminhados por modalidade: PDF textual ao `unpdf`, JPEG/PNG/WebP
 à moderação e visão, áudio/vídeo ao processador audiovisual. A revisão de extração
-`article-content-v4` invalida cache anterior; as regras de perguntas e ações futuras introduzidas em `fact-check-5` permanecem em `fact-check-10`.
+`article-content-v4` invalida cache anterior; as regras de perguntas e ações futuras introduzidas em `fact-check-5` permanecem em `fact-check-11`.
 O cronômetro da interface mede a duração da checagem iniciada, não o tempo desde a época Unix.
 
 Links comuns de notícias passam por extração HTML pública com limites de rede,
@@ -199,20 +205,24 @@ captcha, streams protegidos e conteúdo removido continuam limitações externas
 
 ## Metodologia e avaliação
 
-As novas checagens usam `fact-check-10`: investigam alegações implícitas em
+As novas checagens usam `fact-check-11`: investigam alegações implícitas em
 perguntas e justaposições, distinguindo comparação factual, motivação atribuída
 e juízo de valor. Recortes de manchetes também exigem pesquisa da publicação
-original, fidelidade e datas, sem autenticação por OCR/logotipo. Para imagens/
-vídeos, a revisão recebe uma prévia dos documentos e das citações localizadas:
-falhas documentais reabrem a pesquisa, mesmo se o modelo inicial marcou `true`.
+original, fidelidade e datas, sem autenticação por OCR/logotipo. O fluxo executa
+uma avaliação factual com busca (`judge`), pesquisa direcionada condicional para
+notícias (`article-research`), documentos (`evidence`) e revisão JEV do conjunto
+(`evidence-review`), seguida de validação determinística. Não há segunda
+avaliação factual/de mídia obrigatória nem geração/revisão editorial por IA.
 HTML de reprodução de vídeo sem transcrição fica indisponível como prova de
 fala; a pesquisa prioriza reportagens textuais, documentos e transcrições.
-O coletor reutiliza corpos estruturados de artigos e compartilha documentos/
-tetos entre prévia e resultado final. A revisão avalia **o conjunto de evidências
+O coletor reutiliza corpos estruturados de artigos e cache por URL, respeitando
+os tetos de documentos e bytes. A revisão avalia **o conjunto de evidências
 de cada claim**; comparações qualitativas não exigem cálculo anual. Sem suporte
 adequado, o claim fica `unproven`; fontes somente escritas pelo modelo continuam
 descartadas. `/admin` exibe proveniência, dossiê, moderação e subetapas de mídia.
 Registros e smokes anteriores preservam sua versão histórica.
+A síntese é construída deterministicamente a partir das classificações e
+alegações validadas, com limites de cobertura; não executa nova chamada ao modelo.
 
 Notas por afirmação com evidência adequada: `true=95`, `context=70`, `false=5`.
 `unproven` recebe `score=null`, não zero. Havendo qualquer afirmação sem
@@ -246,8 +256,8 @@ desigualdade quando um subtotal de área não negativa já supera o total comple
 do outro lado, nunca igualdade ou previsão. A conclusão ainda exige revisão
 documental compatível do conjunto. Detalhes em [Metodologia](docs/metodologia-factual.md).
 
-Na revisão final de mídia, `claimId` mantém a identidade de cada afirmação:
-reformulações e omissões não podem substituir o objeto da checagem. O suporte
+Na validação, o objeto de cada afirmação não é substituído por outra pergunta.
+Texto, período e limites continuam vinculados às evidências daquela afirmação. O suporte
 dos trechos é separado da classificação; contexto verificável não promove
 automaticamente uma alegação sem comprovação. A versão da metodologia e a
 configuração da revisão de evidências também separam as entradas do cache.

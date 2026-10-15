@@ -313,8 +313,6 @@ test("páginas de vídeo sem transcrição preservam impossibilidade e não part
   assert.equal(dossier.documents[0].reason, "media-transcript-unavailable");
   assert.equal(dossier.summary.located, 0);
   assert.equal(evidence.buildReviewInput({ claims, citations: dossier.citations }), null);
-  const research = evidence.buildResearchEvidence(dossier, claims);
-  assert.deepEqual(research.gaps[0].reasons, ["media-transcript-unavailable"]);
   const applied = evidence.applyReview({ claims, citations: dossier.citations });
   assert.equal(applied.claims[0].status, "unproven");
   assert.match(applied.claims[0].note, /não forneceram transcrição/);
@@ -322,7 +320,7 @@ test("páginas de vídeo sem transcrição preservam impossibilidade e não part
   assert.equal(validateResult({ outcome: "checked", claims: applied.claims, sources: [{ url }] }).fixed.score, null);
 });
 
-test("prévia e dossiê final compartilham documentos, teto e orçamento de bytes", async () => {
+test("obtenção de documentos compartilha teto e orçamento de bytes", async () => {
   const calls = [];
   const config = { ...evidence.evidenceConfig(), maxDocuments: 2, maxTotalBytes: 1000 };
   const fetchDocument = evidence.createEvidenceFetcher(config, async (url, { budget }) => {

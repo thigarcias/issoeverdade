@@ -390,15 +390,15 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
                 <dl className="admin-dl">
                   <dt>Resultado operacional</dt><dd>{OUTCOME_LABEL[detail.outcome] ?? detail.operationalStatus ?? (detail.error ? "Erro registrado" : "Não registrado")}</dd>
                   <dt>Modelo principal usado</dt><dd>{detail.model ?? "Nenhum modelo concluiu a execução"}{detail.provider ? ` · ${detail.provider}` : ""}</dd>
-                  {detail.aiConfig && <><dt>Modelos solicitados</dt><dd>{Object.entries(detail.aiConfig).map(([step, value]) => `${STEP_LABEL[step] ?? step}: ${typeof value === "object" ? `${value.provider ?? ""}/${value.model ?? ""}` : value}`).join(" · ")}</dd></>}
-                  {detail.modelsUsed && Object.keys(detail.modelsUsed).length > 0 && <><dt>Modelos efetivamente usados</dt><dd>{Object.entries(detail.modelsUsed).map(([step, value]) => `${STEP_LABEL[step] ?? step}: ${value.provider}/${value.model}${value.fallbackFor ? ` (fallback de ${value.fallbackFor})` : ""}`).join(" · ")}</dd></>}
+                  {detail.aiConfig && <><dt>Modelos solicitados</dt><dd>{Object.entries(detail.aiConfig).map(([step, value]) => `${LOG_STEP_LABEL[step] ?? step}: ${typeof value === "object" ? `${value.provider ?? ""}/${value.model ?? ""}` : value}`).join(" · ")}</dd></>}
+                  {detail.modelsUsed && Object.keys(detail.modelsUsed).length > 0 && <><dt>Modelos efetivamente usados</dt><dd>{Object.entries(detail.modelsUsed).map(([step, value]) => `${LOG_STEP_LABEL[step] ?? step}: ${value.provider}/${value.model}${value.fallbackFor ? ` (fallback de ${value.fallbackFor})` : ""}`).join(" · ")}</dd></>}
                   <dt>Cache</dt><dd>{detail.cached ? "Resultado servido do cache" : detail.cachedFrom ? `Resultado reutilizado de ${detail.cachedFrom}` : "Não registrado como cache"}</dd>
                   <dt>Consultas de busca registradas</dt>
                   <dd className="admin-mono">{detail.researchQueries?.length > 0 ? detail.researchQueries.join(" · ") : "Nenhuma consulta preservada nesta execução"}</dd>
                   <dt>Proveniência da pesquisa por etapa</dt>
                   <dd>{detail.researchDiagnostics?.length > 0 ? detail.researchDiagnostics.map((item) => (
                     <p key={item.step}>
-                      {STEP_LABEL[item.step] ?? item.step}: {({ available: "URLs estruturadas disponíveis", missing_provenance: "Busca executada sem URLs rastreáveis retornadas", no_search_calls: "Nenhuma chamada de busca registrada", not_requested: "Revisão do dossiê sem nova busca" })[item.status] ?? item.status}
+                      {LOG_STEP_LABEL[item.step] ?? item.step}: {({ available: "URLs estruturadas disponíveis", missing_provenance: "Busca executada sem URLs rastreáveis retornadas", no_search_calls: "Nenhuma chamada de busca registrada", not_requested: "Dossiê sem nova busca" })[item.status] ?? item.status}
                       {" "}· {item.acceptedUrlCount ?? 0} URLs · {item.annotationCount ?? 0} citações · {item.retrievedCount ?? 0} resultados de busca
                     </p>
                   )) : "Diagnóstico não preservado nesta execução"}</dd>
@@ -456,33 +456,32 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
                 <dl className="admin-dl">
                   <dt>Versão metodológica</dt>
                   <dd>{detail.methodologyVersion ?? "não registrada"}</dd>
-                  <dt>Hash do prompt · judge</dt>
+                  <dt>Hash do prompt · avaliação factual</dt>
                   <dd className="admin-mono">{detail.promptHashes?.judge ?? "não registrado"}</dd>
-                  <dt>Hash do prompt · final</dt>
-                  <dd className="admin-mono">{detail.promptHashes?.final ?? "não registrado"}</dd>
+                  {detail.promptHashes?.final && <><dt>Hash do prompt · revisão final histórica</dt><dd className="admin-mono">{detail.promptHashes.final}</dd></>}
                 </dl>
-                <p className="admin-mut">Prévias truncadas no registro: entrada analisada até 2.000 caracteres; resposta bruta até 4.000 (judge) e 6.000 (final). O texto integral do prompt de sistema não é armazenado, apenas o hash.</p>
+                <p className="admin-mut">Prévias truncadas no registro: entrada analisada até 2.000 caracteres; resposta bruta da avaliação até 4.000. Registros históricos podem conter uma segunda revisão com resposta até 6.000 caracteres. O texto integral do prompt de sistema não é armazenado, apenas o hash.</p>
                 {detail.judgePromptPreview && (
                   <details className="admin-sec">
-                    <summary>Prompt passo 1 (judge) · prévia truncada</summary>
+                    <summary>Prompt da avaliação factual · prévia truncada</summary>
                     <pre className="admin-pre">{detail.judgePromptPreview}</pre>
                   </details>
                 )}
                 {detail.judgeRawPreview && (
                   <details className="admin-sec">
-                    <summary>Resposta bruta passo 1 · prévia truncada</summary>
+                    <summary>Resposta bruta da avaliação factual · prévia truncada</summary>
                     <pre className="admin-pre">{detail.judgeRawPreview}</pre>
                   </details>
                 )}
                 {detail.finalPromptPreview && !detail.error && (
                   <details className="admin-sec">
-                    <summary>Prompt passo 2 (final) · prévia truncada</summary>
+                    <summary>Prompt da revisão final histórica · prévia truncada</summary>
                     <pre className="admin-pre">{detail.finalPromptPreview}</pre>
                   </details>
                 )}
                 {detail.finalRawPreview && !detail.error && (
                   <details className="admin-sec">
-                    <summary>Resposta bruta passo 2 · prévia truncada</summary>
+                    <summary>Resposta bruta da revisão final histórica · prévia truncada</summary>
                     <pre className="admin-pre">{detail.finalRawPreview}</pre>
                   </details>
                 )}
@@ -510,11 +509,11 @@ const SORTS = [
 ];
 
 const STEP_LABEL = {
-  judge: "Julgamento (passo 1)",
-  final: "Veredito final (passo 2)",
+  judge: "Avaliação factual",
   vision: "Visão / OCR de vídeo",
   transcribe: "Transcrição de áudio",
 };
+const LOG_STEP_LABEL = { ...STEP_LABEL, final: "Revisão final histórica" };
 
 function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSave, onReload, onRefreshCatalog, error, loading, configErrors }) {
   const [inventoryQuery, setInventoryQuery] = useState("");
@@ -1496,7 +1495,7 @@ export default function Admin({ showToast }) {
           showToast={showToast}
         />}
         {section === "metrics" && <AdminMetrics data={metricsData} loading={metricsLoading} error={metricsError} onReload={() => loadMetrics()} />}
-        {section === "models" && <section aria-labelledby="admin-models-title"><div className="admin-section-heading"><p className="admin-eyebrow">Configuração e compatibilidade</p><h1 id="admin-models-title">Modelos & provedores</h1><p>Defina separadamente os modelos usados em julgamento, conclusão, visão e transcrição.</p></div>
+        {section === "models" && <section aria-labelledby="admin-models-title"><div className="admin-section-heading"><p className="admin-eyebrow">Configuração e compatibilidade</p><h1 id="admin-models-title">Modelos & provedores</h1><p>Defina separadamente os modelos usados na avaliação factual, visão e transcrição.</p></div>
           <AiConfigCard catalog={aiCatalog} draft={aiDraft} saved={aiConfig} saving={aiSaving} loading={aiLoading} persisted={aiPersisted} error={aiError} configErrors={aiConfigErrors} onChange={setAiDraft} onSave={saveAi} onReload={() => loadAi()} onRefreshCatalog={() => loadAi({ refresh: true, preserveDraft: true })} />
         </section>}
         {section === "methodology" && <AdminMethodology methodology={methodology} />}

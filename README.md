@@ -265,7 +265,7 @@ captcha, streams protegidos e conteúdo removido continuam limitações externas
 
 ## Metodologia e avaliação
 
-As novas checagens usam `fact-check-12`: investigam alegações implícitas em
+As novas checagens usam `fact-check-13`: investigam alegações implícitas em
 perguntas e justaposições, distinguindo comparação factual, motivação atribuída
 e juízo de valor. Recortes de manchetes também exigem pesquisa da publicação
 original, fidelidade e datas, sem autenticação por OCR/logotipo. O fluxo executa
@@ -315,6 +315,15 @@ uma alegação a verdadeira/falsa; revisão incompleta ou inconclusiva e compara
 inválida continuam exigindo abstenção. Os limiares permanecem inalterados.
 As janelas documentais preservam contexto antes e depois da citação, dentro do
 teto configurado, para não perder sujeito, data ou ressalva adjacentes.
+Na avaliação e na revisão, uma prisão sob suspeita não exige prova de culpa:
+o suporte precisa corresponder ao fato realmente alegado, sem ampliar seu escopo.
+Título e data extraídos do documento acompanham o contexto da revisão, sem
+confundir data de publicação com data do fato. Omissões editoriais explícitas
+podem ser localizadas por fragmentos ordenados e limitados; o texto intermediário
+real, inclusive ressalvas, permanece na janela enviada ao revisor.
+Auditoria dos registros e controles reais:
+[Sem comprovação — 15/10/2026](docs/auditoria-sem-comprovacao-2026-10-15.md).
+
 
 Comparações anuais usam `comparison` com `metric`, `region`, `unit`, `dataset`,
 `operator` e dois `groups` (`label`, `startYear`, `endYear`, `rows`). Cada linha

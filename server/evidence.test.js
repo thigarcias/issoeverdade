@@ -195,6 +195,100 @@ test("citações longas só são confirmadas por correspondência completa", () 
   assert.equal(noThreshold.found, false);
 });
 
+test("localiza omissão editorial explícita mantendo o intervalo original integral", () => {
+  const sourceSpan = "O grupo, segundo a Polícia Federal,\n  é suspeito de movimentar mais de R$ 7,6 bilhões.";
+  const document = `Introdução.\n\n${sourceSpan}\nEncerramento.`;
+  for (const omission of ["[...]", "[…]", "[ ... ]", "(...)"]) {
+    const quote = `o grupo ${omission} é suspeito de movimentar mais de R$ 7,6 bilhões.`;
+    const located = locateQuote(document, quote, { excerptChars: 20 });
+    assert.equal(located.found, true, omission);
+    assert.equal(located.kind, "approximate");
+    assert.equal(located.similarity, 1);
+    assert.equal(located.index, "Introdução. ".length);
+    assert.equal(located.excerpt, sourceSpan.replace(/\s+/g, " "));
+    assert.equal(document.replace(/\s+/g, " ").includes(located.excerpt), true);
+    assert.equal(located.excerpt.includes(omission), false);
+  }
+});
+
+test("omissão editorial preserva acentos em NFC e encontra fragmentos repetidos em ordem", () => {
+  const sourceSpan = "A operac\u0327a\u0303o policial, após a investigação, identificou o grupo criminoso, segundo o relatório, é suspeito de movimentar mais de R$ 7,6 bilhões.";
+  const document = `A operação policial nada confirmou. ${"Contexto. ".repeat(30)}${sourceSpan}`;
+  const located = locateQuote(document,
+    "a operacao policial [...] identificou o grupo criminoso [...] é suspeito de movimentar mais de R$ 7,6 bilhões.",
+    { excerptChars: 20 });
+  assert.equal(located.found, true);
+  assert.equal(located.excerpt, sourceSpan.normalize("NFC"));
+});
+
+test("omissão editorial recusa invenção, inversão, fragmentos triviais e omissão não marcada", () => {
+  const document = "O grupo, segundo a Polícia Federal, é suspeito de movimentar mais de R$ 7,6 bilhões.";
+  const quotes = [
+    "o grupo [...] é suspeito de movimentar mais de R$ 9,9 bilhões.",
+    "o grupo [...] é inocente de movimentar mais de R$ 7,6 bilhões.",
+    "é suspeito de movimentar mais de R$ 7,6 bilhões. [...] o grupo",
+    "o [...] é suspeito de movimentar mais de R$ 7,6 bilhões.",
+    "de uma [...] é suspeito de movimentar mais de R$ 7,6 bilhões.",
+    "o grupo [...] bilhões",
+    "[...] é suspeito de movimentar mais de R$ 7,6 bilhões.",
+    "o grupo é suspeito de movimentar mais de R$ 7,6 bilhões.",
+    "o grupo ... é suspeito de movimentar mais de R$ 7,6 bilhões.",
+  ];
+  for (const quote of quotes) assert.equal(locateQuote(document, quote).found, false, quote);
+  assert.equal(locateQuote(`Suposto grupo, segundo a Polícia Federal, é suspeito de movimentar mais de R$ 7,6 bilhões.`,
+    "o grupo [...] é suspeito de movimentar mais de R$ 7,6 bilhões.").found, false);
+  for (const trivial of ["de uma", "para isso"]) {
+    assert.equal(locateQuote(`${trivial}, segundo a apuração, é suspeito de movimentar mais de R$ 7,6 bilhões.`,
+      `${trivial} [...] é suspeito de movimentar mais de R$ 7,6 bilhões.`).found, false);
+  }
+  const longAnchor = "A investigação policial documentou os valores relacionados à operação financeira";
+  assert.equal(locateQuote(`${longAnchor}, segundo o relatório, sem conclusão final.`,
+    `${longAnchor} [...] houve condenação definitiva.`).found, false, "não cai na confirmação por prefixo");
+});
+
+test("omissão editorial tem limites de lacuna, intervalo e fragmentos", () => {
+  const end = "é suspeito de movimentar mais de R$ 7,6 bilhões.";
+  const quote = `o grupo [...] ${end}`;
+  assert.equal(locateQuote(`O grupo ${"x".repeat(238)} ${end}`, quote).found, true);
+  assert.equal(locateQuote(`O grupo ${"x".repeat(239)} ${end}`, quote).found, false);
+  assert.equal(locateQuote(`O grupo ${end}`, quote).found, false, "não inventa palavras omitidas");
+  assert.equal(locateQuote(`O grupo ${"contexto ".repeat(100)} ${end}`, quote).found, false);
+  const longFragment = `a investigação ${"detalhada ".repeat(110)}identificou o grupo`;
+  assert.equal(locateQuote(`${longFragment}, segundo o relatório, ${end}`, `${longFragment} [...] ${end}`).found, false);
+  const parts = ["o grupo", "a polícia federal", "a operação policial", "o relatório final", end];
+  assert.equal(locateQuote(parts.join(", conforme o processo, "), parts.join(" [...] ")).found, false);
+});
+
+test("localização editorial não junta fragmentos de fontes distintas", async () => {
+  const sources = [{ url: "https://a.example/grupo" }, { url: "https://b.example/valor" }];
+  const texts = ["O grupo foi identificado na operação e permanece sob investigação.",
+    "O relatório registra que é suspeito de movimentar mais de R$ 7,6 bilhões."];
+  const quote = "o grupo [...] é suspeito de movimentar mais de R$ 7,6 bilhões.";
+  const dossier = await evidence.collectEvidence({
+    sources,
+    claims: [{ status: "unproven", evidence: sources.map((_, sourceId) => ({ sourceId, relation: "supports", quote })) }],
+    fetchImpl: async (url) => ({ ok: true, url, kind: "html", text: texts[sources.findIndex((source) => source.url === url)] }),
+  });
+  assert.equal(dossier.citations.length, 2);
+  assert.ok(dossier.citations.every((citation) => citation.locator.found === false));
+});
+
+test("dossiê conserva intervalo editorial maior que a janela e não apaga ressalva omitida", async () => {
+  const sourceSpan = "O grupo, cuja culpa não foi estabelecida e que não foi condenado segundo o relatório,\n  é suspeito de movimentar mais de R$ 7,6 bilhões.";
+  const quote = "o grupo [...] é suspeito de movimentar mais de R$ 7,6 bilhões.";
+  const dossier = await evidence.collectEvidence({
+    sources: [{ url: "https://a.example/apuracao" }],
+    claims: [{ status: "unproven", evidence: [{ sourceId: 0, relation: "context", quote }] }],
+    config: evidence.evidenceConfig({ IEV_EVIDENCE_EXCERPT_CHARS: "20" }),
+    fetchImpl: async (url) => ({ ok: true, url, kind: "html", text: sourceSpan }),
+  });
+  assert.equal(dossier.citations[0].locator.found, true);
+  assert.equal(dossier.citations[0].excerpt, sourceSpan.replace(/\s+/g, " "));
+  assert.ok(dossier.citations[0].excerpt.length > 20);
+  assert.match(dossier.citations[0].excerpt, /culpa não foi estabelecida/);
+  assert.match(dossier.citations[0].excerpt, /R\$ 7,6 bilhões\.$/);
+});
+
 test("prioriza fontes de claims decididos e coleta trechos localizados", async () => {
   const sources = [
     { url: "https://a.example/contexto", outlet: "A" },

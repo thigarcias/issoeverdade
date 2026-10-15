@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { byteBudget, hostPolicy, parseUrlStrict, safeFetch, urlHost } from "./net.js";
 import { runLimited } from "./proc.js";
-import { clip, decodeEntities, stripHtml, structuredArticle, textFromHtml } from "./text.js";
+import { clip, pageMeta, stripHtml, structuredArticle, textFromHtml } from "./text.js";
 import { evidenceConfig, fetchDocument } from "./evidence.js";
 import { inspectMediaFile, jpegIsDecodableCandidate, processMediaFile } from "./local-media.js";
 import { classifySourceUrl } from "./source-type.js";
@@ -806,18 +806,6 @@ export async function probeOEmbed(url) {
 }
 
 const ARTICLE_TEXT_MAX = 18_000;
-
-function pageMeta(html, name) {
-  for (const tag of html.matchAll(/<meta\b[^>]*>/gi)) {
-    const attrs = {};
-    for (const attr of tag[0].matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)) {
-      attrs[attr[1].toLowerCase()] = decodeEntities(attr[2] ?? attr[3] ?? attr[4]);
-    }
-    if ((attrs.property ?? attrs.name)?.toLowerCase() === name.toLowerCase()) return attrs.content?.trim() ?? "";
-  }
-  return "";
-}
-
 
 function articleParagraphs(html) {
   const clean = html.replace(/<!--[\s\S]*?-->/g, " ")

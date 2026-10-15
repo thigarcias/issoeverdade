@@ -32,6 +32,17 @@ export function decodeEntities(value) {
   });
 }
 
+export function pageMeta(html, name) {
+  for (const tag of html.matchAll(/<meta\b[^>]*>/gi)) {
+    const attrs = {};
+    for (const attr of tag[0].matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)) {
+      attrs[attr[1].toLowerCase()] = decodeEntities(attr[2] ?? attr[3] ?? attr[4]);
+    }
+    if ((attrs.property ?? attrs.name)?.toLowerCase() === name.toLowerCase()) return attrs.content?.trim() ?? "";
+  }
+  return "";
+}
+
 const BLOCK_TAGS = /<\/?(?:p|div|br|li|ul|ol|tr|td|th|table|section|article|header|footer|h[1-6]|blockquote|figure|figcaption|pre|hr)\b[^>]*>/gi;
 
 /** Converte HTML em texto legível, descartando script/style/svg e comentários. */
@@ -164,10 +175,63 @@ function looseMatcher(quote) {
   }
 }
 
+const EDITORIAL_OMISSION = /\[\s*\.{3}\s*\]|\(\s*\.{3}\s*\)/u;
+const MAX_OMISSION_GAP = 240;
+const MAX_OMISSION_SPAN = 1000;
+const TRIVIAL_ANCHORS = new Set(["para", "como", "mais", "isso", "isto", "essa", "esse", "esta", "este", "pela", "pelo", "pelas", "pelos", "entre", "sobre", "mesmo", "tambem", "apenas"]);
+
+/**
+ * Omissões editoriais exigem 2–4 fragmentos literais, cada um com duas palavras,
+ * seis letras/dígitos e uma âncora não trivial de quatro caracteres. O conjunto
+ * exige 40 caracteres e oito palavras. Não há fuzzy dentro dos fragmentos.
+ * A busca é ordenada, limitada a 240 caracteres normalizados/dobrados por omissão,
+ * 1000 no intervalo e 128 candidatos; nunca combina documentos ou retorna colagem.
+ */
+function locateEditorialOmission(haystack, quote) {
+  const fragments = quote.split(EDITORIAL_OMISSION).map((part) => foldForMatch(part));
+  if (fragments.length < 2 || fragments.length > 4 || fragments.join(" ").length < 40) return null;
+  let wordCount = 0;
+  for (const fragment of fragments) {
+    const words = fragment.match(/[\p{L}\p{N}]+/gu) ?? [];
+    if (words.length < 2 || words.join("").length < 6 ||
+        !words.some((word) => word.length >= 4 && !TRIVIAL_ANCHORS.has(word))) return null;
+    wordCount += words.length;
+  }
+  if (wordCount < 8) return null;
+  let candidates = 0;
+  const search = (part, from, firstStart, previousEnd) => {
+    const fragment = fragments[part];
+    let index = haystack.indexOf(fragment, from);
+    while (index >= 0 && candidates < 128) {
+      const end = index + fragment.length;
+      if (part > 0 && (index - previousEnd > MAX_OMISSION_GAP ||
+          end - firstStart > MAX_OMISSION_SPAN)) break;
+      candidates++;
+      const boundedStart = !/[\p{L}\p{N}]/u.test(fragment[0]) ||
+        !/[\p{L}\p{N}]/u.test(haystack[index - 1] ?? "");
+      const boundedEnd = !/[\p{L}\p{N}]/u.test(fragment.at(-1)) ||
+        !/[\p{L}\p{N}]/u.test(haystack[end] ?? "");
+      const omittedText = part === 0 ? "" : haystack.slice(previousEnd, index);
+      if (boundedStart && boundedEnd && (part === 0 || /[\p{L}\p{N}]/u.test(omittedText))) {
+        const start = part === 0 ? index : firstStart;
+        if (end - start <= MAX_OMISSION_SPAN) {
+          if (part === fragments.length - 1) return { start, end };
+          const span = search(part + 1, end, start, end);
+          if (span) return span;
+        }
+      }
+      index = haystack.indexOf(fragment, index + 1);
+    }
+    return null;
+  };
+  return search(0, 0, 0, 0);
+}
+
 /**
  * Procura a citação no texto do documento, em níveis explícitos:
  * "exact" (literal) → "normalized" (sem acentos/caixa) → "approximate"
- * (mesmos tokens com pontuação diferente) → "prefix"/"tokens" (só sinal parcial).
+ * (omissão editorial explícita e limitada, ou mesmos tokens com pontuação
+ * diferente) → "prefix"/"tokens" (só sinal parcial).
  * O chamador deve registrar qual nível foi atingido; ausência de trecho não é
  * prova de falsidade.
  * @returns {{found:boolean, kind:"exact"|"normalized"|"approximate"|"prefix"|"tokens"|"missing"|"empty",
@@ -216,6 +280,21 @@ export function locateQuote(documentText, quote, { excerptChars = 400 } = {}) {
     return {
       found: true,
       kind: "normalized",
+      index: span.start,
+      similarity: 1,
+      excerpt: excerptFrom(span.start, span.end),
+      quoteChars: normalizedQuote.length,
+    };
+  }
+  // Uma omissão malsucedida não pode cair no fuzzy/prefixo e confirmar uma
+  // colagem incompleta. Os fragmentos só são comparados literalmente dobrados.
+  if (EDITORIAL_OMISSION.test(normalizedQuote)) {
+    const omission = locateEditorialOmission(folded.text, normalizedQuote);
+    if (!omission) return result;
+    const span = spanOf(omission.start, omission.end - omission.start);
+    return {
+      found: true,
+      kind: "approximate",
       index: span.start,
       similarity: 1,
       excerpt: excerptFrom(span.start, span.end),

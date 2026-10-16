@@ -583,7 +583,7 @@ export async function durableSnapshot(extra = {}, env = process.env, filters = n
       correctionsScope: history.corrections ? "all_retained_reports" : "editorial_corrections_in_window",
       filters: filtersApplied,
     },
-    note: `Histórico persistido: até ${history.limit} checagens retidas mais recentes, de qualquer data.${history.limited ? " Há registros anteriores fora desta janela." : ""} Latência usa toda a janela; tokens, mídia e moderação contam apenas trabalho não servido de cache. Campos ausentes nos registros antigos não podem ser recuperados. ${history.corrections ? "Correções: todos os pedidos retidos no Blob (corrigidos = estado atual)." : "Correções: somente alterações editoriais nos logs da janela; pedidos criados indisponíveis (null)."} A retenção do armazenamento pode excluir registros antigos. Dias usam America/Sao_Paulo; correções diárias indisponíveis.${dailyExcludedInvalidAt ? ` ${dailyExcludedInvalidAt} registro(s) com data inválida mantidos no agregado, mas excluídos dos dias e dos limites temporais.` : ""} Uso estimado em unidades de custo vigentes aplicadas aos logs retidos (cache-hit = 0); o orçamento real do dia vem do guard atual, não do histórico.${filtersActive ? ` Filtros aplicados: ${filterDetail.join(", ")}.` : ""}${filtersActive && aggregate.checks === 0 ? " Nenhum registro corresponde aos filtros." : ""}`,
+    note: `Histórico persistido: até ${history.limit} checagens retidas mais recentes, de qualquer data.${history.limited ? " Há registros anteriores fora desta janela." : ""} Latência usa toda a janela; tokens, mídia e moderação contam apenas trabalho não servido de cache. Campos ausentes nos registros antigos não podem ser recuperados. ${history.corrections ? "Correções: todos os pedidos retidos no armazenamento privado (corrigidos = estado atual)." : "Correções: somente alterações editoriais nos logs da janela; pedidos criados indisponíveis (null)."} A retenção do armazenamento pode excluir registros antigos. Dias usam America/Sao_Paulo; correções diárias indisponíveis.${dailyExcludedInvalidAt ? ` ${dailyExcludedInvalidAt} registro(s) com data inválida mantidos no agregado, mas excluídos dos dias e dos limites temporais.` : ""} Uso estimado em unidades de custo vigentes aplicadas aos logs retidos (cache-hit = 0); o orçamento real do dia vem do guard atual, não do histórico.${filtersActive ? ` Filtros aplicados: ${filterDetail.join(", ")}.` : ""}${filtersActive && aggregate.checks === 0 ? " Nenhum registro corresponde aos filtros." : ""}`,
   };
 }
 
@@ -604,3 +604,4 @@ export function resetMetrics() {
   state.lastCheckAt = null;
   state.startedAt = new Date().toISOString();
 }
+

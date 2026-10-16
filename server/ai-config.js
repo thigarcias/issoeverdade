@@ -2,6 +2,7 @@
 // saem do servidor. Só capacidades documentadas e adapters implementados são
 // elegíveis para cada etapa.
 import { createHash } from "node:crypto";
+import { stateStoreMode, readState, writeState } from "./state-store.js";
 
 const KEY = "iev-config/ai-v2.json";
 const CATALOG_KEY = "iev-config/catalog-v1.json";
@@ -253,6 +254,10 @@ async function fetchCatalog(provider) {
 }
 
 async function loadStoredCatalog() {
+  if (stateStoreMode() === "supabase") {
+    try { return (await readState("catalog", "providers"))?.providers ?? null; }
+    catch { return null; }
+  }
   const token = blobToken();
   if (!token) return null;
   try {
@@ -270,6 +275,7 @@ async function loadStoredCatalog() {
 }
 
 async function storeCatalog(providers) {
+  if (stateStoreMode() === "supabase") return writeState("catalog", "providers", { version: 1, providers });
   const token = blobToken();
   if (!token) return;
   const { put } = await import("@vercel/blob");
@@ -440,6 +446,7 @@ function revalidateSnapshot(snapshot, catalog, staleReason = null) {
 }
 
 async function loadBlobConfig() {
+  if (stateStoreMode() === "supabase") return readState("config", "ai-v2");
   const token = blobToken();
   if (!token) return null;
   const { list } = await import("@vercel/blob");
@@ -502,7 +509,7 @@ export async function getAiConfigState() {
         return memory;
       }
       memory = unavailableState({
-        source: "blob",
+        source: stateStoreMode() === "supabase" ? "supabase" : "blob",
         persisted: true,
         configErrors: validation.errors,
         error: "ai_config_invalid",
@@ -513,13 +520,21 @@ export async function getAiConfigState() {
       return memory;
     }
     memory = {
-      ...validState({ config: validation.config, updatedAt: saved.updatedAt, rawRevision }, "blob", true),
+      ...validState({ config: validation.config, updatedAt: saved.updatedAt, rawRevision }, stateStoreMode() === "supabase" ? "supabase" : "blob", true),
       loadedAt: Date.now(),
     };
     return memory;
   }
   // Nunca definida (bootstrap intencional): ambiente ou padrão documentado.
   const rawEnv = envConfig();
+  // O Blob bloqueado pode conter uma escolha diferente. A migração requer
+  // salvar a escolha no admin ou fornecer IEV_JUDGE explicitamente.
+  if (stateStoreMode() === "supabase" && !rawEnv.judge) {
+    memory = { ...unavailableState({ source: "supabase", persisted: false,
+      error: "ai_config_setup_required", configErrors: { judge: "Salve a configuração de IA no painel para concluir a migração ao Supabase." },
+    }), loadedAt: Date.now() };
+    return memory;
+  }
   const env = resolvePairs(rawEnv, catalog);
   const hasEnv = Object.keys(rawEnv).length > 0;
   memory = { ...validState({ config: env.config, updatedAt: null }, hasEnv ? "env" : "factory", false), loadedAt: Date.now(), stale: false, error: null };
@@ -547,15 +562,19 @@ export async function saveAiConfig(raw) {
   const config = validation.config;
   const updatedAt = new Date().toISOString();
   const token = blobToken();
-  if (token) {
+  const supabase = stateStoreMode() === "supabase";
+  if (supabase) {
+    await writeState("config", "ai-v2", { version: 2, config, updatedAt, revision: configRevision(config) });
+  } else if (token) {
     const { put } = await import("@vercel/blob");
     await put(KEY, JSON.stringify({ version: 2, config, updatedAt, revision: configRevision(config) }), {
       access: "private", contentType: "application/json", token, allowOverwrite: true,
     });
   }
   memory = {
-    ...validState({ config, updatedAt, rawRevision: configRevision(config) }, token ? "blob" : "ephemeral", Boolean(token)),
+    ...validState({ config, updatedAt, rawRevision: configRevision(config) }, supabase ? "supabase" : token ? "blob" : "ephemeral", supabase || Boolean(token)),
     loadedAt: Date.now(),
   };
-  return { saved: config, persisted: Boolean(token), source: memory.source, revision: memory.revision, updatedAt };
+  return { saved: config, persisted: supabase || Boolean(token), source: memory.source, revision: memory.revision, updatedAt };
 }
+

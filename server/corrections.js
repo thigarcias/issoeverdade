@@ -1,3 +1,4 @@
+import { stateStoreMode, readState, writeState, listState } from "./state-store.js";
 // Canal público de contestação e fila privada de correções.
 // Regras de produto:
 //   - cada pedido recebe protocolo verificável e entra numa fila com estados;
@@ -51,13 +52,13 @@ function blobToken() {
   return process.env.BLOB_READ_WRITE_TOKEN || "";
 }
 
-export function correctionsEnabled() {
-  return Boolean(blobToken());
+export function correctionsEnabled(env = process.env) {
+  return stateStoreMode(env) !== "memory";
 }
 
-/** Em produção sem Blob o canal é recusado; em dev fica em memória com aviso. */
+/** Em produção sem armazenamento durável o canal é recusado; em dev fica em memória com aviso. */
 export function correctionsMode(env = process.env) {
-  if (correctionsEnabled()) return "durable";
+  if (correctionsEnabled(env)) return "durable";
   const production = env.VERCEL_ENV === "production" || env.NODE_ENV === "production" || env.IEV_PRODUCTION === "1";
   return production ? "blocked" : "memory";
 }
@@ -121,6 +122,10 @@ async function blob() {
 }
 
 async function readIndex() {
+  if (stateStoreMode() === "supabase") {
+    const records = await listState("corrections", { limit: 10000 });
+    return { items: records.map(indexEntry).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))) };
+  }
   if (!correctionsEnabled()) return { items: indexMemory };
   try {
     const { list } = await blob();
@@ -137,6 +142,7 @@ async function readIndex() {
 }
 
 async function writeIndex(items) {
+  if (stateStoreMode() === "supabase") return; // Cada registro é a própria entrada; sem índice compartilhado.
   const trimmed = items.slice(0, MAX_INDEX);
   if (!correctionsEnabled()) {
     indexMemory = trimmed;
@@ -153,6 +159,7 @@ async function writeIndex(items) {
 
 async function readRecord(protocol) {
   if (!/^[a-z0-9-]+$/i.test(protocol)) return null;
+  if (stateStoreMode() === "supabase") return readState("corrections", protocol);
   if (!correctionsEnabled()) return memory.get(protocol) ?? null;
   try {
     const { list } = await blob();
@@ -169,6 +176,7 @@ async function readRecord(protocol) {
 }
 
 async function writeRecord(record) {
+  if (stateStoreMode() === "supabase") return writeState("corrections", record.protocol, record);
   if (!correctionsEnabled()) {
     memory.set(record.protocol, record);
     if (memory.size > MEMORY_MAX) memory.delete(memory.keys().next().value);
@@ -195,8 +203,10 @@ export async function createCorrection(value) {
     persisted: correctionsEnabled(),
   };
   await writeRecord(record);
-  const { items } = await readIndex();
-  await writeIndex([indexEntry(record), ...items.filter((item) => item.protocol !== record.protocol)]);
+  if (stateStoreMode() !== "supabase") {
+    const { items } = await readIndex();
+    await writeIndex([indexEntry(record), ...items.filter((item) => item.protocol !== record.protocol)]);
+  }
   return record;
 }
 
@@ -229,8 +239,10 @@ export async function updateCorrection(protocol, { status, note, actor } = {}) {
     history: [...(record.history ?? []), { at: now, status: status ?? record.status, actor: actor ?? "admin", note: clean(note, 1000) || null }],
   };
   await writeRecord(updated);
-  const { items } = await readIndex();
-  await writeIndex([indexEntry(updated), ...items.filter((item) => item.protocol !== protocol)]);
+  if (stateStoreMode() !== "supabase") {
+    const { items } = await readIndex();
+    await writeIndex([indexEntry(updated), ...items.filter((item) => item.protocol !== protocol)]);
+  }
   return { ok: true, record: updated };
 }
 
@@ -293,3 +305,4 @@ export function adminCorrection(record) {
     persisted: record.persisted !== false,
   };
 }
+

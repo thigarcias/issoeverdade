@@ -1,6 +1,7 @@
 // Cache efêmero privado, vinculado à versão da configuração e metodologia.
 // Respostas em cache nunca são servidas como produzidas por outra revisão.
 import { createHash } from "node:crypto";
+import { stateStoreMode, readState, writeState } from "./state-store.js";
 
 const TTL_MS = 24 * 60 * 60 * 1000;
 const PREFIX = "iev-cache-v2/";
@@ -51,9 +52,15 @@ export async function currentEpoch() {
       throw new Error("cache_epoch_unavailable");
     }
   }
-  if (!blobToken()) return "local";
+  if (stateStoreMode() === "memory") return epochMemory.value ?? "local";
   if (epochMemory.value && Date.now() - epochMemory.at < EPOCH_TTL_MS) return epochMemory.value;
   try {
+    if (stateStoreMode() === "supabase") {
+      const stored = await readState("cache", "epoch");
+      const epoch = stored === null ? "initial" : await readCacheEpochResponse(Response.json(stored));
+      epochMemory = { value: epoch, at: Date.now() };
+      return epoch;
+    }
     const { list } = await import("@vercel/blob");
     const found = await list({ prefix: EPOCH_KEY, token: blobToken() });
     const item = found.blobs.find((blob) => blob.pathname === EPOCH_KEY);
@@ -77,11 +84,16 @@ export async function currentEpoch() {
 export async function invalidateCache(reason = "manual") {
   memory.clear();
   const epoch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  if (!blobToken()) {
+  if (stateStoreMode() === "memory") {
     epochMemory = { value: epoch, at: Date.now() };
     return { ok: true, epoch, persisted: false, reason };
   }
   try {
+    if (stateStoreMode() === "supabase") {
+      await writeState("cache", "epoch", { epoch, at: new Date().toISOString(), reason });
+      epochMemory = { value: epoch, at: Date.now() };
+      return { ok: true, epoch, persisted: true, reason };
+    }
     const { put } = await import("@vercel/blob");
     await put(EPOCH_KEY, JSON.stringify({ epoch, at: new Date().toISOString(), reason }), {
       access: "private",
@@ -154,6 +166,17 @@ export async function getCached(input, namespace, policy) {
     if (usable && (!policy || mem.policy === policy)) return { ...mem.value, cached: true, cachedFrom: mem.value.checkId ?? null };
     if (!usable) memory.delete(key);
   }
+  if (stateStoreMode() === "supabase") {
+    try {
+      const body = await readState("cache", key);
+      if (body?.namespace !== namespace || !body.value || !reusable(body.value) ||
+        !Number.isFinite(body.savedAt) || Date.now() - body.savedAt >= TTL_MS ||
+        body.epoch !== epoch || (policy && body.policy !== policy)) return null;
+      memory.set(key, { ...body });
+      if (memory.size > MAX_MEMORY) memory.delete(memory.keys().next().value);
+      return { ...body.value, cached: true, cachedFrom: body.value.checkId ?? null };
+    } catch { return null; }
+  }
   const token = blobToken();
   if (!token) return null;
   try {
@@ -194,6 +217,11 @@ export async function setCached(input, value, namespace, policy) {
   const entry = { value, namespace, savedAt: Date.now(), epoch, policy };
   memory.set(key, entry);
   if (memory.size > MAX_MEMORY) memory.delete(memory.keys().next().value);
+  if (stateStoreMode() === "supabase") {
+    try { await writeState("cache", key, entry, { expiresAt: entry.savedAt + TTL_MS }); }
+    catch { /* Cache best-effort. */ }
+    return;
+  }
   const token = blobToken();
   if (!token) return;
   try {
@@ -209,3 +237,4 @@ export async function setCached(input, value, namespace, policy) {
     // Cache best-effort: a provider result remains valid without persistence.
   }
 }
+

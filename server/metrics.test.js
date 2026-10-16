@@ -30,6 +30,7 @@ async function withStore(fn, initial = []) {
     if (store.failure) return new Response("PRIVATE DB private-service-key", { status: store.failure });
     if (store.failAfterFirstPage && url.searchParams.has("or")) return new Response("PRIVATE PAGE FAILURE", { status: 500 });
     if (store.malformed) return Response.json({ private: "PRIVATE DATA" });
+    if (url.pathname.endsWith("/iev_state")) return Response.json([]);
     if (options.method === "POST") {
       store.rows.push(JSON.parse(options.body));
       return new Response(null, { status: 201 });
@@ -79,12 +80,12 @@ test("admin aggregates retained historical logs without merging local instance c
     assert.deepEqual(metrics.tokens, { input: 100, output: 50, total: 150 });
     assert.deepEqual(metrics.media, { transcript: 2, vision: 2, frames: 7 });
     assert.deepEqual(metrics.moderation, { refused: 1, uncovered: 0, unavailable: 1, sensitive: 2 });
-    assert.deepEqual(metrics.corrections, { created: null, corrected: 1 });
+    assert.deepEqual(metrics.corrections, { created: 0, corrected: 0 });
     assert.equal(metrics.latency.avg, 100);
     assert.equal(metrics.latency.p95, 100);
     assert.equal(metrics.window.startedAt, "2025-01-01T00:00:00.000Z");
     assert.equal(metrics.lastCheckAt, "2025-01-01T00:00:00.000Z");
-    assert.equal(metrics.window.correctionsScope, "editorial_corrections_in_window");
+    assert.equal(metrics.window.correctionsScope, "all_retained_reports");
     assert.doesNotMatch(JSON.stringify(out.body), /PRIVATE|private-service-key/);
   }, [
     row("a", { verdict: "true", tokenUsage: { input: 100, output: 50 }, mediaCoverage: { transcript: "text-only", frames: "sampled-and-described", sampledFrameCount: 4 }, moderationReports: [{ checked: true, categories: ["violence"] }], editorialCorrections: [{ protocol: "corr-one", status: "corrected" }] }),
@@ -105,7 +106,7 @@ test("persisted logs survive a separate metrics process with no recordCheck call
       globalThis.fetch = async (input, options) => {
         if (options.headers.apikey !== 'private-service-key') throw new Error('wrong auth');
         const url = new URL(input);
-        return Response.json(url.searchParams.has('or') ? [] : rows);
+        return Response.json(url.pathname.endsWith('/iev_state') || url.searchParams.has('or') ? [] : rows);
       };
       console.log(JSON.stringify({ localChecks: snapshot().checks, metrics: await durableSnapshot() }));
     `;
@@ -136,7 +137,7 @@ test("keyset pagination handles server page caps, equal timestamps and explicit 
     assert.equal(metrics.latency.p95, 952);
     assert.equal(metrics.cached, 0);
     assert.ok(store.requests.length > 20);
-    assert.ok(store.requests.slice(1).every(({ url }) => url.searchParams.has("or")));
+    assert.ok(store.requests.filter(({ url }) => url.pathname.endsWith("/iev_checks")).slice(1).every(({ url }) => url.searchParams.has("or")));
     assert.match(metrics.note, /registros anteriores fora desta janela/);
   }, rows);
 });
@@ -444,3 +445,4 @@ test("parseMetricsFilters valida período, modelo e rejeita vetor", async () => 
   assert.equal(parseMetricsFilters({ provider: ["openai", "x"] }).ok, false);
   assert.equal(parseMetricsFilters({ period: "7d; DROP" }).error, "invalid_metrics_query");
 });
+

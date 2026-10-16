@@ -1,3 +1,4 @@
+import { stateStoreMode, listState } from "./state-store.js";
 // Registros privados no Supabase; Blob privado quando Supabase não configurado.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { publicCheckEnvelope } from "./public-check.js";
@@ -325,8 +326,10 @@ export async function readMetricsLogs(env = process.env) {
   const limited = records.length > METRICS_LIMIT;
   records = records.slice(0, METRICS_LIMIT);
   let corrections = null;
-  if (env.BLOB_READ_WRITE_TOKEN) {
-    const reports = await retainedBlobRecords("iev-corrections/", env);
+  if (stateStoreMode(env) !== "memory") {
+    const reports = stateStoreMode(env) === "supabase"
+      ? await listState("corrections", { limit: METRICS_LIMIT, env })
+      : await retainedBlobRecords("iev-corrections/", env);
     const protocols = new Set();
     corrections = { created: 0, corrected: 0 };
     for (const report of reports) {
@@ -459,3 +462,4 @@ export async function appendCorrectionToLog(id, { protocol, note, actor, status 
     return { ok: false, error: "storage_write_failed" };
   }
 }
+

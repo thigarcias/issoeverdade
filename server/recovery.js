@@ -1,5 +1,6 @@
 // Capability-only recovery; never reads administrative logs or indexes by input.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { stateStoreMode, readState, writeState } from "./state-store.js";
 
 const TTL_MS = 30 * 60 * 1000;
 const PENDING_MS = 5 * 60 * 1000;
@@ -24,6 +25,11 @@ export function createRecoveryStore({ now = Date.now, blobToken = () => process.
     while (memory.size > maxMemory) memory.delete(memory.keys().next().value);
   };
   const save = async (key, record) => {
+    if (stateStoreMode() === "supabase") {
+      try { await writeState("recovery", key, record, { expiresAt: record.expiresAt }); }
+      catch { throw new RecoveryUnavailable(); }
+      return;
+    }
     const token = blobToken();
     if (token) {
       try {
@@ -40,6 +46,10 @@ export function createRecoveryStore({ now = Date.now, blobToken = () => process.
   };
   const load = async (key) => {
     prune();
+    if (stateStoreMode() === "supabase") {
+      try { return await readState("recovery", key); }
+      catch { throw new RecoveryUnavailable(); }
+    }
     const token = blobToken();
     if (!token) return memory.get(key) ?? null;
     try {
@@ -97,3 +107,4 @@ export const startRecovery = (...args) => recovery.start(...args);
 export const completeRecovery = (...args) => recovery.complete(...args);
 export const failRecovery = (...args) => recovery.fail(...args);
 export const readRecovery = (...args) => recovery.read(...args);
+

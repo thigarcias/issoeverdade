@@ -554,7 +554,7 @@ function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSa
     <section className="card admin-ai" aria-label="Configuração de modelos">
       <p className="admin-mut">Escolha modelos elegíveis para cada etapa. Alterações afetam somente novas checagens; a configuração chega às instâncias via atualização periódica. Não há troca automática de provedor quando um modelo falha.</p>
       {error && <p className="admin-error-state" role="alert">{error}</p>}
-      {configUnavailable && <div className="admin-notice" role="alert"><b>{configUnavailable === "ai_config_invalid" ? "Configuração persistida inválida ou incompatível:" : "Configuração de IA indisponível:"}</b>{configErrors && Object.keys(configErrors).length > 0 && <ul>{Object.entries(configErrors).map(([step, reason]) => <li key={step}>{STEP_LABEL[step] ?? step}: {reason}</li>)}</ul>}<p>As checagens ficam bloqueadas. Nenhum par diferente é usado automaticamente.</p><p>{configUnavailable === "ai_config_invalid" ? "Selecione explicitamente um provedor e um modelo elegível para cada etapa e salve a configuração corrigida. Nenhum padrão foi preenchido." : "A configuração persistida não pôde ser determinada. Edição e salvamento ficam bloqueados para evitar sobrescrevê-la sem conhecê-la; tente carregar novamente quando a persistência voltar."}</p><button className="btn" type="button" onClick={onReload} disabled={loading || saving}>Recarregar configuração</button></div>}
+      {configUnavailable && <div className="admin-notice" role="alert"><b>{configUnavailable === "ai_config_invalid" ? "Configuração persistida inválida ou incompatível:" : "Configuração de IA indisponível:"}</b>{configErrors && Object.keys(configErrors).length > 0 && <ul>{Object.entries(configErrors).map(([step, reason]) => <li key={step}>{STEP_LABEL[step] ?? step}: {reason}</li>)}</ul>}<p>As checagens ficam bloqueadas. Nenhum par diferente é usado automaticamente.</p><p>{configUnavailable === "ai_config_setup_required" ? "Escolha os modelos usados anteriormente e salve para ativar as checagens. A configuração antiga continua preservada no Blob." : configUnavailable === "ai_config_invalid" ? "Selecione explicitamente um provedor e um modelo elegível para cada etapa e salve a configuração corrigida. Nenhum padrão foi preenchido." : "A configuração persistida não pôde ser determinada. Edição e salvamento ficam bloqueados para evitar sobrescrevê-la sem conhecê-la; tente carregar novamente quando a persistência voltar."}</p><button className="btn" type="button" onClick={onReload} disabled={loading || saving}>Recarregar configuração</button></div>}
       {configStale && !configUnavailable && <div className="admin-notice" role="status"><b>Snapshot em uso:</b> {staleReason === "catalog_stale" ? "o catálogo está desatualizado; a última configuração conhecida e válida continua em uso sem troca de pares." : staleReason === "config_read_failed" ? "a persistência não respondeu; a última configuração conhecida e válida continua em uso, com possível desatualização." : "a última configuração conhecida e válida continua em uso, com possível desatualização."}</div>}
       <div className="admin-ai-grid">
         {steps.map((step) => {
@@ -596,7 +596,7 @@ function AiConfigCard({ catalog, draft, saved, saving, persisted, onChange, onSa
           );
         })}
       </div>
-      <p className="admin-mut">Configuração: origem {catalog.source ?? "não informada"} · revisão {catalog.revision ?? "não informada"} · persistência {persisted ? "durável (Blob)" : "efêmera nesta instância"}{catalog.updatedAt ? ` · atualizada ${fmtFullTime(catalog.updatedAt)}` : ""} · catálogo em cache por até 15 min.</p>
+      <p className="admin-mut">Configuração: origem {catalog.source ?? "não informada"} · revisão {catalog.revision ?? "não informada"} · persistência {persisted ? `durável (${catalog.source === "supabase" ? "Supabase" : "Blob"})` : "efêmera nesta instância"}{catalog.updatedAt ? ` · atualizada ${fmtFullTime(catalog.updatedAt)}` : ""} · catálogo em cache por até 15 min.</p>
       <div className="admin-ai-actions">
         <button className="btn primary" type="button" onClick={onSave} disabled={saving || editingBlocked || !dirty || !complete}>{saving ? "Salvando…" : "Salvar modelos"}</button>
         <button className="btn ghost" type="button" onClick={onRefreshCatalog} disabled={loading || saving}>{loading ? "Atualizando catálogo…" : "Atualizar catálogo"}</button>
@@ -1269,7 +1269,7 @@ export default function Admin({ showToast }) {
       throw new Error("Sessão inválida. Entre de novo.");
     }
     const data = await res.json().catch(() => null);
-    const configState = allowAiConfigState && res.status === 200 && ["ai_config_invalid", "ai_config_unavailable"].includes(data?.error) && data.config === null;
+    const configState = allowAiConfigState && res.status === 200 && ["ai_config_invalid", "ai_config_unavailable", "ai_config_setup_required"].includes(data?.error) && data.config === null;
     if (!res.ok || (data?.error && !configState) || !data) {
       const error = new Error(data?.message || data?.error || `Falha ao carregar (HTTP ${res.status}).`);
       error.data = data;
@@ -1363,7 +1363,7 @@ export default function Admin({ showToast }) {
       setAiStaleReason(data.staleReason ?? null);
       setAiPersisted(data.persisted === true);
       if (data.methodology) setMethodology(data.methodology);
-      if (!data.catalog || (!data.config && !["ai_config_invalid", "ai_config_unavailable"].includes(data.error))) setAiError("A API não retornou catálogo e configuração.");
+      if (!data.catalog || (!data.config && !["ai_config_invalid", "ai_config_unavailable", "ai_config_setup_required"].includes(data.error))) setAiError("A API não retornou catálogo e configuração.");
     } catch (err) {
       if (request !== aiRequest.current) return;
       if (!preserveDraft) setAiCatalog(null);

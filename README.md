@@ -363,6 +363,13 @@ não bastam. Data de publicação não se confunde com período de referência d
 Notas atuais: `true` 90–100, `false` 0–14, `unproven` 35–54, com a nota decidida pelo modelo dentro da faixa (abstenção evidencial: registra falta de base suficiente, não probabilidade nem "meio-termo"; `context` da pesquisa principal vira `unproven` com nota na faixa). Fora da faixa, o servidor aplica o fallback neutro (95/5/45). `context=70` permanece histórico. `score=null` só sem claim avaliado (`coverage.total===0`, ex. `insufficient_input`/`no_verifiable_claims`) ou com cobertura <0,5 por omissões; nunca para claim avaliado. O overall é a média aritmética arredondada de todos os claims com score, com teto 64 se houver `false`. Exemplo: `true` (92) + `unproven` (40) → (92 + 40) / 2 = 66. `evidenceSupport`
 (`supports`, `refutes`, `context`, `insufficient`) descreve suporte factual — `unproven` recebe nota na faixa 35–54 decidida pelo modelo, sem exclusão nem zero;
 
+A versão metodológica acompanha as respostas de checagem, recuperação e leitura
+pública até o histórico e os cards. Nas versões 19 ou posteriores, `coverage.assessed`
+conta afirmações avaliadas **com nota**, inclusive sem comprovação; não significa
+evidência adequada. A nota global nula por cobertura insuficiente não é rotulada
+como registro antigo. Registros até a versão 18 ou sem versão preservam a
+interpretação histórica de cobertura e de ausência de nota, sem recálculo.
+
 A auditoria documental opcional usa JEV `jev-1.13-free` via OpenCode/SystemOne
 por padrão (`IEV_EVIDENCE_REVIEW_PROVIDER=jev|judge`), somente com coleta
 ativada e trechos aptos; `IEV_EVIDENCE_REVIEW=0` desativa a revisão separadamente.

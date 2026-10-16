@@ -187,7 +187,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
         {result.score == null
           ? (isLegacyMethodology(result.methodologyVersion)
             ? "Sem nota (registro anterior): este resultado foi produzido sob metodologia anterior sem nota por afirmação. Falta de evidência não significa falsidade."
-            : "Nota indisponível: menos da metade das afirmações pôde ser avaliada com evidência adequada. Falta de evidência não significa falsidade.")
+            : "Nota indisponível: menos da metade das afirmações foi avaliada; as demais ficaram sem análise. Falta de evidência não significa falsidade.")
           : "Pesquisa com fontes citadas ou revisão documental opcional: nota na faixa do status, decidida pela força da evidência — confirmação 90–100 · refutação 0–14 · sem comprovação 35–54; o servidor valida a faixa. A base de cada afirmação aparece abaixo; pesquisa não é conferência documental independente. A escala anterior é preservada nos registros históricos; a nota não é probabilidade calibrada."}
       </p>
 
@@ -259,7 +259,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
       {(result.coverage || result.outcome === "partial_coverage" || result.omittedClaimsCount > 0) && (
         <div className="coverage-warning" role="note">
           {result.coverage ? (
-            <><b>Cobertura das afirmações:</b> {result.coverage.total} no total; {result.coverage.assessed} avaliadas com evidência adequada; {result.coverage.unproven} sem comprovação; {result.coverage.omitted} sem análise.</>
+            <><b>Cobertura das afirmações:</b> {result.coverage.total} no total; {result.coverage.assessed} {isLegacyMethodology(result.methodologyVersion) ? "avaliadas com evidência adequada" : "avaliadas com nota"}; {result.coverage.unproven} sem comprovação; {result.coverage.omitted} sem análise.</>
           ) : (
             <><b>Cobertura parcial.</b> Foram analisadas {result.claims.length} afirmações; {result.omittedClaimsCount} ficaram sem análise.</>
           )}

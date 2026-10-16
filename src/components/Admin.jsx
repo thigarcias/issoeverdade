@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ASSESSMENT_BASIS, CLAIM_STATUS, EVIDENCE_SUPPORT, VERDICTS, evidenceReviewLabel, evidenceVerificationLabel, migrateVerdict } from "../data/constants.js";
+import { ASSESSMENT_BASIS, CLAIM_STATUS, EVIDENCE_SUPPORT, VERDICTS, evidenceReviewLabel, evidenceVerificationLabel, isLegacyMethodology, migrateVerdict } from "../data/constants.js";
 import ComparisonDetails from "./ComparisonDetails.jsx";
 import { Activity, ArrowUpRight, BookOpen, ClipboardCheck, Copy, LayoutDashboard, LogOut, MessageSquare, RefreshCw, Search, Settings2, ShieldCheck } from "lucide-react";
 import AdminSelect from "./AdminSelect.jsx";
@@ -73,9 +73,7 @@ function VerdictChip({ verdict, error, outcome }) {
     </span>
   );
 }
-/** Score numérico (nota na faixa do status) sempre renderiza; null legado nunca vira número.
- * Null + verdict presente = registro v≤18/sem versão ("Sem nota"); null sem verdict = "—".
- * Registros novos sempre trazem score, então methodologyVersion só confirma o legado. */
+/** Null pode indicar registro legado, cobertura insuficiente ou ausência de veredito. */
 function adminScoreLabel(record) {
   if (record?.score != null) return `${record.score}/100`;
   if (!record?.verdict) return "—";
@@ -228,7 +226,7 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
           <>
             <div className="admin-detail-head">
               <VerdictChip verdict={detail.verdict} error={detail.error} outcome={detail.outcome} />
-              <b className="admin-detail-score" title={detail.score == null ? (detail.verdict ? "Registro anterior sem nota por afirmação (metodologia v≤18)" : "Resultado sem veredito factual") : undefined}>{adminScoreLabel(detail)}</b>
+              <b className="admin-detail-score" title={detail.score == null ? (detail.verdict ? (isLegacyMethodology(detail.methodologyVersion) ? "Registro anterior sem nota por afirmação (metodologia v≤18)" : "Nota indisponível por cobertura insuficiente") : "Resultado sem veredito factual") : undefined}>{adminScoreLabel(detail)}</b>
               <span className="admin-mut">
                 {OUTCOME_LABEL[detail.outcome] ?? "Registro legado"} · {KIND_LABEL[detail.kind] ?? detail.kind} · {fmtFullTime(detail.at)} · total {fmtMs(detail.totalMs)}
               </span>
@@ -283,7 +281,7 @@ function DetailDialog({ detail, loading, onClose, showToast, methodology }) {
                   {detail.coverage && (
                     <>
                       <dt>Cobertura das afirmações</dt>
-                      <dd>{detail.coverage.total} no total · {detail.coverage.assessed} avaliadas com evidência adequada · {detail.coverage.unproven} sem comprovação · {detail.coverage.omitted} sem análise</dd>
+                      <dd>{detail.coverage.total} no total · {detail.coverage.assessed} {isLegacyMethodology(detail.methodologyVersion) ? "avaliadas com evidência adequada" : "avaliadas com nota"} · {detail.coverage.unproven} sem comprovação · {detail.coverage.omitted} sem análise</dd>
                     </>
                   )}
                   {detail.corrections?.length > 0 && (

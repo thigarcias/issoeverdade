@@ -157,7 +157,7 @@ function claimDetails(claim, sources) {
 function resultLimits(result) {
   const limits = [];
   const coverage = result?.coverage;
-  if (coverage) limits.push(`Cobertura: ${coverage.total} no total; ${coverage.assessed} avaliadas com evidência adequada; ${coverage.unproven} sem comprovação; ${coverage.omitted} sem análise.`);
+  if (coverage) limits.push(`Cobertura: ${coverage.total} no total; ${coverage.assessed} ${isLegacyMethodology(result?.methodologyVersion) ? "avaliadas com evidência adequada" : "avaliadas com nota"}; ${coverage.unproven} sem comprovação; ${coverage.omitted} sem análise.`);
   else if (result?.omittedClaimsCount > 0 || result?.outcome === "partial_coverage") limits.push(`Cobertura parcial: ${list(result?.claims).length} afirmações analisadas; ${result?.omittedClaimsCount ?? 0} ficaram sem análise.`);
   if (result?.outcome && result.outcome !== "checked" && result.outcome !== "legacy") limits.push(`Desfecho: ${result.outcomeLabel ?? OUTCOME_LABEL[result.outcome] ?? result.outcome}.`);
   const media = result?.mediaCoverage;
@@ -261,7 +261,7 @@ export async function renderShareCards(result) {
   const coverage = [
     `${claims.length} ${claims.length === 1 ? "analisado" : "analisados"}`,
     notCheckedClaims.length ? `${notCheckedClaims.length} não ${notCheckedClaims.length === 1 ? "checado" : "checados"}` : "",
-    result?.coverage ? `${result.coverage.assessed} com evidência · ${result.coverage.unproven} sem comprovação` : "",
+    result?.coverage ? `${result.coverage.assessed} ${isLegacyMethodology(result?.methodologyVersion) ? "com evidência" : "com nota"} · ${result.coverage.unproven} sem comprovação` : "",
     (result?.coverage?.omitted ?? result?.omittedClaimsCount) > 0 ? `${result?.coverage?.omitted ?? result.omittedClaimsCount} sem análise` : "",
   ].filter(Boolean).join(" · ");
 

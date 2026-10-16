@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { getPublishedCheck, verify } from "../src/lib/api.js";
+import { publicCheckEnvelope } from "./public-check.js";
 
 const input = { kind: "text", text: "Afirmação", fileName: null };
 const capability = { checkId: "check-stream", recoveryToken: "t".repeat(43) };
@@ -92,6 +93,28 @@ test("recovered comparison metadata and stable evidence IDs survive normalizatio
     assert.deepEqual(out.result.claims[0].evidenceReview, evidenceReview);
     assert.equal(out.result.claims[0].evidence[0].evidenceId, "stable-evidence-id");
   });
+});
+
+test("envelope methodology survives streamed, recovered and published partial coverage without upgrading legacy records", async (t) => {
+  for (const methodologyVersion of ["fact-check-20", "fact-check-19", "fact-check-18", undefined]) {
+    for (const mode of ["stream", "recovery", "public"]) await t.test(`${mode}: ${methodologyVersion ?? "legacy"}`, async () => {
+      const data = {
+        ...envelope,
+        ...(methodologyVersion ? { methodologyVersion } : {}),
+        createdAt: "2026-10-15T12:00:00.000Z",
+        result: { ...envelope.result, outcome: "partial_coverage", score: null, methodologyVersion: "fact-check-99" },
+      };
+      await withFetch(async () => mode === "stream"
+        ? stream([JSON.stringify({ type: "result", checkId: data.checkId, envelope: data })])
+        : Response.json(mode === "recovery" ? { status: "completed", envelope: data } : publicCheckEnvelope(data)), async () => {
+        const result = mode === "public" ? await getPublishedCheck(data.checkId)
+          : (await verify(input, mode === "recovery" ? { recovery: capability } : {})).result;
+        assert.equal(result.methodologyVersion, methodologyVersion ?? null);
+        assert.equal(result.outcome, "partial_coverage");
+        assert.equal(result.score, null);
+      });
+    });
+  }
 });
 
 test("research assessment reaches streamed, recovered and published clients without becoming verified", async (t) => {

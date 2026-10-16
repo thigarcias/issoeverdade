@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { VERDICTS } from "../data/constants.js";
+import { VERDICTS, isLegacyMethodology } from "../data/constants.js";
 import { ArrowRight, History, Search } from "lucide-react";
 
 const FILTERS = [
@@ -132,7 +132,7 @@ export default function Feed({ items: allItems, onOpen }) {
                     )}
                     {v && item.score == null && item.verdict && (item.claims?.length ?? 0) > 0 && (
                       <div className="feed-score">
-                        <small>sem nota<br />(registro anterior)</small>
+                        <small>sem nota<br />({isLegacyMethodology(item.methodologyVersion) ? "registro anterior" : "cobertura insuficiente"})</small>
                       </div>
                     )}
                   </div>

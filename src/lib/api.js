@@ -155,7 +155,7 @@ function recoveredResult(data, input, checkId) {
     throw friendlyError("upstream_error", "Resposta de checagem incompleta.");
   }
   const id = data.checkId ?? data.result.checkId ?? checkId;
-  const result = normalize({ ...data.result, checkId: id }, input, data.origin ?? null);
+  const result = normalize({ ...data.result, checkId: id, methodologyVersion: typeof data.methodologyVersion === "string" ? data.methodologyVersion : null }, input, data.origin ?? null);
   result.cached = Boolean(data.cached);
   result.cachedFrom = data.cachedFrom ?? null;
   result.persisted = data.storage?.persisted === true;
@@ -337,7 +337,7 @@ export async function getPublishedCheck(id, { signal } = {}) {
     || !data.createdAt || !Number.isFinite(Date.parse(data.createdAt))) {
     throw new Error("O serviço retornou uma checagem incompleta. Tente novamente.");
   }
-  const result = normalize({ ...data.result, checkId: id }, { kind: "", text: "" }, data.origin ?? null, data.createdAt);
+  const result = normalize({ ...data.result, checkId: id, methodologyVersion: typeof data.methodologyVersion === "string" ? data.methodologyVersion : null }, { kind: "", text: "" }, data.origin ?? null, data.createdAt);
   result.kind = "Checagem compartilhada";
   result.persisted = true;
   result.published = true;

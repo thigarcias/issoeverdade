@@ -58,6 +58,7 @@ function project(value, schema) {
 export function publicCheckEnvelope(envelope, { checkId = envelope?.checkId, createdAt = envelope?.createdAt } = {}) {
   return {
     checkId: typeof checkId === "string" && /^[a-z0-9-]{1,100}$/i.test(checkId) ? checkId : null,
+    ...(typeof envelope?.methodologyVersion === "string" ? { methodologyVersion: project(envelope.methodologyVersion, "string") } : {}),
     result: project(envelope?.result, resultSchema),
     origin: project(envelope?.origin, originSchema),
     createdAt: typeof createdAt === "string" && Number.isFinite(Date.parse(createdAt)) ? new Date(createdAt).toISOString() : null,

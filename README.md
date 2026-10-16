@@ -105,6 +105,22 @@ limitado à instância e perde seus contadores ao reiniciar. Falhas na consulta 
 armazenamento aparecem como erro, não como contadores zerados. Use **Atualizar
 métricas** para consultar novamente a fonte; os limiares de alerta dependem da
 amostra mínima informada.
+O filtro **Todos os dias** ou um dia disponível aplica-se aos indicadores e gráficos
+categóricos; o gráfico temporal mantém todos os dias e destaca a seleção. A API
+preserva o agregado e fornece `daily` em ordem cronológica com datas `YYYY-MM-DD`
+no fuso de Brasília (`America/Sao_Paulo`), sem preencher dias sem registros.
+Os gráficos apresentam unidades, escalas e valores acessíveis sem depender de cor.
+A janela permanece limitada às últimas **1000 checagens retidas**: um dia pode estar
+incompleto e o filtro não recupera registros fora da janela. Cada janela diária
+informa os instantes reais da primeira e última checagem. Datas inválidas não viram
+dias fictícios: a fonte durável rejeita registros inválidos; o agregador também
+mantém proteção de exclusão diária e contagem caso os receba.
+Tokens, mídia e moderação não repetem o trabalho de respostas em cache. Correções
+diárias são indisponíveis (`created: null`, `corrected: null`), pois o dia da
+checagem não informa o dia da correção. Alertas de orçamento, controles e cobertura
+representam o contexto atual do sistema, não uma reconstrução histórica.
+No modo `memory`, `daily` é `null`: o histórico diário aparece como indisponível,
+sem misturar contadores locais com registros persistidos nem expor logs privados.
 
 ## Limites, custo e segurança
 

@@ -2,6 +2,19 @@
 // histórico durável para o painel administrativo, independente da instância.
 import { readMetricsLogs } from "./checklog.js";
 const MAX_LATENCIES = 200;
+const METRICS_TIME_ZONE = "America/Sao_Paulo";
+const dayFormatter = new Intl.DateTimeFormat("en", {
+  timeZone: METRICS_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit",
+});
+
+function eventDate(at) {
+  if (typeof at !== "string" || !at.trim()) return null;
+  const timestamp = Date.parse(at);
+  if (!Number.isFinite(timestamp)) return null;
+  const parts = dayFormatter.formatToParts(timestamp);
+  const part = (type) => parts.find((value) => value.type === type).value;
+  return { timestamp, date: `${part("year")}-${part("month")}-${part("day")}` };
+}
 
 function intEnv(value, fallback) {
   return Number.isFinite(Number(value)) && Number(value) > 0 ? Math.round(Number(value)) : fallback;
@@ -114,6 +127,9 @@ function renderSnapshot(state, extra, env) {
   }
   return {
     source: "memory",
+    timeZone: METRICS_TIME_ZONE,
+    daily: null,
+    dailyExcludedInvalidAt: 0,
     window: { scope: "instance", startedAt: state.startedAt, endedAt: state.lastCheckAt, sample: state.checks, enoughSample, limited: false, latencySample: state.latencyMs.length },
     checks: state.checks,
     cached: state.cached,
@@ -132,7 +148,7 @@ function renderSnapshot(state, extra, env) {
     lastCheckAt: state.lastCheckAt,
     thresholds,
     alerts,
-    note: "Contadores por instância, sem persistência; use junto do painel de registros.",
+    note: "Contadores por instância, sem persistência; use junto do painel de registros. Histórico diário indisponível neste modo.",
   };
 }
 
@@ -186,10 +202,28 @@ export async function durableSnapshot(extra = {}, env = process.env) {
   aggregate.startedAt = null;
   const protocols = new Set();
   let correctionsWithoutProtocol = 0;
+  const days = new Map();
+  let dailyExcludedInvalidAt = 0;
   for (const record of history.records) {
-    accumulateCheck(aggregate, persistedCheck(record));
-    if (!aggregate.startedAt || Date.parse(record.at) < Date.parse(aggregate.startedAt)) aggregate.startedAt = record.at;
-    if (!aggregate.lastCheckAt || Date.parse(record.at) > Date.parse(aggregate.lastCheckAt)) aggregate.lastCheckAt = record.at;
+    const check = persistedCheck(record);
+    accumulateCheck(aggregate, check);
+    const event = eventDate(record.at);
+    if (event) {
+      if (!aggregate.startedAt || event.timestamp < Date.parse(aggregate.startedAt)) aggregate.startedAt = record.at;
+      if (!aggregate.lastCheckAt || event.timestamp > Date.parse(aggregate.lastCheckAt)) aggregate.lastCheckAt = record.at;
+      let day = days.get(event.date);
+      if (!day) {
+        day = emptyState();
+        day.startedAt = null;
+        day.corrections = { created: null, corrected: null };
+        days.set(event.date, day);
+      }
+      accumulateCheck(day, check);
+      if (!day.startedAt || event.timestamp < Date.parse(day.startedAt)) day.startedAt = record.at;
+      if (!day.lastCheckAt || event.timestamp > Date.parse(day.lastCheckAt)) day.lastCheckAt = record.at;
+    } else {
+      dailyExcludedInvalidAt++;
+    }
     for (const correction of Array.isArray(record.editorialCorrections) ? record.editorialCorrections : []) {
       if (correction.status && correction.status !== "corrected") continue;
       if (correction.protocol) protocols.add(correction.protocol);
@@ -199,15 +233,33 @@ export async function durableSnapshot(extra = {}, env = process.env) {
   }
   aggregate.corrections = history.corrections ?? { created: null, corrected: protocols.size + correctionsWithoutProtocol };
   const result = renderSnapshot(aggregate, extra, env);
+  const daily = [...days.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, day]) => {
+    const rendered = renderSnapshot(day, extra, env);
+    delete rendered.daily;
+    delete rendered.dailyExcludedInvalidAt;
+    return {
+      ...rendered,
+      date,
+      source: history.mode,
+      window: {
+        ...rendered.window, scope: "daily_retained_checks",
+        capturedAt: history.capturedAt, limit: history.limit, limited: history.limited,
+        correctionsScope: "unavailable_by_day",
+      },
+      note: "Checagens retidas deste dia em America/Sao_Paulo; não representa necessariamente o dia completo. Correções por dia indisponíveis.",
+    };
+  });
   return {
     ...result,
     source: history.mode,
+    daily,
+    dailyExcludedInvalidAt,
     window: {
       ...result.window, scope: "latest_retained_checks", endedAt: aggregate.lastCheckAt,
       capturedAt: history.capturedAt, limit: history.limit, limited: history.limited,
       correctionsScope: history.corrections ? "all_retained_reports" : "editorial_corrections_in_window",
     },
-    note: `Histórico persistido: até ${history.limit} checagens retidas mais recentes, de qualquer data.${history.limited ? " Há registros anteriores fora desta janela." : ""} Latência usa toda a janela; tokens, mídia e moderação contam apenas trabalho não servido de cache. Campos ausentes nos registros antigos não podem ser recuperados. ${history.corrections ? "Correções: todos os pedidos retidos no Blob (corrigidos = estado atual)." : "Correções: somente alterações editoriais nos logs da janela; pedidos criados indisponíveis (null)."} A retenção do armazenamento pode excluir registros antigos.`,
+    note: `Histórico persistido: até ${history.limit} checagens retidas mais recentes, de qualquer data.${history.limited ? " Há registros anteriores fora desta janela." : ""} Latência usa toda a janela; tokens, mídia e moderação contam apenas trabalho não servido de cache. Campos ausentes nos registros antigos não podem ser recuperados. ${history.corrections ? "Correções: todos os pedidos retidos no Blob (corrigidos = estado atual)." : "Correções: somente alterações editoriais nos logs da janela; pedidos criados indisponíveis (null)."} A retenção do armazenamento pode excluir registros antigos. Dias usam America/Sao_Paulo; correções diárias indisponíveis.${dailyExcludedInvalidAt ? ` ${dailyExcludedInvalidAt} registro(s) com data inválida mantidos no agregado, mas excluídos dos dias e dos limites temporais.` : ""}`,
   };
 }
 

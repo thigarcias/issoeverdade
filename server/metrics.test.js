@@ -160,6 +160,9 @@ test("empty durable history remains a durable source rather than local instance 
     assert.equal(metrics.window.startedAt, null);
     assert.equal(metrics.window.limited, false);
     assert.equal(metrics.latency.avg, null);
+    assert.equal(metrics.timeZone, "America/Sao_Paulo");
+    assert.deepEqual(metrics.daily, []);
+    assert.equal(metrics.dailyExcludedInvalidAt, 0);
   });
 });
 
@@ -201,7 +204,56 @@ test("memory fallback is scoped to this instance only when durable storage is di
     assert.equal(metrics.window.scope, "instance");
     assert.match(metrics.note, /sem persistência/);
     assert.equal(snapshot().checks, 1);
+    assert.equal(metrics.timeZone, "America/Sao_Paulo");
+    assert.equal(metrics.daily, null);
+    assert.match(metrics.note, /diário indisponível/);
   } finally { resetMetrics(); }
+});
+
+test("daily snapshots use Brasilia midnight, chronological dates and independent statistics", async () => {
+  const dated = (id, at, log, outcome = "checked") => ({ ...row(id, log), at, outcome });
+  await withStore(async () => {
+    recordCheck({ kind: "video", tokens: { input: 9999 }, outcome: "error" });
+    const metrics = await durableSnapshot({ limitsMode: "blocked" }, {
+      ...process.env, IEV_ALERT_MIN_SAMPLE: "1",
+    });
+    assert.equal(metrics.checks, 4);
+    assert.deepEqual(metrics.daily.map((day) => day.date), ["2024-12-31", "2025-01-01", "2025-01-03"]);
+    const [before, after, later] = metrics.daily;
+    assert.equal(before.checks, 1);
+    assert.equal(before.latency.avg, 100);
+    assert.deepEqual(before.tokens, { input: 10, output: 5, total: 15 });
+    assert.equal(after.checks, 2);
+    assert.equal(after.cached, 1);
+    assert.deepEqual(after.byOutcome, { error: 1, checked: 1 });
+    assert.deepEqual(after.errors, { provider_failed: 1 });
+    assert.equal(after.errorRate, 0.5);
+    assert.equal(after.latency.avg, 300);
+    assert.equal(after.latency.p50, 200);
+    assert.equal(after.latency.p95, 400);
+    assert.deepEqual(after.tokens, { input: 20, output: 8, total: 28 });
+    assert.deepEqual(after.media, { transcript: 1, vision: 0, frames: 0 });
+    assert.equal(after.window.startedAt, "2025-01-01T03:00:00.000Z");
+    assert.equal(after.window.endedAt, "2025-01-01T23:59:59-03:00");
+    assert.equal(after.window.latencySample, 2);
+    assert.equal(later.checks, 1);
+    assert.equal(metrics.tokens.total, 43);
+    assert.equal(metrics.cached, 1);
+    for (const day of metrics.daily) {
+      assert.equal(day.source, "supabase");
+      assert.equal(day.timeZone, "America/Sao_Paulo");
+      assert.equal(day.daily, undefined);
+      assert.deepEqual(day.corrections, { created: null, corrected: null });
+      assert.equal(day.window.correctionsScope, "unavailable_by_day");
+      assert.ok(day.alerts.some((alert) => alert.id === "limits"));
+    }
+    assert.doesNotMatch(JSON.stringify(metrics), /PRIVATE INPUT/);
+  }, [
+    dated("late", "2025-01-03T06:00:00+03:00", { totalMs: 50 }),
+    dated("cached", "2025-01-01T23:59:59-03:00", { totalMs: 400, cachedFrom: "before", tokenUsage: { input: 10, output: 5 }, mediaCoverage: { transcript: "text-only" } }),
+    dated("after", "2025-01-01T03:00:00.000Z", { totalMs: 200, errorCode: "provider_failed", tokenUsage: { input: 20, output: 8 }, mediaCoverage: { transcript: "text-only" } }, "error"),
+    dated("before", "2025-01-01T02:59:59.999Z", { totalMs: 100, tokenUsage: { input: 10, output: 5 }, inputPreview: "PRIVATE INPUT", editorialCorrections: [{ protocol: "correction", status: "corrected" }] }),
+  ]);
 });
 
 test("Blob scans every listing page and full retained objects, not the truncated index", async () => {
@@ -252,6 +304,9 @@ test("Blob scans every listing page and full retained objects, not the truncated
       assert.equal(metrics.window.correctionsScope, "all_retained_reports");
       assert.deepEqual(metrics.corrections, { created: 2, corrected: 1 });
       assert.equal(requests.length, 4);
+      records.get("iev-logs/new.json").at = "invalid-date";
+      await assert.rejects(durableSnapshot({}, env), { code: "storage_invalid_response" });
+      records.get("iev-logs/new.json").at = "2025-01-01T00:00:00Z";
       failedObject = true;
       await assert.rejects(durableSnapshot({}, env));
     } finally {

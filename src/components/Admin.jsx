@@ -902,16 +902,67 @@ function MetricCounts({ title, entries, label, empty }) {
   );
 }
 
+function metricDayLabel(date) {
+  return date.split("-").reverse().join("/");
+}
+
+function DailyMetricChart({ daily, selectedDate, onSelect, latency = false }) {
+  const valueOf = (day) => latency ? day.latency?.avg : day.checks;
+  const values = daily.map(valueOf).filter((value) => Number.isFinite(value) && value >= 0);
+  const maximum = Math.max(0, ...values);
+  const title = latency ? "Latência média por dia" : "Volume por dia";
+  return <section className="admin-chart" aria-label={title}>
+    <h3 className="admin-sub">{title}</h3>
+    <p className="admin-mut">Escala linear de 0 a {latency ? fmtMs(maximum) : `${maximum} checagens`}. Selecione uma barra para filtrar o painel.</p>
+    <div className="admin-chart-scroll" tabIndex={0} role="region" aria-label={`${title}: dias em ordem cronológica; role horizontalmente para ver mais dias`}>
+      <div className="admin-day-bars">
+        {daily.map((day) => {
+          const value = valueOf(day);
+          const available = Number.isFinite(value) && value >= 0;
+          const label = available ? (latency ? fmtMs(value) : `${value} checagens`) : "sem latência registrada";
+          return <button type="button" key={day.date} className="admin-day-bar" aria-pressed={selectedDate === day.date} onClick={() => onSelect(day.date)} aria-label={`${metricDayLabel(day.date)}: ${label}`}>
+            <span className="admin-day-value">{available ? (latency ? fmtMs(value) : value) : "—"}</span>
+            <span className="admin-day-track" aria-hidden="true"><span style={{ height: `${available && maximum > 0 ? value / maximum * 100 : 0}%` }} /></span>
+            <time dateTime={day.date}>{metricDayLabel(day.date)}</time>
+          </button>;
+        })}
+      </div>
+    </div>
+  </section>;
+}
+
+function OutcomeMetricChart({ outcomes }) {
+  const entries = countEntries(outcomes);
+  const total = sumCounts(outcomes);
+  return <section className="admin-chart" aria-label="Distribuição dos desfechos no período selecionado">
+    <h3 className="admin-sub">Distribuição dos desfechos</h3>
+    <p className="admin-mut">Período selecionado · contagens e participação no total de {total} desfechos. Escala de 0 a 100%.</p>
+    {entries.length === 0 ? <p className="admin-mut">Nenhum desfecho registrado neste período.</p> : <ul className="admin-outcome-bars">
+      {entries.map(([key, count]) => <li key={key}>
+        <span>{OUTCOME_LABEL[key] ?? key}</span><b>{count} · {fmtPercent(total ? count / total : 0)}</b>
+        <span className="admin-outcome-track" aria-hidden="true"><span style={{ width: `${total ? count / total * 100 : 0}%` }} /></span>
+      </li>)}
+    </ul>}
+  </section>;
+}
+
 /** Métricas dos registros disponíveis e estado do sistema (sem segredos). */
 function AdminMetrics({ data, loading, error, onReload }) {
-  const metrics = data?.metrics ?? null;
+  const aggregate = data?.metrics ?? null;
+  const [requestedDate, setRequestedDate] = useState("");
+  const daily = Array.isArray(aggregate?.daily) ? aggregate.daily : [];
+  const selectedDay = daily.find((day) => day.date === requestedDate);
+  const selectedDate = selectedDay?.date ?? "";
+  const metrics = selectedDay ?? aggregate;
   const system = data?.system ?? null;
   const limits = system?.limits ?? null;
-  const alerts = metrics?.alerts ?? [];
+  const systemAlertIds = new Set(["budget", "limits", "video_coverage"]);
+  const alerts = (metrics?.alerts ?? []).filter((alert) => !systemAlertIds.has(alert.id));
+  const systemAlerts = (aggregate?.alerts ?? []).filter((alert) => systemAlertIds.has(alert.id));
   const errors = countEntries(metrics?.errors);
   const errorTotal = sumCounts(metrics?.errors);
   const blockedLimits = limits?.mode === "blocked";
-  const sourceLabel = { supabase: "Supabase · registros persistidos", blob: "Blob privado · registros persistidos", memory: "Memória · somente esta instância" }[metrics?.source] ?? "Fonte não informada";
+  const sourceLabel = { supabase: "Supabase · registros persistidos", blob: "Blob privado · registros persistidos", memory: "Memória · somente esta instância" }[aggregate?.source] ?? "Fonte não informada";
   return (
     <section className="admin-metrics" aria-labelledby="admin-metrics-title">
       <div className="admin-section-heading">
@@ -923,6 +974,22 @@ function AdminMetrics({ data, loading, error, onReload }) {
       {error && <div className="admin-error-state" role="alert"><p>Não foi possível consultar as métricas. Os contadores estão indisponíveis, não zerados.</p><p>{error}</p><button className="btn" type="button" onClick={onReload} disabled={loading}>Tentar novamente</button></div>}
       {loading && !metrics && <ul className="admin-skel" aria-label="Carregando métricas"><li /><li /><li /></ul>}
       {metrics && <>
+        <div className="admin-metric-filter">
+          <label>Período dos indicadores
+          <AdminSelect value={selectedDate || "all"} onValueChange={setRequestedDate}>
+            <option value="all">Todos os dias</option>
+            {daily.map((day) => <option key={day.date} value={day.date}>{metricDayLabel(day.date)}</option>)}
+          </AdminSelect></label>
+          <p className="admin-mut" role="status">{selectedDate ? `Dia ${metricDayLabel(selectedDate)}` : "Todos os dias disponíveis"} · fuso {aggregate.timeZone ?? "não informado"}.</p>
+        </div>
+        {!Array.isArray(aggregate.daily) && <p className="admin-notice" role="note">Granularidade diária indisponível nesta fonte. Os indicadores mostram somente o agregado disponível.</p>}
+        {Array.isArray(aggregate.daily) && daily.length === 0 && <p className="admin-notice" role="note">Nenhum dia com checagens datadas disponível nesta janela.</p>}
+        {aggregate.dailyExcludedInvalidAt > 0 && <p className="admin-notice" role="note">{aggregate.dailyExcludedInvalidAt} registros sem data válida permanecem no agregado, mas não podem ser atribuídos a um dia.</p>}
+        {daily.length > 0 && <div className="admin-temporal-charts">
+          <DailyMetricChart daily={daily} selectedDate={selectedDate} onSelect={setRequestedDate} />
+          <DailyMetricChart daily={daily} selectedDate={selectedDate} onSelect={setRequestedDate} latency />
+        </div>}
+        <OutcomeMetricChart outcomes={metrics.byOutcome} />
         <dl className="admin-stats">
           <div><dt>Checagens na janela</dt><dd>{metrics.checks}</dd></div>
           <div><dt>Servidas do cache</dt><dd>{metrics.cached} · {fmtPercent(metrics.checks ? metrics.cached / metrics.checks : 0)}</dd></div>
@@ -935,8 +1002,8 @@ function AdminMetrics({ data, loading, error, onReload }) {
           <div><dt>Latência p95</dt><dd>{fmtMs(metrics.latency?.p95)}</dd></div>
         </dl>
         <p className="admin-mut">Fonte: <b>{sourceLabel}</b>. Início da janela: {metrics.window?.startedAt ? fmtFullTime(metrics.window.startedAt) : "não informado"}{metrics.window?.endedAt ? ` · fim: ${fmtFullTime(metrics.window.endedAt)}` : ""}.</p>
-        {metrics.source === "memory" && <p className="admin-notice" role="note">Contadores locais, sem persistência: não são compartilhados entre instâncias e reiniciar o processo zera esta janela.</p>}
-        {metrics.note && <p className="admin-mut">{metrics.note}</p>}
+        {aggregate.source === "memory" && <p className="admin-notice" role="note">Contadores locais, sem persistência: não são compartilhados entre instâncias e reiniciar o processo zera esta janela.</p>}
+        {aggregate.note && <p className="admin-mut">{aggregate.note}</p>}
         {metrics.window?.enoughSample
           ? <p className="admin-mut">Amostra desta janela: {metrics.window.sample} checagens — mínimo de {metrics.thresholds?.minSample} atingido para avaliar os limiares de alerta.</p>
           : <p className="admin-notice" role="note"><b>Amostra pequena:</b> {metrics.window?.sample ?? 0} checagens desde o início da janela, abaixo do mínimo de {metrics.thresholds?.minSample}. Os números indicam o que foi observado, não uma taxa; os alertas por limiar ficam suspensos.</p>}
@@ -956,13 +1023,13 @@ function AdminMetrics({ data, loading, error, onReload }) {
             <dt>Moderação</dt>
             <dd>recusadas {metrics.moderation?.refused ?? 0} · sem cobertura {metrics.moderation?.uncovered ?? 0} · indisponível {metrics.moderation?.unavailable ?? 0} · marcadas sensíveis {metrics.moderation?.sensitive ?? 0}</dd>
             <dt>Correções</dt>
-            <dd>pedidos criados {metrics.corrections?.created ?? "não disponível"} · marcados como corrigidos {metrics.corrections?.corrected ?? "não disponível"}{metrics.window?.correctionsScope === "all_retained_reports" ? " · todos os pedidos retidos (escopo próprio, independente da janela de checagens)" : metrics.window?.correctionsScope === "editorial_corrections_in_window" ? " · correções editoriais nos registros desta janela" : ""}</dd>
+            <dd>{selectedDay ? "Não disponíveis por dia: pedidos e correções têm datas próprias e não são atribuídos ao dia da checagem." : <>pedidos criados {metrics.corrections?.created ?? "não disponível"} · marcados como corrigidos {metrics.corrections?.corrected ?? "não disponível"}{metrics.window?.correctionsScope === "all_retained_reports" ? " · todos os pedidos retidos (escopo próprio, independente da janela de checagens)" : metrics.window?.correctionsScope === "editorial_corrections_in_window" ? " · correções editoriais nos registros desta janela" : ""}</>}</dd>
             <dt>Última checagem</dt>
             <dd>{metrics.lastCheckAt ? fmtFullTime(metrics.lastCheckAt) : "nenhuma registrada nesta janela"}</dd>
           </dl>
         </section>
         <section className="admin-metric-block">
-          <h3 className="admin-sub">Alertas</h3>
+          <h3 className="admin-sub">Alertas da amostra selecionada</h3>
           {alerts.length === 0
             ? <p className="admin-mut">Sem alertas no limiar atual.</p>
             : <ul className="admin-alerts">{alerts.map((alert) => <li key={alert.id} className={alert.level === "critical" ? "critical" : "warning"}>
@@ -973,6 +1040,8 @@ function AdminMetrics({ data, loading, error, onReload }) {
         </section>
       </>}
       {system && <section className={`admin-metric-block admin-system${blockedLimits ? " critical" : ""}`}>
+        <p className="admin-mut">Contexto operacional atual, independente do dia selecionado.</p>
+        {systemAlerts.length > 0 && <ul className="admin-alerts">{systemAlerts.map((alert) => <li key={alert.id} className={alert.level === "critical" ? "critical" : "warning"}><b>{alert.level === "critical" ? "Crítico" : "Atenção"}</b><span>{alert.message}</span></li>)}</ul>}
         <h3 className="admin-sub">Sistema</h3>
         {blockedLimits && <p className="admin-error-state" role="alert">Limites em modo <code>blocked</code>: checagens novas estão sendo recusadas até haver backend compartilhado ou configuração explícita de limites.</p>}
         <dl className="admin-dl">

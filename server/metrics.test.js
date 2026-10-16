@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { MockAgent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 import { saveCheckLog } from "./checklog.js";
-import { durableSnapshot, recordCheck, resetMetrics, snapshot } from "./metrics.js";
+import { durableSnapshot, parseMetricsFilters, recordCheck, resetMetrics, snapshot } from "./metrics.js";
 import { handleAdminRequest } from "./admin-endpoint.js";
 
 const SECRET = "00000000-0000-4000-8000-000000000123";
@@ -317,4 +317,130 @@ test("Blob scans every listing page and full retained objects, not the truncated
       await new Promise((resolve) => server.close(resolve));
     }
   });
+});
+
+test("usage estima unidades vigentes e expõe capacidades sem tokens por etapa", async () => {
+  await withStore(async () => {
+    const metrics = await durableSnapshot({}, process.env, { period: "all", provider: null, model: null, kind: null });
+    assert.equal(metrics.usage.scope, "estimated_from_retained_logs");
+    assert.deepEqual(metrics.usage.filtersApplied, { period: "all", provider: null, model: null, kind: null });
+    assert.deepEqual(metrics.usage.units.unitCosts, { text: 1, link: 2, image: 2, video: 4 });
+    // text(1) + cache-hit(0) + 2×video(4) = 9 unidades estimadas.
+    assert.equal(metrics.usage.units.estimated, 9);
+    assert.deepEqual(metrics.usage.units.byKind, { text: { checks: 2, units: 1 }, video: { checks: 2, units: 8 } });
+    assert.deepEqual(metrics.usage.tokens, { input: 30, output: 15, total: 45 });
+    assert.deepEqual(metrics.usage.steps, { judge: { calls: 2 }, transcribe: { calls: 1 }, vision: { calls: 1 } });
+    assert.deepEqual(metrics.usage.webSearch, { checksWithQueries: 2, queries: 3 });
+    assert.deepEqual(metrics.usage.evidence, { checksWithDossier: 1, checksReviewed: 1 });
+    assert.deepEqual(metrics.usage.moderation, { checks: 1, refused: 0, unavailable: 0, sensitive: 1 });
+    assert.deepEqual(metrics.usage.media, { transcriptions: 1, visions: 1, frames: 4 });
+    assert.deepEqual(metrics.usage.providers.byProvider, { openai: { checks: 1, calls: 2 }, opencode: { checks: 1, calls: 2 } });
+    assert.deepEqual(metrics.usage.providers.byModel, {
+      "openai:gpt-4o": { checks: 1, calls: 1 },
+      "openai:whisper-1": { checks: 1, calls: 1 },
+      "opencode:muse-spark-1.3-contributor": { checks: 1, calls: 2 },
+    });
+    for (const capability of metrics.usage.capabilities) {
+      assert.ok(capability.id && capability.label && Number.isFinite(capability.calls));
+      assert.equal(capability.tokens, undefined);
+    }
+    const judge = metrics.usage.capabilities.find((capability) => capability.id === "judge");
+    assert.equal(judge.calls, 2);
+    assert.equal(metrics.usage.capabilities.find((capability) => capability.id === "web_search").calls, 4);
+    assert.deepEqual(metrics.usageOptions.models, [
+      { provider: "openai", model: "gpt-4o", label: "openai:gpt-4o" },
+      { provider: "openai", model: "whisper-1", label: "openai:whisper-1" },
+      { provider: "opencode", model: "muse-spark-1.3-contributor", label: "opencode:muse-spark-1.3-contributor" },
+    ]);
+    assert.deepEqual(metrics.usageOptions.providers, ["openai", "opencode"]);
+    assert.deepEqual(metrics.usageOptions.kinds, ["text", "video"]);
+    assert.deepEqual(metrics.usageOptions.days, ["2024-12-31"]);
+    assert.equal(metrics.daily.length, 1);
+    assert.equal(metrics.daily[0].usage.unitsEstimated, 9);
+    assert.deepEqual(metrics.daily[0].usage.tokens, metrics.tokens);
+    assert.equal(metrics.window.filters.period, "all");
+    assert.doesNotMatch(JSON.stringify(metrics), /PRIVATE INPUT/);
+  }, [
+    row("full", {
+      provider: "openai", model: "gpt-4o", tokenUsage: { input: 10, output: 5 },
+      modelsUsed: { judge: { provider: "openai", model: "gpt-4o" }, transcribe: { provider: "openai", model: "whisper-1" } },
+      phases: [{ name: "judge", ok: true }],
+      researchQueries: ["q1", "q2"], researchDiagnostics: [{ step: "judge" }],
+      evidence: { summary: {}, verification: "verified" }, evidenceVerification: "verified",
+      moderationReports: [{ checked: true, categories: ["violence"] }],
+      mediaCoverage: { transcript: "text-only", frames: "sampled-and-described", sampledFrameCount: 4 },
+    }),
+    row("cached", { cachedFrom: "full", provider: "openai", model: "gpt-4o", tokenUsage: { input: 999, output: 999 }, modelsUsed: { judge: { provider: "openai", model: "gpt-4o" } }, researchQueries: ["ignored"] }),
+    { ...row("old-video", { provider: "opencode", model: "muse-spark-1.3-contributor", tokenUsage: { input: 20, output: 10 }, modelsUsed: { judge: { provider: "opencode", model: "muse-spark-1.3-contributor" }, vision: { provider: "opencode", model: "muse-spark-1.3-contributor" } }, researchQueries: ["q3"] }), at: "2024-12-31T03:00:00.000Z", kind: "video" },
+    { ...row("ignored-private", { inputPreview: "PRIVATE INPUT" }), at: "2024-12-31T03:00:00.000Z", kind: "video" },
+  ]);
+});
+
+test("filtros recortam uso e qualidade; opções ignoram filtros; sem match zera com nota", async () => {
+  await withStore(async () => {
+    const provider = await durableSnapshot({}, process.env, { period: "all", provider: "openai", model: null, kind: null });
+    assert.equal(provider.checks, 1);
+    assert.equal(provider.usage.units.estimated, 1);
+    assert.equal(provider.daily.length, 1);
+    // Opções permanecem estáveis mesmo com filtro ativo.
+    assert.deepEqual(provider.usageOptions.providers, ["openai", "opencode"]);
+    const model = await durableSnapshot({}, process.env, { period: "all", provider: null, model: "opencode:muse-spark-1.3-contributor", kind: null });
+    assert.equal(model.checks, 1);
+    assert.equal(model.usage.providers.byModel["opencode:muse-spark-1.3-contributor"].checks, 1);
+    const bareModel = await durableSnapshot({}, process.env, { period: "all", provider: null, model: "gpt-4o", kind: null });
+    assert.equal(bareModel.checks, 1);
+    const kind = await durableSnapshot({}, process.env, { period: "all", provider: null, model: null, kind: "video" });
+    assert.equal(kind.checks, 1);
+    assert.equal(kind.daily.length, 1);
+    const day = await durableSnapshot({}, process.env, { period: "2024-12-31", provider: null, model: null, kind: null });
+    assert.equal(day.checks, 1);
+    assert.equal(day.daily.length, 1);
+    assert.equal(day.daily[0].date, "2024-12-31");
+    const windowed = await durableSnapshot({}, process.env, { period: "2024-12-30", provider: null, model: null, kind: null });
+    assert.equal(windowed.checks, 0);
+    assert.match(windowed.note, /Nenhum registro corresponde aos filtros/);
+    const empty = await durableSnapshot({}, process.env, { period: "all", provider: "missing", model: null, kind: null });
+    assert.equal(empty.checks, 0);
+    assert.equal(empty.usage.units.estimated, 0);
+    assert.deepEqual(empty.daily, []);
+    assert.match(empty.note, /Nenhum registro corresponde aos filtros/);
+    // Agregado filtrado também usa granularidade diária limitada.
+    assert.match(empty.note, /últimas 1000|1000 checagens/);
+  }, [
+    { ...row("new-text", { provider: "openai", model: "gpt-4o" }), at: "2025-06-15T12:00:00.000Z" },
+    { ...row("old-video", { provider: "opencode", model: "muse-spark-1.3-contributor", modelsUsed: { judge: { provider: "opencode", model: "muse-spark-1.3-contributor" } } }), at: "2024-12-31T12:00:00.000Z", kind: "video" },
+  ]);
+});
+
+test("sinais ausentes geram capacidades vazias sem quebrar a estimativa", async () => {
+  await withStore(async () => {
+    const metrics = await durableSnapshot({}, process.env, { period: "all", provider: null, model: null, kind: null });
+    assert.equal(metrics.usage.units.estimated, 1);
+    assert.deepEqual(metrics.usage.steps, {});
+    assert.deepEqual(metrics.usage.capabilities, []);
+    assert.deepEqual(metrics.usage.webSearch, { checksWithQueries: 0, queries: 0 });
+  }, [row("bare")]);
+});
+
+test("memória sem granularidade: usage null e opções vazias documentadas", async () => {
+  resetMetrics();
+  try {
+    recordCheck({ kind: "text", outcome: "checked", totalMs: 7 });
+    const metrics = await durableSnapshot({}, {});
+    assert.equal(metrics.source, "memory");
+    assert.equal(metrics.usage, null);
+    assert.deepEqual(metrics.usageOptions, { periods: ["7d", "30d", "all"], providers: [], models: [], kinds: [], days: [] });
+    assert.equal(metrics.daily, null);
+    assert.match(metrics.note, /sem persistência/);
+  } finally { resetMetrics(); }
+});
+
+test("parseMetricsFilters valida período, modelo e rejeita vetor", async () => {
+  assert.deepEqual(parseMetricsFilters({}), { ok: true, filters: { period: "7d", provider: null, model: null, kind: null } });
+  assert.deepEqual(parseMetricsFilters({ period: "2025-01-31" }).filters.period, "2025-01-31");
+  assert.equal(parseMetricsFilters({ period: "ontem" }).ok, false);
+  assert.equal(parseMetricsFilters({ period: "2025-02-30" }).ok, false);
+  assert.equal(parseMetricsFilters({ period: "7d", model: "openai:" }).ok, false);
+  assert.equal(parseMetricsFilters({ provider: ["openai", "x"] }).ok, false);
+  assert.equal(parseMetricsFilters({ period: "7d; DROP" }).error, "invalid_metrics_query");
 });

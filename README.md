@@ -121,6 +121,25 @@ checagem não informa o dia da correção. Alertas de orçamento, controles e co
 representam o contexto atual do sistema, não uma reconstrução histórica.
 No modo `memory`, `daily` é `null`: o histórico diário aparece como indisponível,
 sem misturar contadores locais com registros persistidos nem expor logs privados.
+Uso estimado (`GET /api/admin?metrics=1&period=7d|30d|all|YYYY-MM-DD&provider=&model=&kind=`):
+`metrics.usage` estima unidades de custo vigentes por tipo (`IEV_COST_UNITS` ou
+padrão text=1, link=2, image=2, video=4) aplicadas aos logs retidos; cache-hit
+custa 0 unidades e 0 tokens novos. Tokens existem só por checagem (total), por
+isso as capacidades trazem chamadas/checagens — nunca tokens por etapa ou
+modelo. Sinais derivam dos logs: `modelsUsed` (+ `phases` como fallback) para
+julgamento/pesquisa/transcrição/visão, `researchQueries`/`researchDiagnostics`
+para busca web, `evidence`/`evidenceVerification` para dossiê, `moderationReports`
+para moderação e `mediaCoverage`/`mediaAttempts` para mídia. `metrics.usageOptions`
+(períodos, provedores, modelos `provider:modelo`, tipos e dias) vem do histórico
+sem filtros; os filtros recortam uso, qualidade e `daily[]` (cada dia ganha
+`usage` com unidades, tokens, checagens e cache). Sem parâmetros de filtro, a
+API preserva a janela completa; com qualquer filtro explícito, `period` ausente
+assume `7d`. Filtro válido sem registros
+retorna agregado zerado com "Nenhum registro corresponde aos filtros" (não é
+erro); filtro malformado retorna 400 `invalid_metrics_query`. `metrics.budgetToday`
+é o orçamento real de hoje (UTC) lido do guard atual (`store` shared/memory/null),
+nunca reconstruído do histórico. Sem moeda ou preço por modelo: unidades são
+orçamento operacional, não gasto financeiro.
 
 ## Limites, custo e segurança
 

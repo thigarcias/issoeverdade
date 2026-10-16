@@ -650,3 +650,25 @@
   .admin-wrap .admin-spinning, :is(.admin-wrap, .admin-dialog) .admin-skel li { animation: none; }
   :is(.admin-wrap, .admin-login, .admin-dialog) *, .admin-select-trigger { scroll-behavior: auto; transition: none; }
 }
+/* Usage dashboard: a aba Métricas como painel de uso, no tema claro existente. */
+.admin-wrap .admin-usage-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 12px 24px; margin: 24px 0; }
+.admin-wrap .admin-usage-filters label { display: grid; gap: 8px; min-width: min(100%, 200px); font-weight: 500; }
+.admin-wrap .admin-usage-filters .admin-usage-scope { flex-basis: 100%; }
+.admin-wrap .admin-usage-hero { margin-top: 8px; min-width: 0; }
+.admin-wrap .admin-usage-hero .admin-stats { margin: 16px 0; }
+.admin-wrap .admin-quality-title { margin-top: 28px; }
+.admin-wrap .admin-stats dd .admin-hero-sub { display: block; margin-top: 8px; color: var(--fg-3); font: 400 12px/1.6 var(--sans); letter-spacing: 0; }
+.admin-wrap .admin-budget-track { display: block; height: 12px; margin-top: 10px; overflow: hidden; border-radius: 3px; background: var(--admin-border); }
+.admin-wrap .admin-budget-track > span { display: block; height: 100%; background: var(--accent-deep); }
+.admin-wrap .admin-cap-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 16px 0 0; padding: 0; list-style: none; }
+.admin-wrap .admin-cap-card { display: grid; gap: 6px; min-width: 0; padding: 18px; border: 1px solid var(--admin-border); border-radius: var(--admin-radius); background: var(--admin-surface); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.admin-wrap .admin-cap-card b { font-size: 13px; font-weight: 600; }
+.admin-wrap .admin-cap-card span { color: var(--fg-2); font-variant-numeric: tabular-nums; }
+@media (max-width: 1199px) {
+  .admin-wrap .admin-cap-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  .admin-wrap .admin-usage-filters { gap: 14px; }
+  .admin-wrap .admin-usage-filters label { flex: 1 1 100%; min-width: 0; }
+  .admin-wrap .admin-cap-grid { grid-template-columns: minmax(0, 1fr); }
+}

@@ -3,6 +3,7 @@ import { ASSESSMENT_BASIS, CLAIM_STATUS, EVIDENCE_SUPPORT, VERDICTS, evidenceRev
 import ComparisonDetails from "./ComparisonDetails.jsx";
 import { Activity, ArrowUpRight, BookOpen, ClipboardCheck, Copy, LayoutDashboard, LogOut, MessageSquare, RefreshCw, Search, Settings2, ShieldCheck } from "lucide-react";
 import AdminSelect from "./AdminSelect.jsx";
+import { CapabilityGrid, DEFAULT_METRICS_FILTERS, UsageFilterBar, UsageHero, UsageTemporalCharts, buildMetricsQuery, isDayPeriod } from "./UsageDashboard.jsx";
 import "../admin.css";
 
 const SECRET_KEY = "iev-admin-secret";
@@ -906,6 +907,11 @@ function metricDayLabel(date) {
   return date.split("-").reverse().join("/");
 }
 
+function toggleDayPeriod(filters, date) {
+  const active = filters?.period ?? "7d";
+  return { ...filters, period: active === date ? "7d" : date };
+}
+
 function DailyMetricChart({ daily, selectedDate, onSelect, latency = false }) {
   const valueOf = (day) => latency ? day.latency?.avg : day.checks;
   const values = daily.map(valueOf).filter((value) => Number.isFinite(value) && value >= 0);
@@ -945,15 +951,23 @@ function OutcomeMetricChart({ outcomes }) {
     </ul>}
   </section>;
 }
-
-/** Métricas dos registros disponíveis e estado do sistema (sem segredos). */
-function AdminMetrics({ data, loading, error, onReload }) {
+/** Aba Métricas como dashboard de uso (sem segredos). Filtros server-side valem para uso estimado e qualidade operacional. */
+function AdminMetrics({ data, loading, error, filters, onFiltersChange, onResetFilters, onReload }) {
   const aggregate = data?.metrics ?? null;
-  const [requestedDate, setRequestedDate] = useState("");
+  const budget = aggregate?.budgetToday ?? null;
+  const usageOptions = aggregate?.usageOptions ?? {};
   const daily = Array.isArray(aggregate?.daily) ? aggregate.daily : [];
-  const selectedDay = daily.find((day) => day.date === requestedDate);
-  const selectedDate = selectedDay?.date ?? "";
-  const metrics = selectedDay ?? aggregate;
+  const activeProvider = filters?.provider ?? "all";
+  const activeModel = filters?.model ?? "all";
+  const activePeriod = filters?.period ?? "7d";
+  const modelsForProvider = (usageOptions.models ?? []).filter((entry) => activeProvider === "all" || (entry?.provider ?? "") === activeProvider || (entry?.provider ?? "") === "");
+  const knownModel = activeModel === "all" || modelsForProvider.some((entry) => `${entry.provider ? `${entry.provider}:` : ""}${entry.model}` === activeModel || entry.model === activeModel);
+  const serverFiltered = isServerFiltered(aggregate);
+  const filtered = (!aggregate || serverFiltered) ? aggregate : applyClientFilters(aggregate, filters);
+  const metrics = filtered ?? aggregate;
+  const usage = (filtered && filtered !== aggregate && "usage" in filtered ? filtered.usage : aggregate?.usage) ?? null;
+  const filtersDirty = (filters?.period ?? "7d") !== "7d" || (filters?.provider ?? "all") !== "all" || (filters?.model ?? "all") !== "all" || (filters?.kind ?? "all") !== "all";
+  const noMatches = Boolean(metrics?.noMatches) || (Boolean(data) && !loading && !error && Boolean(aggregate) && (metrics?.checks ?? 0) === 0 && (filtersDirty || serverFiltered || /nenhum registro corresponde/i.test(String(aggregate?.note ?? ""))));
   const system = data?.system ?? null;
   const limits = system?.limits ?? null;
   const systemAlertIds = new Set(["budget", "limits", "video_coverage"]);
@@ -963,84 +977,90 @@ function AdminMetrics({ data, loading, error, onReload }) {
   const errorTotal = sumCounts(metrics?.errors);
   const blockedLimits = limits?.mode === "blocked";
   const sourceLabel = { supabase: "Supabase · registros persistidos", blob: "Blob privado · registros persistidos", memory: "Memória · somente esta instância" }[aggregate?.source] ?? "Fonte não informada";
+  const invalidFilter = filters && isDayPeriod(filters.period) && Array.isArray(usageOptions.days) && usageOptions.days.length > 0 && !usageOptions.days.includes(filters.period);
+  const scope = usage?.scope ?? aggregate?.window?.scope ?? null;
+  const invalidQuery = data?.error === "invalid_metrics_query" || data?.metrics?.invalidQuery === true;
   return (
     <section className="admin-metrics" aria-labelledby="admin-metrics-title">
       <div className="admin-section-heading">
-        <p className="admin-eyebrow">Operação · métricas e alertas</p>
+        <p className="admin-eyebrow">Operação · uso e qualidade</p>
         <h1 id="admin-metrics-title">Métricas</h1>
-        <p>Agregações da fonte e da janela informadas abaixo. O escopo depende dos registros disponíveis nessa fonte.</p>
+        <p>Uso estimado dos logs retidos e orçamento real de hoje (UTC), com qualidade operacional abaixo. Os filtros valem para toda a aba.</p>
       </div>
       <button className="btn ghost" type="button" onClick={onReload} disabled={loading}>{loading ? "Atualizando métricas…" : "Atualizar métricas"}</button>
       {error && <div className="admin-error-state" role="alert"><p>Não foi possível consultar as métricas. Os contadores estão indisponíveis, não zerados.</p><p>{error}</p><button className="btn" type="button" onClick={onReload} disabled={loading}>Tentar novamente</button></div>}
       {loading && !metrics && <ul className="admin-skel" aria-label="Carregando métricas"><li /><li /><li /></ul>}
       {metrics && <>
-        <div className="admin-metric-filter">
-          <label>Período dos indicadores
-          <AdminSelect value={selectedDate || "all"} onValueChange={setRequestedDate}>
-            <option value="all">Todos os dias</option>
-            {daily.map((day) => <option key={day.date} value={day.date}>{metricDayLabel(day.date)}</option>)}
-          </AdminSelect></label>
-          <p className="admin-mut" role="status">{selectedDate ? `Dia ${metricDayLabel(selectedDate)}` : "Todos os dias disponíveis"} · fuso {aggregate.timeZone ?? "não informado"}.</p>
-        </div>
+        <UsageFilterBar filters={filters} options={usageOptions} disabled={loading} onChange={onFiltersChange} onReset={onResetFilters} />
+        {invalidQuery && <p className="admin-error-state" role="alert">{String(data?.message ?? data?.error ?? "Consulta de métricas inválida.")}</p>}
+        {invalidFilter && !knownModel && <p className="admin-error-state" role="alert">Dia {filters.period} fora das opções retidas e modelo {activeModel} fora do provedor {activeProvider} — escolha as opções listadas.</p>}
+        {invalidFilter && knownModel && <p className="admin-error-state" role="alert">Dia {filters.period} fora das opções retidas — escolha um dos dias listados.</p>}
+        {!invalidFilter && !knownModel && <p className="admin-error-state" role="alert">Modelo {activeModel} fora do provedor {activeProvider} — escolha uma das opções listadas.</p>}
         {!Array.isArray(aggregate.daily) && <p className="admin-notice" role="note">Granularidade diária indisponível nesta fonte. Os indicadores mostram somente o agregado disponível.</p>}
         {Array.isArray(aggregate.daily) && daily.length === 0 && <p className="admin-notice" role="note">Nenhum dia com checagens datadas disponível nesta janela.</p>}
         {aggregate.dailyExcludedInvalidAt > 0 && <p className="admin-notice" role="note">{aggregate.dailyExcludedInvalidAt} registros sem data válida permanecem no agregado, mas não podem ser atribuídos a um dia.</p>}
-        {daily.length > 0 && <div className="admin-temporal-charts">
-          <DailyMetricChart daily={daily} selectedDate={selectedDate} onSelect={setRequestedDate} />
-          <DailyMetricChart daily={daily} selectedDate={selectedDate} onSelect={setRequestedDate} latency />
-        </div>}
-        <OutcomeMetricChart outcomes={metrics.byOutcome} />
-        <dl className="admin-stats">
-          <div><dt>Checagens na janela</dt><dd>{metrics.checks}</dd></div>
-          <div><dt>Servidas do cache</dt><dd>{metrics.cached} · {fmtPercent(metrics.checks ? metrics.cached / metrics.checks : 0)}</dd></div>
-          <div><dt>Abstenções</dt><dd>{metrics.abstentions} · {fmtPercent(metrics.abstentionRate)}</dd></div>
-          <div className={errorTotal ? "bad" : ""}><dt>Erros</dt><dd>{errorTotal} · {fmtPercent(metrics.errorRate)}</dd></div>
-        </dl>
-        <dl className="admin-stats">
-          <div><dt>Latência média</dt><dd>{fmtMs(metrics.latency?.avg)}</dd></div>
-          <div><dt>Latência p50</dt><dd>{fmtMs(metrics.latency?.p50)}</dd></div>
-          <div><dt>Latência p95</dt><dd>{fmtMs(metrics.latency?.p95)}</dd></div>
-        </dl>
-        <p className="admin-mut">Fonte: <b>{sourceLabel}</b>. Início da janela: {metrics.window?.startedAt ? fmtFullTime(metrics.window.startedAt) : "não informado"}{metrics.window?.endedAt ? ` · fim: ${fmtFullTime(metrics.window.endedAt)}` : ""}.</p>
-        {aggregate.source === "memory" && <p className="admin-notice" role="note">Contadores locais, sem persistência: não são compartilhados entre instâncias e reiniciar o processo zera esta janela.</p>}
+        {aggregate.source === "memory" && <p className="admin-notice" role="note">Contadores locais, sem persistência e sem granularidade diária: não são compartilhados entre instâncias e reiniciar o processo zera esta janela.</p>}
         {aggregate.note && <p className="admin-mut">{aggregate.note}</p>}
-        {metrics.window?.enoughSample
-          ? <p className="admin-mut">Amostra desta janela: {metrics.window.sample} checagens — mínimo de {metrics.thresholds?.minSample} atingido para avaliar os limiares de alerta.</p>
-          : <p className="admin-notice" role="note"><b>Amostra pequena:</b> {metrics.window?.sample ?? 0} checagens desde o início da janela, abaixo do mínimo de {metrics.thresholds?.minSample}. Os números indicam o que foi observado, não uma taxa; os alertas por limiar ficam suspensos.</p>}
-        <div className="admin-metric-grid">
-          <MetricCounts title="Por tipo de entrada" entries={countEntries(metrics.byKind)} label={(key) => KIND_LABEL[key] ?? key} empty="Nenhuma checagem contabilizada por tipo nesta janela." />
-          <MetricCounts title="Por desfecho" entries={countEntries(metrics.byOutcome)} label={(key) => OUTCOME_LABEL[key] ?? key} empty="Nenhum desfecho contabilizado nesta janela." />
-          <MetricCounts title="Por veredito" entries={countEntries(metrics.verdicts)} label={(key) => VERDICTS[key]?.label ?? key} empty="Nenhum veredito contabilizado nesta janela." />
-          <MetricCounts title="Erros por código" entries={errors} label={(key) => OUTCOME_LABEL[key] ?? key} empty="Nenhum erro contabilizado nesta janela." />
-        </div>
-        <section className="admin-metric-block">
-          <h3 className="admin-sub">Contadores observados</h3>
-          <dl className="admin-dl">
-            <dt>Tokens</dt>
-            <dd>entrada {metrics.tokens?.input ?? 0} · saída {metrics.tokens?.output ?? 0} · total {metrics.tokens?.total ?? 0}</dd>
-            <dt>Mídia processada</dt>
-            <dd>transcrições {metrics.media?.transcript ?? 0} · visão {metrics.media?.vision ?? 0} · quadros {metrics.media?.frames ?? 0}</dd>
-            <dt>Moderação</dt>
-            <dd>recusadas {metrics.moderation?.refused ?? 0} · sem cobertura {metrics.moderation?.uncovered ?? 0} · indisponível {metrics.moderation?.unavailable ?? 0} · marcadas sensíveis {metrics.moderation?.sensitive ?? 0}</dd>
-            <dt>Correções</dt>
-            <dd>{selectedDay ? "Não disponíveis por dia: pedidos e correções têm datas próprias e não são atribuídos ao dia da checagem." : <>pedidos criados {metrics.corrections?.created ?? "não disponível"} · marcados como corrigidos {metrics.corrections?.corrected ?? "não disponível"}{metrics.window?.correctionsScope === "all_retained_reports" ? " · todos os pedidos retidos (escopo próprio, independente da janela de checagens)" : metrics.window?.correctionsScope === "editorial_corrections_in_window" ? " · correções editoriais nos registros desta janela" : ""}</>}</dd>
-            <dt>Última checagem</dt>
-            <dd>{metrics.lastCheckAt ? fmtFullTime(metrics.lastCheckAt) : "nenhuma registrada nesta janela"}</dd>
-          </dl>
-        </section>
-        <section className="admin-metric-block">
-          <h3 className="admin-sub">Alertas da amostra selecionada</h3>
-          {alerts.length === 0
-            ? <p className="admin-mut">Sem alertas no limiar atual.</p>
-            : <ul className="admin-alerts">{alerts.map((alert) => <li key={alert.id} className={alert.level === "critical" ? "critical" : "warning"}>
-              <b>{alert.level === "critical" ? "Crítico" : "Atenção"}</b>
-              <span>{alert.message}</span>
-            </li>)}</ul>}
-          <p className="admin-mut">Limiares vigentes: latência média acima de {fmtMs(metrics.thresholds?.avgLatencyMs)} · taxa de erro acima de {fmtPercent(metrics.thresholds?.errorRate)} · abstenção acima de {fmtPercent(metrics.thresholds?.abstentionRate)} · orçamento a partir de {fmtPercent(metrics.thresholds?.budgetUsedPct)} · amostra mínima de {metrics.thresholds?.minSample} checagens.</p>
-        </section>
+        {noMatches
+          ? <div className="empty" role="status"><h3>Nenhum registro corresponde aos filtros</h3><p>O agregado está zerado porque nada correspondeu — não é erro. Ajuste período, provedor, modelo ou tipo.</p></div>
+          : <>
+            <UsageHero usage={usage} metrics={metrics} budget={budget} limits={limits} />
+            <CapabilityGrid usage={usage} />
+            {daily.length > 0 && <UsageTemporalCharts daily={daily} selectedPeriod={isDayPeriod(activePeriod) ? activePeriod : ""} onSelect={(date) => onFiltersChange(toggleDayPeriod(filters, date))} />}
+            <h3 className="admin-sub admin-quality-title">Qualidade operacional</h3>
+            <p className="admin-mut">Mesmos filtros do uso acima{scope ? ` · escopo: ${scope}` : ""} · fuso {aggregate.timeZone ?? "não informado"}.</p>
+            <OutcomeMetricChart outcomes={metrics.byOutcome} />
+            {daily.length > 0 && <DailyMetricChart daily={daily} selectedDate={isDayPeriod(activePeriod) ? activePeriod : ""} onSelect={(date) => onFiltersChange(toggleDayPeriod(filters, date))} latency />}
+            <dl className="admin-stats">
+              <div><dt>Checagens na janela</dt><dd>{metrics.checks}</dd></div>
+              <div><dt>Servidas do cache</dt><dd>{metrics.cached} · {fmtPercent(metrics.checks ? metrics.cached / metrics.checks : 0)}</dd></div>
+              <div><dt>Abstenções</dt><dd>{metrics.abstentions} · {fmtPercent(metrics.abstentionRate)}</dd></div>
+              <div className={errorTotal ? "bad" : ""}><dt>Erros</dt><dd>{errorTotal} · {fmtPercent(metrics.errorRate)}</dd></div>
+            </dl>
+            <dl className="admin-stats">
+              <div><dt>Latência média</dt><dd>{fmtMs(metrics.latency?.avg)}</dd></div>
+              <div><dt>Latência p50</dt><dd>{fmtMs(metrics.latency?.p50)}</dd></div>
+              <div><dt>Latência p95</dt><dd>{fmtMs(metrics.latency?.p95)}</dd></div>
+            </dl>
+            <p className="admin-mut">Fonte: <b>{sourceLabel}</b>. Início da janela: {metrics.window?.startedAt ? fmtFullTime(metrics.window.startedAt) : "não informado"}{metrics.window?.endedAt ? ` · fim: ${fmtFullTime(metrics.window.endedAt)}` : ""}.</p>
+            {metrics.window?.enoughSample
+              ? <p className="admin-mut">Amostra desta janela: {metrics.window.sample} checagens — mínimo de {metrics.thresholds?.minSample} atingido para avaliar os limiares de alerta.</p>
+              : <p className="admin-notice" role="note"><b>Amostra pequena:</b> {metrics.window?.sample ?? 0} checagens desde o início da janela, abaixo do mínimo de {metrics.thresholds?.minSample}. Os números indicam o que foi observado, não uma taxa; os alertas por limiar ficam suspensos.</p>}
+            <div className="admin-metric-grid">
+              <MetricCounts title="Por tipo de entrada" entries={countEntries(metrics.byKind)} label={(key) => KIND_LABEL[key] ?? key} empty="Nenhuma checagem contabilizada por tipo nesta janela." />
+              <MetricCounts title="Por desfecho" entries={countEntries(metrics.byOutcome)} label={(key) => OUTCOME_LABEL[key] ?? key} empty="Nenhum desfecho contabilizado nesta janela." />
+              <MetricCounts title="Por veredito" entries={countEntries(metrics.verdicts)} label={(key) => VERDICTS[key]?.label ?? key} empty="Nenhum veredito contabilizado nesta janela." />
+              <MetricCounts title="Erros por código" entries={errors} label={(key) => OUTCOME_LABEL[key] ?? key} empty="Nenhum erro contabilizado nesta janela." />
+            </div>
+            <section className="admin-metric-block">
+              <h3 className="admin-sub">Contadores observados</h3>
+              <dl className="admin-dl">
+                <dt>Tokens</dt>
+                <dd>entrada {metrics.tokens?.input ?? 0} · saída {metrics.tokens?.output ?? 0} · total {metrics.tokens?.total ?? 0}</dd>
+                <dt>Mídia processada</dt>
+                <dd>transcrições {metrics.media?.transcript ?? 0} · visão {metrics.media?.vision ?? 0} · quadros {metrics.media?.frames ?? 0}</dd>
+                <dt>Moderação</dt>
+                <dd>recusadas {metrics.moderation?.refused ?? 0} · sem cobertura {metrics.moderation?.uncovered ?? 0} · indisponível {metrics.moderation?.unavailable ?? 0} · marcadas sensíveis {metrics.moderation?.sensitive ?? 0}</dd>
+                <dt>Correções</dt>
+                <dd>{isDayPeriod(activePeriod) ? "Não disponíveis por dia: pedidos e correções têm datas próprias e não são atribuídos ao dia da checagem." : <>pedidos criados {metrics.corrections?.created ?? "não disponível"} · marcados como corrigidos {metrics.corrections?.corrected ?? "não disponível"}{metrics.window?.correctionsScope === "all_retained_reports" ? " · todos os pedidos retidos (escopo próprio, independente da janela de checagens)" : metrics.window?.correctionsScope === "editorial_corrections_in_window" ? " · correções editoriais nos registros desta janela" : ""}</>}</dd>
+                <dt>Última checagem</dt>
+                <dd>{metrics.lastCheckAt ? fmtFullTime(metrics.lastCheckAt) : "nenhuma registrada nesta janela"}</dd>
+              </dl>
+            </section>
+            <section className="admin-metric-block">
+              <h3 className="admin-sub">Alertas da amostra selecionada</h3>
+              {alerts.length === 0
+                ? <p className="admin-mut">Sem alertas no limiar atual.</p>
+                : <ul className="admin-alerts">{alerts.map((alert) => <li key={alert.id} className={alert.level === "critical" ? "critical" : "warning"}>
+                  <b>{alert.level === "critical" ? "Crítico" : "Atenção"}</b>
+                  <span>{alert.message}</span>
+                </li>)}</ul>}
+              <p className="admin-mut">Limiares vigentes: latência média acima de {fmtMs(metrics.thresholds?.avgLatencyMs)} · taxa de erro acima de {fmtPercent(metrics.thresholds?.errorRate)} · abstenção acima de {fmtPercent(metrics.thresholds?.abstentionRate)} · orçamento a partir de {fmtPercent(metrics.thresholds?.budgetUsedPct)} · amostra mínima de {metrics.thresholds?.minSample} checagens.</p>
+            </section>
+          </>}
       </>}
       {system && <section className={`admin-metric-block admin-system${blockedLimits ? " critical" : ""}`}>
-        <p className="admin-mut">Contexto operacional atual, independente do dia selecionado.</p>
+        <p className="admin-mut">Contexto operacional atual, independente dos filtros acima.</p>
         {systemAlerts.length > 0 && <ul className="admin-alerts">{systemAlerts.map((alert) => <li key={alert.id} className={alert.level === "critical" ? "critical" : "warning"}><b>{alert.level === "critical" ? "Crítico" : "Atenção"}</b><span>{alert.message}</span></li>)}</ul>}
         <h3 className="admin-sub">Sistema</h3>
         {blockedLimits && <p className="admin-error-state" role="alert">Limites em modo <code>blocked</code>: checagens novas estão sendo recusadas até haver backend compartilhado ou configuração explícita de limites.</p>}
@@ -1070,6 +1090,24 @@ function AdminMetrics({ data, loading, error, onReload }) {
       </section>}
     </section>
   );
+}
+
+/** Resposta filtrada pelo servidor: não aplicar fallback de cliente. */
+function isServerFiltered(aggregate) {
+  if (!aggregate) return false;
+  if (aggregate.filtered === true) return true;
+  if (aggregate.window?.filters != null) return true;
+  if (aggregate.usage?.filtersApplied != null) return true;
+  return false;
+}
+
+function applyClientFilters(aggregate, filters) {
+  if (!aggregate || !filters) return aggregate;
+  const period = filters.period ?? "7d";
+  const days = Array.isArray(aggregate.daily) ? aggregate.daily : [];
+  if (isDayPeriod(period)) return days.find((day) => day.date === period) ?? { ...aggregate, checks: 0, noMatches: true };
+  if (period === "all" && (filters.provider ?? "all") === "all" && (filters.model ?? "all") === "all" && (filters.kind ?? "all") === "all") return aggregate;
+  return aggregate;
 }
 
 const ADMIN_SECTIONS = [
@@ -1178,12 +1216,14 @@ export default function Admin({ showToast }) {
   const [metricsData, setMetricsData] = useState(null);
   const [metricsError, setMetricsError] = useState("");
   const [metricsLoading, setMetricsLoading] = useState(false);
+  const [metricsFilters, setMetricsFilters] = useState({ ...DEFAULT_METRICS_FILTERS });
   const [section, setSection] = useState(currentAdminSection);
   const detailRequest = useRef(0);
   const listRequest = useRef(0);
   const aiRequest = useRef(0);
   const correctionRequest = useRef(0);
   const metricsRequest = useRef(0);
+  const metricsFiltersRef = useRef({ ...DEFAULT_METRICS_FILTERS });
   const loadedOnce = useRef(false);
 
   /** Encerra a sessão local quando o servidor recusa a chave. */
@@ -1201,6 +1241,7 @@ export default function Admin({ showToast }) {
     setCorrectionDetail(null);
     setMetricsData(null);
     setMetricsError("");
+    setMetricsFilters({ ...DEFAULT_METRICS_FILTERS });
     setMetricsLoading(false);
     setAiCatalog(null);
     setAiConfig(null);
@@ -1366,13 +1407,14 @@ export default function Admin({ showToast }) {
     }
   }, [secret, authedFetch]);
 
-  const loadMetrics = useCallback(async () => {
+  const loadMetrics = useCallback(async (filters = metricsFiltersRef.current ?? { ...DEFAULT_METRICS_FILTERS }) => {
     if (!secret) return;
     const request = ++metricsRequest.current;
     setMetricsError("");
     setMetricsLoading(true);
     try {
-      const data = await authedFetch("/api/admin?metrics=1");
+      const query = buildMetricsQuery(filters);
+      const data = await authedFetch(`/api/admin?metrics=1${query ? `&${query}` : ""}`);
       if (!data.metrics) throw new Error("A consulta não retornou métricas.");
       if (request !== metricsRequest.current) return;
       setMetricsData(data);
@@ -1491,10 +1533,17 @@ export default function Admin({ showToast }) {
   }, [secret, loadAi, openDetail, openCorrection]);
 
   useEffect(() => {
+    metricsFiltersRef.current = metricsFilters;
+    if (!secret || section !== "metrics") return;
+    // Debounce: cada troca de filtro cancela o fetch anterior (loadMetrics também ignora respostas obsoletas).
+    const timer = setTimeout(() => { loadMetrics(metricsFiltersRef.current); }, 180);
+    return () => clearTimeout(timer);
+  }, [metricsFilters, section, secret, loadMetrics]);
+
+  useEffect(() => {
     if (!secret) return;
     if (section === "corrections") loadCorrections();
-    if (section === "metrics") loadMetrics();
-  }, [section, secret, loadCorrections, loadMetrics]);
+  }, [section, secret, loadCorrections]);
 
   useEffect(() => {
     const sync = () => {
@@ -1565,7 +1614,7 @@ export default function Admin({ showToast }) {
     <header className="admin-shell-header">
       <a className="admin-brand" href="/">isso é verdade<span>?</span><small>ADMINISTRAÇÃO</small></a>
       <div className="admin-actions">
-        <button className="btn ghost" type="button" onClick={() => { load({}); loadAi({ preserveDraft: true }); if (section === "corrections") loadCorrections(); if (section === "metrics") loadMetrics(); }} disabled={refreshing || loading}><RefreshCw size={15} aria-hidden="true" className={refreshing || loading ? "admin-spinning" : undefined} />{refreshing || loading ? "Atualizando…" : "Atualizar dados"}</button>
+        <button className="btn ghost" type="button" onClick={() => { load({}); loadAi({ preserveDraft: true }); if (section === "corrections") loadCorrections(); if (section === "metrics") loadMetrics(metricsFiltersRef.current); }} disabled={refreshing || loading}><RefreshCw size={15} aria-hidden="true" className={refreshing || loading ? "admin-spinning" : undefined} />{refreshing || loading ? "Atualizando…" : "Atualizar dados"}</button>
         <a className="btn" href="/">Voltar ao site<ArrowUpRight size={15} aria-hidden="true" /></a>
         <button className="btn ghost" type="button" onClick={logout}><LogOut size={15} aria-hidden="true" />Sair</button>
       </div>
@@ -1632,7 +1681,7 @@ export default function Admin({ showToast }) {
           onInvalidateCache={invalidateAdminCache}
           showToast={showToast}
         />}
-        {section === "metrics" && <AdminMetrics data={metricsData} loading={metricsLoading} error={metricsError} onReload={() => loadMetrics()} />}
+        {section === "metrics" && <AdminMetrics data={metricsData} loading={metricsLoading} error={metricsError} filters={metricsFilters} onFiltersChange={(next) => setMetricsFilters({ ...DEFAULT_METRICS_FILTERS, ...next })} onResetFilters={() => setMetricsFilters({ ...DEFAULT_METRICS_FILTERS })} onReload={() => loadMetrics(metricsFiltersRef.current)} />}
         {section === "models" && <section aria-labelledby="admin-models-title"><div className="admin-section-heading"><p className="admin-eyebrow">Configuração e compatibilidade</p><h1 id="admin-models-title">Modelos & provedores</h1><p>Defina separadamente os modelos usados na avaliação factual, visão e transcrição.</p></div>
           <AiConfigCard catalog={aiCatalog} draft={aiDraft} saved={aiConfig} saving={aiSaving} loading={aiLoading} persisted={aiPersisted} error={aiError} configErrors={aiConfigErrors} configUnavailable={aiConfigUnavailable} configStale={aiConfigStale} staleReason={aiStaleReason} onChange={setAiDraft} onSave={saveAi} onReload={() => loadAi()} onRefreshCatalog={() => loadAi({ refresh: true, preserveDraft: true })} />
         </section>}

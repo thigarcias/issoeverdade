@@ -1,6 +1,7 @@
 // Métricas sem conteúdo sensível: contadores locais para consumidores síncronos,
 // histórico durável para o painel administrativo, independente da instância.
 import { readMetricsLogs } from "./checklog.js";
+import { limitsConfig } from "./limits.js";
 const MAX_LATENCIES = 200;
 const METRICS_TIME_ZONE = "America/Sao_Paulo";
 const dayFormatter = new Intl.DateTimeFormat("en", {
@@ -194,20 +195,327 @@ function persistedCheck(record) {
   };
 }
 
+const METRICS_PERIODS = ["7d", "30d", "all"];
+const METRICS_PERIOD_MS = { "7d": 7 * 24 * 3600 * 1000, "30d": 30 * 24 * 3600 * 1000 };
+const METRICS_MAX_FILTER_CHARS = 160;
+const METRICS_MODEL_STEPS = ["judge", "article-research", "evidence-review", "evidence-research", "evidence-rereview", "transcribe", "vision"];
+const METRICS_CAPABILITIES = [
+  { id: "judge", label: "Julgamento" },
+  { id: "article-research", label: "Pesquisa do artigo" },
+  { id: "evidence-review", label: "Revisão de evidências" },
+  { id: "evidence-research", label: "Pesquisa de evidências" },
+  { id: "evidence-rereview", label: "Revisão adicional de evidências" },
+  { id: "transcribe", label: "Transcrição" },
+  { id: "vision", label: "Visão" },
+  { id: "web_search", label: "Busca web" },
+  { id: "evidence", label: "Dossiê de evidências" },
+  { id: "evidence-recovered", label: "Evidências recuperadas" },
+  { id: "moderation", label: "Moderação" },
+];
+
+function cleanMetricsText(value) {
+  if (value === undefined || value === null) return null;
+  const list = Array.isArray(value) ? value : [value];
+  if (list.length !== 1) return false;
+  const text = String(list[0]).trim();
+  if (!text) return null;
+  return text.length <= METRICS_MAX_FILTER_CHARS ? text : false;
+}
+
+function validMetricsDay(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function splitModelFilter(model) {
+  const index = model.indexOf(":");
+  if (index < 0) return { provider: null, model };
+  const provider = model.slice(0, index).trim() || null;
+  const name = model.slice(index + 1).trim();
+  if (!name) return null;
+  return { provider, model: name };
+}
+
+/**
+ * Filtros da aba Métricas (`period`, `provider`, `model`, `kind` vindos da
+ * query). Sem `period` o padrão da API é `7d`; `model` aceita
+ * `provider:modelo` ou só o nome do modelo. Malformado →
+ * `{ ok: false, error: "invalid_metrics_query" }`. Filtro válido sem matches
+ * não é erro: o agregado sai zerado com nota ("Nenhum registro corresponde
+ * aos filtros."). `durableSnapshot` sem `filters` usa a janela completa.
+ */
+export function parseMetricsFilters(query = {}) {
+  const source = query ?? {};
+  const periodText = cleanMetricsText(source.period);
+  const rawPeriod = periodText === null ? "7d" : periodText;
+  const provider = cleanMetricsText(source.provider);
+  const model = cleanMetricsText(source.model);
+  const kind = cleanMetricsText(source.kind);
+  const period = rawPeriod === false ? null
+    : rawPeriod === "7d" || rawPeriod === "30d" || rawPeriod === "all" ? rawPeriod
+    : validMetricsDay(rawPeriod) ? rawPeriod : null;
+  if (!period || provider === false || model === false || kind === false) {
+    return { ok: false, error: "invalid_metrics_query" };
+  }
+  if (model && !splitModelFilter(model)) return { ok: false, error: "invalid_metrics_query" };
+  return { ok: true, filters: { period, provider, model, kind } };
+}
+
+function modelsUsedList(record) {
+  const used = record?.modelsUsed;
+  if (!used || typeof used !== "object" || Array.isArray(used)) return [];
+  const out = [];
+  for (const [step, entry] of Object.entries(used)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    out.push({
+      step,
+      provider: typeof entry.provider === "string" ? entry.provider : null,
+      model: typeof entry.model === "string" ? entry.model : null,
+    });
+  }
+  return out;
+}
+
+function recordMatchesFilters(record, event, filters, nowMs) {
+  if (!filters) return true;
+  if (filters.kind && record?.kind !== filters.kind) return false;
+  if (filters.provider) {
+    const entries = modelsUsedList(record);
+    if (record?.provider !== filters.provider && !entries.some((entry) => entry.provider === filters.provider)) return false;
+  }
+  if (filters.model) {
+    const parsed = splitModelFilter(filters.model);
+    if (!parsed) return false;
+    const entries = modelsUsedList(record);
+    const hit = parsed.provider
+      ? ((record?.provider === parsed.provider && record?.model === parsed.model) || entries.some((entry) => entry.provider === parsed.provider && entry.model === parsed.model))
+      : (record?.model === parsed.model || entries.some((entry) => entry.model === parsed.model));
+    if (!hit) return false;
+  }
+  if (filters.period && filters.period !== "all") {
+    if (METRICS_PERIOD_MS[filters.period]) {
+      const timestamp = event ? event.timestamp : Date.parse(record?.at);
+      if (!Number.isFinite(timestamp) || timestamp < nowMs - METRICS_PERIOD_MS[filters.period]) return false;
+    } else if (!event || event.date !== filters.period) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function emptyUsageAcc() {
+  return {
+    units: 0, byKind: new Map(),
+    tokens: { input: 0, output: 0 },
+    steps: new Map(), providers: new Map(), models: new Map(),
+    queries: 0, diagnostics: 0, checksWithQueries: 0,
+    dossier: 0, reviewed: 0, recovered: 0,
+    moderationChecks: 0, refused: 0, unavailable: 0, sensitive: 0,
+    transcriptions: 0, visions: 0, frames: 0,
+  };
+}
+
+function phasePresent(record, name) {
+  return Array.isArray(record?.phases) && record.phases.some((phase) => phase?.name === name && phase?.ok !== false);
+}
+
+/**
+ * Soma sinais de uso de um registro filtrado. Cache-hit representa trabalho
+ * já pago: 0 unidades novas, 0 tokens novos e nenhuma chamada nova — por isso
+ * todos os sinais (etapas, provedores, busca, evidências, moderação, mídia)
+ * são ignorados quando `check.cached`. Tokens existem só por checagem; as
+ * capacidades trazem calls/checks, nunca tokens.
+ */
+function accumulateUsage(acc, record, check, checkUnits, checkId) {
+  const kind = record?.kind ?? check.kind ?? "unknown";
+  let kindEntry = acc.byKind.get(kind);
+  if (!kindEntry) { kindEntry = { checks: 0, units: 0 }; acc.byKind.set(kind, kindEntry); }
+  kindEntry.checks++;
+  kindEntry.units += checkUnits;
+  acc.units += checkUnits;
+  if (check.cached) return;
+  if (Number.isFinite(check.tokens?.input)) acc.tokens.input += check.tokens.input;
+  if (Number.isFinite(check.tokens?.output)) acc.tokens.output += check.tokens.output;
+  const entries = modelsUsedList(record);
+  const seenSteps = new Set();
+  const providers = new Map();
+  const models = new Map();
+  for (const entry of entries) {
+    if (entry.step && !seenSteps.has(entry.step)) {
+      seenSteps.add(entry.step);
+      acc.steps.set(entry.step, (acc.steps.get(entry.step) ?? 0) + 1);
+    }
+    if (entry.provider) providers.set(entry.provider, (providers.get(entry.provider) ?? 0) + 1);
+    if (entry.provider && entry.model) {
+      const key = `${entry.provider}:${entry.model}`;
+      models.set(key, (models.get(key) ?? 0) + 1);
+    }
+  }
+  for (const step of METRICS_MODEL_STEPS) {
+    if (!seenSteps.has(step) && phasePresent(record, step)) {
+      seenSteps.add(step);
+      acc.steps.set(step, (acc.steps.get(step) ?? 0) + 1);
+    }
+  }
+  for (const [provider, calls] of providers) {
+    let slot = acc.providers.get(provider);
+    if (!slot) { slot = { checks: new Set(), calls: 0 }; acc.providers.set(provider, slot); }
+    slot.calls += calls;
+    slot.checks.add(checkId);
+  }
+  for (const [key, calls] of models) {
+    let slot = acc.models.get(key);
+    if (!slot) { slot = { checks: new Set(), calls: 0 }; acc.models.set(key, slot); }
+    slot.calls += calls;
+    slot.checks.add(checkId);
+  }
+  const queries = Array.isArray(record?.researchQueries) ? record.researchQueries : [];
+  const diagnostics = Array.isArray(record?.researchDiagnostics) ? record.researchDiagnostics : [];
+  if (queries.length > 0 || diagnostics.length > 0) acc.checksWithQueries++;
+  acc.queries += queries.length;
+  acc.diagnostics += diagnostics.length;
+  if (record?.evidence !== null && record?.evidence !== undefined) acc.dossier++;
+  if (record?.evidenceVerification !== null && record?.evidenceVerification !== undefined) acc.reviewed++;
+  if (phasePresent(record, "evidence-recovered")) acc.recovered++;
+  const reports = Array.isArray(record?.moderationReports) ? record.moderationReports : null;
+  const legacy = Array.isArray(record?.moderation) ? record.moderation : null;
+  if ((reports && reports.length > 0) || (legacy && legacy.length > 0)) acc.moderationChecks++;
+  if (check.moderation?.refused) acc.refused++;
+  if (check.moderation?.unavailable) acc.unavailable++;
+  if (check.moderation?.sensitive) acc.sensitive++;
+  if (check.media?.transcript) acc.transcriptions++;
+  if (check.media?.vision) acc.visions++;
+  if (Number.isFinite(check.media?.frames)) acc.frames += check.media.frames;
+}
+
+function renderUsage(acc, filtersApplied, unitCosts) {
+  const steps = {};
+  for (const [step, calls] of [...acc.steps.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    steps[step] = { calls };
+  }
+  const byKind = {};
+  for (const [kind, entry] of [...acc.byKind.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    byKind[kind] = { checks: entry.checks, units: entry.units };
+  }
+  const byProvider = {};
+  for (const [provider, slot] of [...acc.providers.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    byProvider[provider] = { checks: slot.checks.size, calls: slot.calls };
+  }
+  const byModel = {};
+  for (const [key, slot] of [...acc.models.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    byModel[key] = { checks: slot.checks.size, calls: slot.calls };
+  }
+  const capabilities = [];
+  const pushCapability = (meta, calls, checks, detail) => {
+    if (!Number.isFinite(calls) || calls <= 0) return;
+    capabilities.push({ id: meta.id, label: meta.label, calls, checks, detail });
+  };
+  for (const meta of METRICS_CAPABILITIES) {
+    if (meta.id === "web_search") {
+      pushCapability(meta, acc.queries + acc.diagnostics, acc.checksWithQueries,
+        `${acc.queries} consulta(s) em ${acc.checksWithQueries} checagem(ns) com busca web (sinais researchQueries/researchDiagnostics).`);
+    } else if (meta.id === "evidence") {
+      pushCapability(meta, acc.dossier, acc.dossier,
+        `${acc.dossier} checagem(ns) com dossiê de evidências (sinais evidence/evidenceVerification).`);
+    } else if (meta.id === "evidence-recovered") {
+      pushCapability(meta, acc.recovered, acc.recovered,
+        `${acc.recovered} checagem(ns) com coleta documental (fase evidence-recovered; sem chamada nova de modelo).`);
+    } else if (meta.id === "moderation") {
+      pushCapability(meta, acc.moderationChecks, acc.moderationChecks,
+        `${acc.moderationChecks} checagem(ns) com moderação registrada (sinal moderationReports).`);
+    } else {
+      const calls = acc.steps.get(meta.id) ?? 0;
+      pushCapability(meta, calls, calls,
+        `${calls} chamada(s) em ${calls} checagem(ns) via modelsUsed, com fallback de phases.`);
+    }
+  }
+  return {
+    scope: "estimated_from_retained_logs",
+    filtersApplied: { ...filtersApplied },
+    units: {
+      estimated: acc.units,
+      byKind,
+      unitCosts: { ...unitCosts },
+      basis: "Estimativa a partir dos logs retidos: unidades de custo vigentes por tipo (IEV_COST_UNITS ou padrão text=1, link=2, image=2, video=4); cache-hit custa 0 unidades novas e 0 tokens novos; tipos sem custo configurado contam 1 unidade. Unidades não são moeda nem preço por modelo; o log guarda tokens só por checagem (total), nunca por etapa ou modelo.",
+    },
+    tokens: { input: acc.tokens.input, output: acc.tokens.output, total: acc.tokens.input + acc.tokens.output },
+    steps,
+    webSearch: { checksWithQueries: acc.checksWithQueries, queries: acc.queries },
+    evidence: { checksWithDossier: acc.dossier, checksReviewed: acc.reviewed },
+    moderation: { checks: acc.moderationChecks, refused: acc.refused, unavailable: acc.unavailable, sensitive: acc.sensitive },
+    media: { transcriptions: acc.transcriptions, visions: acc.visions, frames: acc.frames },
+    providers: { byProvider, byModel },
+    capabilities,
+  };
+}
+
+/** Opções estáveis calculadas do histórico SEM filtros (inclui cache-hits). */
+function buildUsageOptions(records) {
+  const providers = new Set();
+  const models = new Map();
+  const kinds = new Set();
+  const days = new Set();
+  for (const record of records) {
+    if (typeof record?.provider === "string" && record.provider) providers.add(record.provider);
+    if (typeof record?.kind === "string" && record.kind) kinds.add(record.kind);
+    for (const entry of modelsUsedList(record)) {
+      if (entry.provider) providers.add(entry.provider);
+      if (entry.provider && entry.model) models.set(`${entry.provider}:${entry.model}`, { provider: entry.provider, model: entry.model });
+    }
+    const event = eventDate(record?.at);
+    if (event) days.add(event.date);
+  }
+  return {
+    periods: [...METRICS_PERIODS],
+    providers: [...providers].sort((a, b) => a.localeCompare(b)),
+    models: [...models.values()]
+      .sort((a, b) => `${a.provider}:${a.model}`.localeCompare(`${b.provider}:${b.model}`))
+      .map(({ provider, model }) => ({ provider, model, label: `${provider}:${model}` })),
+    kinds: [...kinds].sort((a, b) => a.localeCompare(b)),
+    days: [...days].sort((a, b) => a.localeCompare(b)),
+  };
+}
+
+/** Sem histórico durável não há estimativa: uso null e opções vazias. */
+function emptyUsageOptions() {
+  return { periods: [...METRICS_PERIODS], providers: [], models: [], kinds: [], days: [] };
+}
+
 /** Administrative snapshot based only on retained persisted logs, never memory. */
-export async function durableSnapshot(extra = {}, env = process.env) {
+export async function durableSnapshot(extra = {}, env = process.env, filters = null) {
   const history = await readMetricsLogs(env);
-  if (!history) return snapshot(extra, env);
+  const unitCosts = { ...(limitsConfig(env)?.costUnits ?? {}) };
+  if (!history) {
+    return { ...snapshot(extra, env), usage: null, usageOptions: emptyUsageOptions() };
+  }
+  const usageOptions = buildUsageOptions(history.records);
+  const filtersApplied = {
+    period: filters?.period ?? "all",
+    provider: filters?.provider ?? null,
+    model: filters?.model ?? null,
+    kind: filters?.kind ?? null,
+  };
+  const filtersActive = Boolean(filters) && (filtersApplied.period !== "all" || Boolean(filtersApplied.provider || filtersApplied.model || filtersApplied.kind));
+  const nowMs = Date.parse(history.capturedAt);
   const aggregate = emptyState();
   aggregate.startedAt = null;
   const protocols = new Set();
   let correctionsWithoutProtocol = 0;
   const days = new Map();
+  const dayUnits = new Map();
   let dailyExcludedInvalidAt = 0;
+  const usageAcc = emptyUsageAcc();
+  let checkIndex = 0;
   for (const record of history.records) {
+    const event = eventDate(record.at);
+    if (!recordMatchesFilters(record, event, filters, nowMs)) continue;
     const check = persistedCheck(record);
     accumulateCheck(aggregate, check);
-    const event = eventDate(record.at);
+    const checkUnits = check.cached ? 0 : (Number.isFinite(unitCosts?.[record?.kind]) ? unitCosts[record.kind] : 1);
+    accumulateUsage(usageAcc, record, check, checkUnits, record?.id ?? `check-${checkIndex}`);
+    checkIndex++;
     if (event) {
       if (!aggregate.startedAt || event.timestamp < Date.parse(aggregate.startedAt)) aggregate.startedAt = record.at;
       if (!aggregate.lastCheckAt || event.timestamp > Date.parse(aggregate.lastCheckAt)) aggregate.lastCheckAt = record.at;
@@ -221,6 +529,7 @@ export async function durableSnapshot(extra = {}, env = process.env) {
       accumulateCheck(day, check);
       if (!day.startedAt || event.timestamp < Date.parse(day.startedAt)) day.startedAt = record.at;
       if (!day.lastCheckAt || event.timestamp > Date.parse(day.lastCheckAt)) day.lastCheckAt = record.at;
+      dayUnits.set(event.date, (dayUnits.get(event.date) ?? 0) + checkUnits);
     } else {
       dailyExcludedInvalidAt++;
     }
@@ -246,20 +555,34 @@ export async function durableSnapshot(extra = {}, env = process.env) {
         capturedAt: history.capturedAt, limit: history.limit, limited: history.limited,
         correctionsScope: "unavailable_by_day",
       },
+      usage: {
+        unitsEstimated: dayUnits.get(date) ?? 0,
+        tokens: rendered.tokens,
+        checks: rendered.checks,
+        cached: rendered.cached,
+      },
       note: "Checagens retidas deste dia em America/Sao_Paulo; não representa necessariamente o dia completo. Correções por dia indisponíveis.",
     };
   });
+  const usage = renderUsage(usageAcc, filtersApplied, unitCosts);
+  const filterDetail = [`período ${filtersApplied.period}`];
+  if (filtersApplied.provider) filterDetail.push(`provedor ${filtersApplied.provider}`);
+  if (filtersApplied.model) filterDetail.push(`modelo ${filtersApplied.model}`);
+  if (filtersApplied.kind) filterDetail.push(`tipo ${filtersApplied.kind}`);
   return {
     ...result,
     source: history.mode,
     daily,
     dailyExcludedInvalidAt,
+    usage,
+    usageOptions,
     window: {
       ...result.window, scope: "latest_retained_checks", endedAt: aggregate.lastCheckAt,
       capturedAt: history.capturedAt, limit: history.limit, limited: history.limited,
       correctionsScope: history.corrections ? "all_retained_reports" : "editorial_corrections_in_window",
+      filters: filtersApplied,
     },
-    note: `Histórico persistido: até ${history.limit} checagens retidas mais recentes, de qualquer data.${history.limited ? " Há registros anteriores fora desta janela." : ""} Latência usa toda a janela; tokens, mídia e moderação contam apenas trabalho não servido de cache. Campos ausentes nos registros antigos não podem ser recuperados. ${history.corrections ? "Correções: todos os pedidos retidos no Blob (corrigidos = estado atual)." : "Correções: somente alterações editoriais nos logs da janela; pedidos criados indisponíveis (null)."} A retenção do armazenamento pode excluir registros antigos. Dias usam America/Sao_Paulo; correções diárias indisponíveis.${dailyExcludedInvalidAt ? ` ${dailyExcludedInvalidAt} registro(s) com data inválida mantidos no agregado, mas excluídos dos dias e dos limites temporais.` : ""}`,
+    note: `Histórico persistido: até ${history.limit} checagens retidas mais recentes, de qualquer data.${history.limited ? " Há registros anteriores fora desta janela." : ""} Latência usa toda a janela; tokens, mídia e moderação contam apenas trabalho não servido de cache. Campos ausentes nos registros antigos não podem ser recuperados. ${history.corrections ? "Correções: todos os pedidos retidos no Blob (corrigidos = estado atual)." : "Correções: somente alterações editoriais nos logs da janela; pedidos criados indisponíveis (null)."} A retenção do armazenamento pode excluir registros antigos. Dias usam America/Sao_Paulo; correções diárias indisponíveis.${dailyExcludedInvalidAt ? ` ${dailyExcludedInvalidAt} registro(s) com data inválida mantidos no agregado, mas excluídos dos dias e dos limites temporais.` : ""} Uso estimado em unidades de custo vigentes aplicadas aos logs retidos (cache-hit = 0); o orçamento real do dia vem do guard atual, não do histórico.${filtersActive ? ` Filtros aplicados: ${filterDetail.join(", ")}.` : ""}${filtersActive && aggregate.checks === 0 ? " Nenhum registro corresponde aos filtros." : ""}`,
   };
 }
 

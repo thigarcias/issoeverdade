@@ -145,7 +145,7 @@ rolagem e opções incompatíveis desabilitadas.
 | Dossiê de evidências | `server/evidence.js` (documento, HTML/PDF, localização de trecho, revisão de fidelidade) | `server/evidence.test.js` |
 | Canal de correções | `server/corrections.js`, `api/corrections.js`, `public/correcoes.html` + `correcoes.js` | `server/corrections.test.js` |
 | Correção versionada e cache | `appendCorrectionToLog`, `invalidateCache` (época) | `server/admin-endpoint.test.js` |
-| Observabilidade | `server/metrics.js`, painel de métricas e alertas | `server/admin-endpoint.test.js` |
+| Dashboard de uso | `server/metrics.js` (`usage`, `usageOptions`, `daily[].usage`, filtros `period/provider/model/kind`, `invalid_metrics_query`) + `server/admin-endpoint.js` (`budgetToday` do guard atual) | `server/metrics.test.js` (unidades vigentes, filtros, cache-hit 0, sinais ausentes, memória `usage:null`, sanitização) e `server/admin-endpoint.test.js` (validação 400 + orçamento do dia); unidades estimadas vs orçamento real, fuso America/Sao_Paulo, janela das últimas 1000, sem moeda |
 
 ## Pendências reais (não fabricadas)
 

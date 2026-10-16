@@ -10,7 +10,7 @@ import { invalidateCache } from "./cache.js";
 import { activeGuard, createGuard, limitsConfig } from "./limits.js";
 import { clientIp } from "./client-ip.js";
 import { mediaLimits } from "./media.js";
-import { durableSnapshot as metricsSnapshot, recordCorrection } from "./metrics.js";
+import { durableSnapshot as metricsSnapshot, parseMetricsFilters, recordCorrection } from "./metrics.js";
 import { moderationConfig } from "./moderation.js";
 import { PROMPT_VERSION, VERDICT_BANDS } from "./scoring.js";
 import {
@@ -129,6 +129,40 @@ export function systemState(env = process.env) {
   };
 }
 
+/**
+ * Orçamento real de hoje (UTC) vindo do guard atual, nunca reconstruído do
+ * histórico. Sem store (modo `blocked`/`off`), `usedUnits` e `tokensObserved`
+ * saem null com nota — sem quebrar o restante das métricas.
+ */
+async function readBudgetToday(guard, env, dateUTC) {
+  const limit = guard?.config?.dailyUnits ?? limitsConfig(env).dailyUnits;
+  const tokenLimit = guard?.config?.dailyTokens ?? limitsConfig(env).dailyTokens ?? 0;
+  const storeKind = guard?.store?.kind ?? null;
+  const base = { dateUTC, usedUnits: null, limit, tokensObserved: null, tokenLimit, store: storeKind };
+  if (!guard?.store) {
+    return {
+      ...base,
+      note: "Orçamento de hoje indisponível: controles sem armazenamento compartilhado; novas checagens estão sendo recusadas.",
+    };
+  }
+  try {
+    const used = await guard.store.get(`iev:limits:v1:budget:${dateUTC}`);
+    const tokensObserved = guard.config.dailyTokens
+      ? await guard.store.get(`iev:limits:v1:tokens:${dateUTC}`).catch(() => null)
+      : null;
+    const usedUnits = used === null || used === undefined ? 0 : Number(used);
+    const tokens = tokensObserved === null || tokensObserved === undefined ? null : Number(tokensObserved);
+    return {
+      ...base,
+      usedUnits: Number.isFinite(usedUnits) ? usedUnits : null,
+      tokensObserved: tokens === null ? null : (Number.isFinite(tokens) ? tokens : null),
+      note: "Orçamento real de hoje (UTC) lido do guard atual; unidades estimadas do histórico não alteram este valor.",
+    };
+  } catch {
+    return { ...base, note: "Orçamento de hoje indisponível: leitura do armazenamento falhou; métricas seguem sem o consumo real." };
+  }
+}
+
 export async function handleAdminRequest({ method, headers = {}, query = {}, body = null, socketAddress, env = process.env } = {}) {
   const secret = env.ADMIN_SECRET || "";
   if (!secret) return jsonError(503, { error: "admin_disabled" });
@@ -142,17 +176,25 @@ export async function handleAdminRequest({ method, headers = {}, query = {}, bod
 
   if (query.metrics !== undefined && query.metrics !== "0") {
     if (method !== "GET") return jsonError(405, { error: "method_not_allowed" });
+    const parsed = parseMetricsFilters(query);
+    if (!parsed.ok) return jsonError(400, { error: parsed.error });
+    // Sem parâmetros de filtro a janela completa é preservada; com qualquer
+    // filtro explícito (`period` ausente assume `7d`) tudo é recortado.
+    const hasFilterParams = ["period", "provider", "model", "kind"].some((key) => query[key] !== undefined);
+    const filters = hasFilterParams ? { ...parsed.filters } : null;
     const guard = activeGuard(env);
     const system = systemState(env);
-    const used = await guard.store?.get?.(`iev:limits:v1:budget:${new Date().toISOString().slice(0, 10)}`).catch(() => null);
-    const budgetUsed = Number(used ?? 0);
+    const dateUTC = new Date().toISOString().slice(0, 10);
+    const budgetToday = await readBudgetToday(guard, env, dateUTC);
+    const budgetUsed = Number(budgetToday.usedUnits ?? 0);
     try {
       const metrics = await metricsSnapshot({
         limitsMode: guard.mode,
         budgetUsedPct: guard.config.dailyUnits ? budgetUsed / guard.config.dailyUnits : undefined,
         moderationMode: system.moderation.mode,
         videoCoverage: system.moderation.videoCoverage,
-      }, env);
+      }, env, filters);
+      metrics.budgetToday = budgetToday;
       return { status: 200, body: { metrics, system } };
     } catch (error) {
       const mode = logMode(env);

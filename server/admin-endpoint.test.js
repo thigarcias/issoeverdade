@@ -317,3 +317,26 @@ test("admin informa motivo de snapshot stale e não o reutiliza após remoção 
     }
   }
 });
+
+test("métricas validam filtros e anexam orçamento do guard atual", async () => {
+  resetMetrics();
+  recordCheck({ kind: "text", outcome: "checked", verdict: "true", totalMs: 1200, tokens: { input: 100, output: 50 } });
+  recordCheck({ kind: "video", outcome: "content_refused", totalMs: 30, moderation: { refused: 1 } });
+  const ok = await handleAdminRequest({ method: "GET", headers: auth, query: { metrics: "1" } });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.metrics.usage, null);
+  assert.deepEqual(ok.body.metrics.usageOptions.days, []);
+  assert.equal(ok.body.metrics.daily, null);
+  assert.equal(ok.body.metrics.budgetToday.dateUTC, new Date().toISOString().slice(0, 10));
+  assert.equal(ok.body.metrics.budgetToday.store, "memory");
+  assert.equal(typeof ok.body.metrics.budgetToday.limit, "number");
+  assert.ok(String(ok.body.metrics.budgetToday.note).length > 0);
+  assert.doesNotMatch(JSON.stringify(ok.body), /PRIVATE INPUT/);
+  const invalid = await handleAdminRequest({ method: "GET", headers: auth, query: { metrics: "1", period: "ontem" } });
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.body.error, "invalid_metrics_query");
+  const vector = await handleAdminRequest({ method: "GET", headers: auth, query: { metrics: "1", provider: ["a", "b"] } });
+  assert.equal(vector.status, 400);
+  assert.equal(vector.body.error, "invalid_metrics_query");
+  resetMetrics();
+});

@@ -23,8 +23,11 @@ const FOOTER_SIZE = 24;
 const FOOTER_LINE = 34;
 const BRAND_Y = 92;
 const RULE_Y = 118;
-const EYEBROW_Y = 184;
-const HEADLINE_Y = 252;
+const SLOGAN = "Antes de compartilhar, vale checar";
+const SLOGAN_Y = 192;
+const SLOGAN_SIZE = 52;
+const EYEBROW_Y = 256;
+const HEADLINE_Y = 324;
 const HEADLINE_SIZE = 76;
 const HEADLINE_LINE = 84;
 const HERO_SCORE_SIZE = 136;
@@ -233,6 +236,7 @@ async function ensureFonts() {
   try {
     await Promise.all([
       document.fonts.load(`400 36px ${SERIF}`),
+      document.fonts.load(`600 ${SLOGAN_SIZE}px ${SERIF}`),
       document.fonts.load(`400 ${HERO_SCORE_SIZE}px ${SERIF}`),
       document.fonts.load(`400 ${TEXT_SIZE}px ${SANS}`),
       document.fonts.load(`600 ${META_SIZE}px ${SANS}`),
@@ -403,6 +407,9 @@ export async function renderShareCards(result) {
     rule(RULE_Y, INK, 2);
 
     if (pageIndex === 0) {
+      const sloganWidth = widthOf(SLOGAN, SLOGAN_SIZE, 600, SERIF);
+      paint(SLOGAN, M, SLOGAN_Y, { size: SLOGAN_SIZE, weight: 600, family: SERIF, baseline: "alphabetic" });
+      paint(".", M + sloganWidth, SLOGAN_Y, { size: SLOGAN_SIZE, weight: 600, family: SERIF, fill: ACCENT, baseline: "alphabetic" });
       paint("VEREDITO", M, EYEBROW_Y, { size: 22, weight: 600, fill: FG3, baseline: "alphabetic", spacing: 3 });
       paintLines(titleLines, M, HEADLINE_Y, { size: HEADLINE_SIZE, family: SERIF, fill: color, baseline: "alphabetic" }, HEADLINE_LINE);
       if (hasScore) {

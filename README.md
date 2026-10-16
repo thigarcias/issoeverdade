@@ -272,7 +272,7 @@ conteúdo anterior, evitando reutilizar texto/contexto em outra entrada.
 
 O card do resultado abre o diálogo de compartilhamento com prévias PNG geradas
 localmente, sempre verticais de **1080 × 1920 px** (9:16). A imagem é um parecer rápido:
-veredito global e nota (ou sua indisponibilidade), cobertura compacta, texto
+o slogan **"Antes de compartilhar, vale checar."** no topo da primeira página; veredito global e nota (ou sua indisponibilidade), cobertura compacta, texto
 integral de cada afirmação com score/status e pontos não checados identificados
 separadamente. Não repete resumos longos, justificativas nem trechos de evidência:
 esses detalhes, motivos, limites e fontes com URLs continuam completos no

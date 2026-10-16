@@ -89,7 +89,7 @@ test("historical documentary sharing keeps reviewed quote labels without inferri
   assert.doesNotMatch(shared, /Base da avaliação: Pesquisa/);
 });
 
-test("PNG cards visibly disclose research-primary assessment", async () => {
+async function renderPainted(result) {
   const beforeDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
   const beforeLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
   const painted = [];
@@ -104,14 +104,28 @@ test("PNG cards visibly disclose research-primary assessment", async () => {
   } });
   Object.defineProperty(globalThis, "location", { configurable: true, value: { host: "example.org" } });
   try {
-    const cards = await renderShareCards(researchResult());
-    assert.ok(cards.length > 0);
-    const content = painted.join(" ");
-    assert.match(content, /Pesquisa com fontes citadas/);
-    assert.match(content, /sem conferência documental independente/);
-    assert.doesNotMatch(content, /Relação verificada|Trecho do conjunto revisado/);
+    return { cards: await renderShareCards(result), painted };
   } finally {
     if (beforeDocument) Object.defineProperty(globalThis, "document", beforeDocument); else delete globalThis.document;
     if (beforeLocation) Object.defineProperty(globalThis, "location", beforeLocation); else delete globalThis.location;
   }
+}
+
+test("PNG cards visibly disclose research-primary assessment", async () => {
+  const { cards, painted } = await renderPainted(researchResult());
+  assert.ok(cards.length > 0);
+  const content = painted.join(" ");
+  assert.match(content, /Pesquisa com fontes citadas/);
+  assert.match(content, /sem conferência documental independente/);
+  assert.doesNotMatch(content, /Relação verificada|Trecho do conjunto revisado/);
+});
+
+test("slogan do site aparece só no primeiro PNG, antes do veredito", async () => {
+  const base = researchResult();
+  const claims = Array.from({ length: 30 }, (_, index) => ({ ...base.claims[0], text: `Afirmação ${index + 1}: ${"texto longo do ponto ".repeat(8)}` }));
+  const { cards, painted } = await renderPainted({ ...base, claims });
+  assert.ok(cards.length > 1, "precisa de mais de uma página para cobrir a continuação");
+  const slogan = "Antes de compartilhar, vale checar";
+  assert.equal(painted.filter((value) => value === slogan).length, 1);
+  assert.ok(painted.indexOf(slogan) < painted.indexOf("VEREDITO"));
 });

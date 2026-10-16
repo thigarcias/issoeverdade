@@ -42,6 +42,7 @@ import {
 import {
   PROMPT_VERSION,
   SYSTEM_PROMPT_JUDGE,
+  outputContamination,
   validateResult,
 } from "./scoring.js";
 
@@ -1554,6 +1555,9 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
   }
   fixed.summary = [...summaryLimitations, fixed.summary].filter(Boolean).join(" ");
 
+  if (outputContamination(fixed)) {
+    fail(502, "output_integrity_failed", { message: "A checagem não passou na validação de integridade e não foi entregue." });
+  }
   const usedConfig = Object.fromEntries(Object.entries(aiCfg).map(([step, pair]) => [step, `${pair.provider}:${pair.model}`]));
   const inputHash = createHash("sha256").update(JSON.stringify({
     kind: input?.kind ?? "",

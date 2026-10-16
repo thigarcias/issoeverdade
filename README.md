@@ -176,7 +176,7 @@ orçamento operacional, não gasto financeiro.
   Os quadros selecionados são moderados individualmente (uma imagem por
   requisição), agregando categorias e o maior score observado. Falha mantém
   bloqueio em modo obrigatório; os motivos ficam no registro de erro do Admin.
-- **Pesquisa e auditoria opcional** (`fact-check-21`, `server/evidence.js`): a
+- **Pesquisa e auditoria opcional** (`fact-check-22`, `server/evidence.js`): a
   avaliação principal usa busca web com proveniência de URLs, vínculos por
   afirmação e validação determinística. **O coletor documental fica desativado
   por padrão**; somente `IEV_EVIDENCE_FETCH=1` ativa obtenção HTML/PDF, localização

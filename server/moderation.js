@@ -53,6 +53,18 @@ function isSurrogateBoundary(value, index) {
 /** Verbos que deixam explícito um pedido de tarefa ao assistente. */
 const ASSISTANT_TASK = /^(?:escreva|redija|gere|crie|faça|monte|traduza|resuma|explique|calcule|resolva|invente|imagine|me (?:diga(?!\s+se\s+é\s+verdade)|dê|conte|ajude)|ignore|desconsidere|aja como|atue como|finja(?: ser)?)(?:\b|\s|$)/i;
 
+/** Pedidos de identidade, modo ou instruções internas, somente quando iniciam a frase. */
+const ASSISTANT_PROBE = [
+  /^(?:quem (?:te|lhe) (?:criou|construiu|fez|treinou)|quem (?:é|e) voc[eê]|qual (?:é|e) o seu nome)\b/i,
+  /^(?:what(?: is|'s) your name|who (?:built|created|made|trained|are) you)\b/i,
+  /^(?:voc[eê] agora (?:é|e)|you are now|pretend (?:to be|you are)|finja(?: ser)?|modo (?:desenvolvedor|dan|jailbreak)|developer mode|dan mode|do anything now)\b/i,
+  /^(?:mostre|revele|imprima|liste|repita|mostra|show|reveal|print|dump|list|repeat)\b.{0,60}\b(?:prompt do sistema|instru[cç][oõ]es (?:internas|do sistema)|system prompt|internal instructions|api key|chave de api|senha|password|segredo|secret|token)\b/i,
+];
+
+function isAssistantRequest(sentence) {
+  return ASSISTANT_TASK.test(sentence) || ASSISTANT_PROBE.some((pattern) => pattern.test(sentence));
+}
+
 function withoutQuotedText(text) {
   return text
     .replace(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»/g, " ")
@@ -311,8 +323,9 @@ export function checkVideoCoverage(config = moderationConfig()) {
 /** Recusa apenas pedidos claros de tarefa, não o assunto nem indicadores incidentais. */
 export function purposeTriage(input) {
   if (input?.kind !== "text") return { blocked: false };
-  const text = withoutQuotedText(String(input.text ?? ""));
-  if (!text || !ASSISTANT_TASK.test(text)) return { blocked: false };
+  const text = withoutQuotedText(String(input.text ?? "")).replace(/https?:\/\/\S+/gi, " ");
+  const sentences = text.split(/[.!?;\n]+(?=\s|$)/).map((sentence) => sentence.trim()).filter(Boolean);
+  if (sentences.length === 0 || !sentences.every(isAssistantRequest)) return { blocked: false };
   return { blocked: true, reason: "assistant_request" };
 }
 

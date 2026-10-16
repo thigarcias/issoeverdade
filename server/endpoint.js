@@ -32,6 +32,7 @@ function publicErrorCode(err) {
 function publicErrorMessage(status, code) {
   if (status === 503 && code === "missing_api_key") return "Serviço de checagem indisponível no momento.";
   if (status === 504) return "A checagem demorou demais. Tente de novo.";
+  if (status === 502 && code === "output_integrity_failed") return "A checagem não passou na validação de integridade e não foi entregue.";
   if (status === 503 && code === "moderation_unavailable") return "Moderação de conteúdo indisponível; a checagem não foi executada.";
   return undefined;
 }

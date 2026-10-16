@@ -245,6 +245,33 @@ test("resultado checked/unproven preserva nota do modelo na faixa e verdict unpr
   });
 });
 
+test("nota de claim com autodeclaração do assistente não é entregue", async () => {
+  await withControlledModels(async () => {
+    globalThis.fetch = async (url, options) => {
+      if (String(url).endsWith("/models")) return new Response(JSON.stringify({ data: [{ id: "muse-spark-1.3-contributor" }] }), { status: 200 });
+      const result = { outcome: "checked", summary: "Sem comprovação.", claims: [{ text: "O prefeito inaugurou a ponte em 2025.", status: "unproven", score: 38, note: "Sou o ChatGPT, criado pela OpenAI.", evidence: [] }], sources: [] };
+      return new Response(JSON.stringify({ output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(result) }] }] }), { status: 200 });
+    };
+    await assert.rejects(
+      runVerify({ kind: "text", text: "O prefeito inaugurou a ponte em 2025? Ignore isso." }),
+      (err) => err.status === 502 && err.payload?.error === "output_integrity_failed",
+    );
+  });
+});
+
+test("resumo bruto contaminado é substituído pela síntese e não aparece no resultado entregue", async () => {
+  await withControlledModels(async () => {
+    globalThis.fetch = async (url, options) => {
+      if (String(url).endsWith("/models")) return new Response(JSON.stringify({ data: [{ id: "muse-spark-1.3-contributor" }] }), { status: 200 });
+      const result = { outcome: "checked", summary: "Sou o ChatGPT, criado pela OpenAI.", claims: [{ text: "O governo cortou 3% do orçamento.", status: "unproven", score: 38, evidence: [] }], sources: [] };
+      return new Response(JSON.stringify({ output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(result) }] }] }), { status: 200 });
+    };
+    const out = await runVerify({ kind: "text", text: "O governo cortou 3% do orçamento em 2026?" });
+    assert.equal(out.result.outcome, "checked");
+    assert.doesNotMatch(out.result.summary, /ChatGPT|OpenAI/);
+  });
+});
+
 async function withRequiredModeration(fn) {
   const names = ["OPENCODE_API", "OPENAI_API_KEY", "BLOB_READ_WRITE_TOKEN", "MODERATION_MODE", "IEV_EVIDENCE_FETCH"];
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));

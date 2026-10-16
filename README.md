@@ -94,8 +94,17 @@ Painéis do `/admin`: registros, correções, modelos/provedores, metodologia e
 métricas (volume, latência, abstenção, alertas e estado dos controles).
 Os registros permitem busca por ID/texto de entrada, veredito, estado de execução,
 tipo, período, ordenação e paginação no servidor. Erros destacam código, fase,
-provedor/modelo e dados disponíveis da execução. Os contadores da aba Métricas
-continuam sendo por instância; não são agregações históricas da Supabase.
+provedor/modelo e dados disponíveis da execução. A aba Métricas agrega os registros
+históricos da fonte durável já configurada (Supabase ou Blob privado), sem exigir
+novo serviço. Antes, os contadores ficavam apenas no processo local: em ambientes
+como a Vercel, a consulta administrativa podia cair em outra instância e mostrar zero.
+O painel informa a fonte (`supabase`, `blob` ou `memory`), o início da janela, a
+amostra e o escopo retornado pela API; a janela corresponde aos registros disponíveis,
+não necessariamente a todo o histórico. Sem fonte durável, o modo `memory` continua
+limitado à instância e perde seus contadores ao reiniciar. Falhas na consulta ao
+armazenamento aparecem como erro, não como contadores zerados. Use **Atualizar
+métricas** para consultar novamente a fonte; os limiares de alerta dependem da
+amostra mínima informada.
 
 ## Limites, custo e segurança
 

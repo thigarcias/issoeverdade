@@ -245,6 +245,100 @@ export async function listCheckLogs(query = {}) {
   }
 }
 
+const METRICS_LIMIT = 1000;
+const METRICS_PAGE_SIZE = 200;
+const METRICS_BLOB_SCAN_LIMIT = 10000;
+
+// Read the objects, not the capped/best-effort indexes: older retained logs and
+// reports can exist without an index entry. Any failed page/object fails metrics.
+async function retainedBlobRecords(prefix, env) {
+  const { list } = await blob();
+  const token = env.BLOB_READ_WRITE_TOKEN;
+  const paths = new Set();
+  let cursor;
+  const cursors = new Set();
+  do {
+    const page = await list({ prefix, token, limit: 1000, ...(cursor ? { cursor } : {}) });
+    if (!Array.isArray(page.blobs)) throw new StorageError("storage_invalid_response");
+    for (const item of page.blobs) {
+      if (typeof item.pathname !== "string" || !item.pathname.startsWith(prefix) || !item.pathname.endsWith(".json") || item.pathname === `${prefix}index.json`) continue;
+      paths.add(item.pathname);
+      if (paths.size > METRICS_BLOB_SCAN_LIMIT) throw new StorageError("metrics_scan_limit");
+    }
+    if (!page.hasMore) break;
+    if (!page.cursor || cursors.has(page.cursor)) throw new StorageError("storage_invalid_response");
+    cursor = page.cursor;
+    cursors.add(cursor);
+  } while (cursor);
+  const records = [];
+  const pathnames = [...paths];
+  const { get } = await blob();
+  for (let offset = 0; offset < pathnames.length; offset += 8) {
+    const batch = await Promise.all(pathnames.slice(offset, offset + 8).map(async (pathname) => {
+      const result = await get(pathname, { access: "private", token, useCache: false });
+      if (!result || result.statusCode !== 200 || !result.stream) throw new StorageError("storage_read_failed");
+      let record;
+      try { record = await new Response(result.stream).json(); }
+      catch { throw new StorageError("storage_invalid_response"); }
+      if (!record || typeof record !== "object" || Array.isArray(record)) throw new StorageError("storage_invalid_response");
+      return record;
+    }));
+    records.push(...batch);
+  }
+  return records;
+}
+
+/** Bounded retained-history input for administrative metrics; never merges memory. */
+export async function readMetricsLogs(env = process.env) {
+  const mode = logMode(env);
+  const capturedAt = new Date().toISOString();
+  if (mode === "disabled") return null;
+  let records = [];
+  if (mode === "supabase") {
+    let before = null;
+    const seen = new Set();
+    while (records.length <= METRICS_LIMIT) {
+      const query = {
+        select: "id,at,kind,outcome,log", order: "at.desc,id.desc",
+        at: `lte.${capturedAt}`, limit: String(Math.min(METRICS_PAGE_SIZE, METRICS_LIMIT + 1 - records.length)),
+      };
+      if (before) query.or = `(at.lt.${before.at},and(at.eq.${before.at},id.lt.${before.id}))`;
+      const { data } = await supabaseRequest("iev_checks", { query }, env);
+      if (!Array.isArray(data) || data.length > Number(query.limit)) throw new StorageError("storage_invalid_response");
+      if (data.length === 0) break;
+      for (const row of data) {
+        if (!validCheckId(row?.id) || !Number.isFinite(Date.parse(row?.at)) || !row.log || typeof row.log !== "object" || Array.isArray(row.log)) throw new StorageError("storage_invalid_response");
+        if (seen.has(row.id) || Date.parse(row.at) > Date.parse(capturedAt)) throw new StorageError("storage_invalid_response");
+        seen.add(row.id);
+        records.push({ ...row.log, id: row.id, at: row.at, kind: row.kind, outcome: row.outcome });
+        before = row;
+      }
+    }
+  } else {
+    records = (await retainedBlobRecords("iev-logs/", env)).filter((record) => {
+      if (!validCheckId(record.id) || !Number.isFinite(Date.parse(record.at))) throw new StorageError("storage_invalid_response");
+      return Date.parse(record.at) <= Date.parse(capturedAt);
+    });
+    records.sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || String(b.id).localeCompare(String(a.id)));
+  }
+  const limited = records.length > METRICS_LIMIT;
+  records = records.slice(0, METRICS_LIMIT);
+  let corrections = null;
+  if (env.BLOB_READ_WRITE_TOKEN) {
+    const reports = await retainedBlobRecords("iev-corrections/", env);
+    const protocols = new Set();
+    corrections = { created: 0, corrected: 0 };
+    for (const report of reports) {
+      if (typeof report.protocol !== "string" || typeof report.status !== "string") throw new StorageError("storage_invalid_response");
+      if (protocols.has(report.protocol)) continue;
+      protocols.add(report.protocol);
+      corrections.created++;
+      if (report.status === "corrected") corrections.corrected++;
+    }
+  }
+  return { mode, records, capturedAt, limit: METRICS_LIMIT, limited, corrections };
+}
+
 async function readCheckRecord(id) {
   if (!logEnabled() || !validCheckId(id)) return null;
   if (logMode() === "supabase") {

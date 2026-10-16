@@ -4,13 +4,13 @@
 // tempo constante, mínimo de tamanho e trava por origem nas falhas.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { appendCorrectionToLog, getCheckLog, listCheckLogs, logEnabled, logMode } from "./checklog.js";
-import { reportStorageError, storageFailureMessage } from "./supabase.js";
+import { StorageError, reportStorageError, storageFailureMessage } from "./supabase.js";
 import { aiConfigCatalog, getAiConfigState, saveAiConfig } from "./ai-config.js";
 import { invalidateCache } from "./cache.js";
 import { activeGuard, createGuard, limitsConfig } from "./limits.js";
 import { clientIp } from "./client-ip.js";
 import { mediaLimits } from "./media.js";
-import { snapshot as metricsSnapshot, recordCorrection } from "./metrics.js";
+import { durableSnapshot as metricsSnapshot, recordCorrection } from "./metrics.js";
 import { moderationConfig } from "./moderation.js";
 import { PROMPT_VERSION, VERDICT_BANDS } from "./scoring.js";
 import {
@@ -146,18 +146,26 @@ export async function handleAdminRequest({ method, headers = {}, query = {}, bod
     const system = systemState(env);
     const used = await guard.store?.get?.(`iev:limits:v1:budget:${new Date().toISOString().slice(0, 10)}`).catch(() => null);
     const budgetUsed = Number(used ?? 0);
-    return {
-      status: 200,
-      body: {
-        metrics: metricsSnapshot({
-          limitsMode: guard.mode,
-          budgetUsedPct: guard.config.dailyUnits ? budgetUsed / guard.config.dailyUnits : undefined,
-          moderationMode: system.moderation.mode,
-          videoCoverage: system.moderation.videoCoverage,
-        }, env),
-        system,
-      },
-    };
+    try {
+      const metrics = await metricsSnapshot({
+        limitsMode: guard.mode,
+        budgetUsedPct: guard.config.dailyUnits ? budgetUsed / guard.config.dailyUnits : undefined,
+        moderationMode: system.moderation.mode,
+        videoCoverage: system.moderation.videoCoverage,
+      }, env);
+      return { status: 200, body: { metrics, system } };
+    } catch (error) {
+      const mode = logMode(env);
+      reportStorageError("metrics", mode, error);
+      return jsonError(502, {
+        error: "metrics_failed",
+        errorCode: error instanceof StorageError ? error.code : "storage_failed",
+        mode,
+        message: error?.code === "metrics_scan_limit"
+          ? "A consulta excedeu o limite de leitura dos registros retidos. As métricas não foram calculadas."
+          : storageFailureMessage(mode, error),
+      });
+    }
   }
 
   if (query.cache !== undefined && query.cache !== "0") {

@@ -176,7 +176,7 @@ orçamento operacional, não gasto financeiro.
   Os quadros selecionados são moderados individualmente (uma imagem por
   requisição), agregando categorias e o maior score observado. Falha mantém
   bloqueio em modo obrigatório; os motivos ficam no registro de erro do Admin.
-- **Pesquisa e auditoria opcional** (`fact-check-20`, `server/evidence.js`): a
+- **Pesquisa e auditoria opcional** (`fact-check-21`, `server/evidence.js`): a
   avaliação principal usa busca web com proveniência de URLs, vínculos por
   afirmação e validação determinística. **O coletor documental fica desativado
   por padrão**; somente `IEV_EVIDENCE_FETCH=1` ativa obtenção HTML/PDF, localização
@@ -328,7 +328,7 @@ captcha, streams protegidos e conteúdo removido continuam limitações externas
 
 ## Metodologia e avaliação
 
-As novas checagens usam `fact-check-20`: o modelo escolhe a nota dentro da faixa do status conforme a força da evidência — `true` 90–100, `false` 0–14, `unproven` 35–54 (nota mais alta na faixa = evidência mais completa/direta/convergente; mais baixa = parcial/indireta/com ressalvas); o servidor valida status e faixa e aplica fallback neutro fora dela (95/5/45 — 45 é o meio da faixa de `unproven`, não valor fixo); a nota geral é a média de todos os claims pontuados, com teto 64 se houver `false` e mínimo de 50% de cobertura — abaixo disso (só via omissões) ou sem claim avaliado, `score: null`. Desmentidos fundamentados do mesmo rumor sobre medida futura podem refutá-lo sem exigir certeza sobre decisões futuras; negativa isolada não basta. Investigam alegações implícitas em
+As novas checagens usam `fact-check-21`: o modelo escolhe a nota dentro da faixa do status conforme a força da evidência — `true` 90–100, `false` 0–14, `unproven` 35–54 (nota mais alta na faixa = evidência mais completa/direta/convergente; mais baixa = parcial/indireta/com ressalvas); o servidor valida status e faixa e aplica fallback neutro fora dela (95/5/45 — 45 é o meio da faixa de `unproven`, não valor fixo); a nota geral é a média de todos os claims pontuados, com teto 64 se houver `false` e mínimo de 50% de cobertura — abaixo disso (só via omissões) ou sem claim avaliado, `score: null`. Desmentidos fundamentados do mesmo rumor sobre medida futura podem refutá-lo sem exigir certeza sobre decisões futuras, mas refutar uma mídia ou fala específica não refuta automaticamente uma alegação mais ampla; negativa isolada não basta. Investigam alegações implícitas em
 perguntas e justaposições, preservando comparação factual, atribuição e escopo. Registros v≤18 mantêm `null` histórico e não são recalculados; a versão separa o cache.
 O fluxo principal executa avaliação com busca (`judge`), pesquisa direcionada
 condicional de notícias (`article-research`), saneamento e validação
@@ -359,6 +359,13 @@ ação, objeto, alcance e condições coincidirem e não houver nova ocorrência
 especificada. Uma nova medida, declaração, data ou evento exige evidência
 correspondente; rótulo “fake news”, notícia sobre o tema e ausência de anúncio
 não bastam. Data de publicação não se confunde com período de referência do fato.
+Na versão 21, pergunta e afirmação equivalentes preservam a mesma hipótese.
+O modelo deve fixar o escopo antes de classificar e não associar uma entrada
+genérica a um rumor específico apenas porque encontrou uma checagem na busca.
+Se a prova só desmente uma mídia, fala ou ocorrência mais estreita, esse limite
+aparece na justificativa e a alegação ampla continua `unproven` quando não
+resolvida por outras evidências. Ambiguidades relevantes não são resolvidas
+silenciosamente em favor do sentido mais conveniente à fonte.
 
 Notas atuais: `true` 90–100, `false` 0–14, `unproven` 35–54, com a nota decidida pelo modelo dentro da faixa (abstenção evidencial: registra falta de base suficiente, não probabilidade nem "meio-termo"; `context` da pesquisa principal vira `unproven` com nota na faixa). Fora da faixa, o servidor aplica o fallback neutro (95/5/45). `context=70` permanece histórico. `score=null` só sem claim avaliado (`coverage.total===0`, ex. `insufficient_input`/`no_verifiable_claims`) ou com cobertura <0,5 por omissões; nunca para claim avaliado. O overall é a média aritmética arredondada de todos os claims com score, com teto 64 se houver `false`. Exemplo: `true` (92) + `unproven` (40) → (92 + 40) / 2 = 66. `evidenceSupport`
 (`supports`, `refutes`, `context`, `insufficient`) descreve suporte factual — `unproven` recebe nota na faixa 35–54 decidida pelo modelo, sem exclusão nem zero;

@@ -176,7 +176,7 @@ orçamento operacional, não gasto financeiro.
   Os quadros selecionados são moderados individualmente (uma imagem por
   requisição), agregando categorias e o maior score observado. Falha mantém
   bloqueio em modo obrigatório; os motivos ficam no registro de erro do Admin.
-- **Pesquisa e auditoria opcional** (`fact-check-18`, `server/evidence.js`): a
+- **Pesquisa e auditoria opcional** (`fact-check-20`, `server/evidence.js`): a
   avaliação principal usa busca web com proveniência de URLs, vínculos por
   afirmação e validação determinística. **O coletor documental fica desativado
   por padrão**; somente `IEV_EVIDENCE_FETCH=1` ativa obtenção HTML/PDF, localização
@@ -185,7 +185,7 @@ orçamento operacional, não gasto financeiro.
   não é trecho de página lido/conferido independentemente: recebe
   `verification: research`, nunca `verified`. Uma divergência explícita entre
   citação e documento obtido impede reutilizar aquela citação como fallback;
-  falta de fonte, conflito ou período incompatível mantém a abstenção.
+  falta de fonte, conflito ou período incompatível mantém a abstenção (`unproven`, com nota na faixa 35–54 decidida pelo modelo).
   Consulte a [metodologia](docs/metodologia-factual.md) e a
   [auditoria dos gates do fluxo](docs/auditoria-gates-fluxo-2026-10-15.md) para
   outros bloqueios e riscos ainda existentes.
@@ -290,8 +290,8 @@ há envio automático nem garantia de que o WhatsApp será escolhido.
 Sem suporte ao conjunto de arquivos, o diálogo oferece download das páginas,
 **Copiar texto** e **Abrir WhatsApp com texto**, avisando que todas as imagens
 devem ser anexadas manualmente. Resultados sem veredito mantêm essa limitação,
-sem inventar nota/selo factual. Resultados “sem comprovação” preservam os pontos
-e o status de limitação, mas a nota indisponível nunca é convertida em zero.
+sem inventar nota/selo factual. Resultados "sem comprovação" preservam os pontos
+e o status de limitação com a nota na faixa 35–54 decidida pelo modelo; só resultados sem claim avaliado ficam sem nota, e essa indisponibilidade nunca é convertida em zero.
 
 Links sociais usam texto disponível em oEmbed, worker, yt-dlp ou OpenGraph e
 seguem até três links documentais presentes nesse texto, dentro de limites. Texto
@@ -328,8 +328,8 @@ captcha, streams protegidos e conteúdo removido continuam limitações externas
 
 ## Metodologia e avaliação
 
-As novas checagens usam `fact-check-18`: desmentidos fundamentados do mesmo rumor sobre medida futura podem refutá-lo sem exigir certeza sobre decisões futuras; negativa isolada não basta. A nota geral exige ao menos 50% das afirmações pontuadas (incluindo omitidas no total), com média apenas das notas disponíveis. Investigam alegações implícitas em
-perguntas e justaposições, preservando comparação factual, atribuição e escopo.
+As novas checagens usam `fact-check-20`: o modelo escolhe a nota dentro da faixa do status conforme a força da evidência — `true` 90–100, `false` 0–14, `unproven` 35–54 (nota mais alta na faixa = evidência mais completa/direta/convergente; mais baixa = parcial/indireta/com ressalvas); o servidor valida status e faixa e aplica fallback neutro fora dela (95/5/45 — 45 é o meio da faixa de `unproven`, não valor fixo); a nota geral é a média de todos os claims pontuados, com teto 64 se houver `false` e mínimo de 50% de cobertura — abaixo disso (só via omissões) ou sem claim avaliado, `score: null`. Desmentidos fundamentados do mesmo rumor sobre medida futura podem refutá-lo sem exigir certeza sobre decisões futuras; negativa isolada não basta. Investigam alegações implícitas em
+perguntas e justaposições, preservando comparação factual, atribuição e escopo. Registros v≤18 mantêm `null` histórico e não são recalculados; a versão separa o cache.
 O fluxo principal executa avaliação com busca (`judge`), pesquisa direcionada
 condicional de notícias (`article-research`), saneamento e validação
 determinística. A base `assessmentBasis: web_research` é **Pesquisa com fontes
@@ -346,7 +346,7 @@ Não há repetição até confirmar nem troca automática de provedor.
 Falha operacional da auditoria conserva pesquisa primária elegível, mas
 divergência explícita de citação em documento obtido exclui aquela citação do
 fallback; truncamento não é refutação. Sem fonte/trecho válido, com conflito ou
-período disjunto, mantém-se a abstenção. Desativar o coletor das fontes não
+período disjunto, mantém-se a abstenção (`unproven`, com nota na faixa 35–54 decidida pelo modelo). Desativar o coletor das fontes não
 desativa leitores da entrada (artigo/PDF/imagem/mídia). Registros e smokes
 anteriores preservam sua versão histórica; a auditoria v15 não foi reescrita.
 A síntese é construída deterministicamente a partir das classificações e
@@ -360,13 +360,8 @@ especificada. Uma nova medida, declaração, data ou evento exige evidência
 correspondente; rótulo “fake news”, notícia sobre o tema e ausência de anúncio
 não bastam. Data de publicação não se confunde com período de referência do fato.
 
-Notas atuais: `true=95`, `false=5`; `context` da pesquisa principal vira `unproven`, sem nota. `context=70` permanece histórico.
-`unproven` recebe `score=null`, não zero. Havendo qualquer afirmação sem
-comprovação ou omitida, a nota global também é `null` e o veredito `unproven`;
-a média só inclui resultados totalmente avaliados. `evidenceSupport`
-(`supports`, `refutes`, `context`, `insufficient`) descreve suporte factual;
-`coverage` (`total`, `assessed`, `unproven`, `omitted`) descreve alcance da
-avaliação. A interface, o detalhe e o compartilhamento preservam essa distinção.
+Notas atuais: `true` 90–100, `false` 0–14, `unproven` 35–54, com a nota decidida pelo modelo dentro da faixa (abstenção evidencial: registra falta de base suficiente, não probabilidade nem "meio-termo"; `context` da pesquisa principal vira `unproven` com nota na faixa). Fora da faixa, o servidor aplica o fallback neutro (95/5/45). `context=70` permanece histórico. `score=null` só sem claim avaliado (`coverage.total===0`, ex. `insufficient_input`/`no_verifiable_claims`) ou com cobertura <0,5 por omissões; nunca para claim avaliado. O overall é a média aritmética arredondada de todos os claims com score, com teto 64 se houver `false`. Exemplo: `true` (92) + `unproven` (40) → (92 + 40) / 2 = 66. `evidenceSupport`
+(`supports`, `refutes`, `context`, `insufficient`) descreve suporte factual — `unproven` recebe nota na faixa 35–54 decidida pelo modelo, sem exclusão nem zero;
 
 A auditoria documental opcional usa JEV `jev-1.13-free` via OpenCode/SystemOne
 por padrão (`IEV_EVIDENCE_REVIEW_PROVIDER=jev|judge`), somente com coleta

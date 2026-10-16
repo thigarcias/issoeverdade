@@ -61,6 +61,7 @@ export async function saveCheckLog(entry, { sharing = null } = {}) {
     promptHashes: entry.promptHashes ?? {},
     outcome: entry.outcome ?? (entry.error ? "error" : entry.verdict ? "checked" : "legacy"),
     verdict: entry.verdict ?? null,
+    // Legado v≤18: score null preservado para "sem nota"; novos checked/unproven trazem número.
     score: typeof entry.score === "number" ? entry.score : null,
     summary: String(entry.summary ?? ""),
     claims: Array.isArray(entry.claims) ? entry.claims.slice(0, 50) : [],

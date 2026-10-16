@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, BookOpen, Check, CircleAlert, CircleMinus, Clock3, FileCheck, FileText, Image as ImageIcon, Link2, ListChecks, LoaderCircle, Minus, RotateCcw, Scale, SearchCheck, UploadCloud, Video, X } from "lucide-react";
-import { ACTIVITY_STATE_LABEL, ACTIVITY_TEXT, VERDICTS, modalitySummary } from "../data/constants.js";
+import { ACTIVITY_STATE_LABEL, ACTIVITY_TEXT, VERDICTS, isLegacyMethodology, modalitySummary } from "../data/constants.js";
 import { verify } from "../lib/api.js";
 import { useServerLimits } from "../lib/hooks.js";
 import ResultCard from "./ResultCard.jsx";
@@ -284,7 +284,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
         <form className={`card${result && !running && !expanded ? " form-collapsed" : ""}${running && !result ? " form-hidden" : ""}`} onSubmit={handleSubmit} aria-label="Enviar conteúdo para checagem">
           <div className="hd">
             <h3>{result && !running ? "Checagem concluída" : "O que você quer checar?"}</h3>
-            <span className="aside">{result && !running ? (result.score != null ? `nota ${result.score}/100` : result.verdict ? "sem nota global" : "sem veredito") : "Escolha um formato"}</span>
+            <span className="aside">{result && !running ? (result.score != null ? `nota ${result.score}/100` : result.verdict ? (isLegacyMethodology(result.methodologyVersion) ? "sem nota (registro anterior)" : "nota indisponível") : "sem veredito") : "Escolha um formato"}</span>
           </div>
 
           <div className="tabs" role="tablist" aria-label="Tipo de conteúdo">
@@ -522,7 +522,7 @@ export default function Verifier({ showToast, onChecked, quickInput, onShareCard
         <div className="card result-pane" aria-label="Resultado da checagem" ref={resultPane}>
           <div className="hd">
             <h3>{result ? "Resultado da análise" : running ? "Checagem em andamento" : error ? "Não foi possível concluir" : "Da dúvida ao contexto"}</h3>
-            <span className="aside">{result ? (result.score == null ? (result.verdict ? "sem nota global" : "sem veredito") : `nota ${result.score}/100`) : running ? "Etapas em tempo real" : error ? "Revise e tente novamente" : "Sua leitura, com evidências"}</span>
+            <span className="aside">{result ? (result.score == null ? (result.verdict ? (isLegacyMethodology(result.methodologyVersion) ? "sem nota (registro anterior)" : "nota indisponível") : "sem veredito") : `nota ${result.score}/100`) : running ? "Etapas em tempo real" : error ? "Revise e tente novamente" : "Sua leitura, com evidências"}</span>
           </div>
           {result && !running && expanded && checkedInput &&
             ((tab === "image" ? "" : text.trim()) !== checkedInput.text || (tab === "image" ? imageContext.trim() : "") !== checkedInput.context || tab !== checkedInput.kind || fileFingerprint(file) !== checkedInput.fileFingerprint) && (

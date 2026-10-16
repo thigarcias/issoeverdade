@@ -130,6 +130,11 @@ export default function Feed({ items: allItems, onOpen }) {
                         <small>nota<br />/100</small>
                       </div>
                     )}
+                    {v && item.score == null && item.verdict && (item.claims?.length ?? 0) > 0 && (
+                      <div className="feed-score">
+                        <small>sem nota<br />(registro anterior)</small>
+                      </div>
+                    )}
                   </div>
                   {v && item.score != null && (
                     <div className="score-bar" aria-hidden="true">

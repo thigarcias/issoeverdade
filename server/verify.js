@@ -816,6 +816,7 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       configRevision: hit.configRevision ?? configState.revision,
       outcome: hit.result?.outcome ?? "checked",
       verdict: hit.result?.verdict ?? null,
+      // Legado v≤18: unproven com score null atravessa como null; registros novos trazem 45.
       score: typeof hit.result?.score === "number" ? hit.result.score : null,
       summary: hit.result?.summary ?? "",
       claims: hit.result?.claims ?? [],

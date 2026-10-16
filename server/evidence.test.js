@@ -465,7 +465,7 @@ test("revisão conclusiva não promove comparação com cálculo inválido", () 
   });
   const { fixed } = validateResult({ outcome: "checked", claims: applied.claims, sources: [{}] });
   assert.equal(fixed.verdict, "unproven");
-  assert.equal(fixed.score, null);
+  assert.equal(fixed.score, 45);
 });
 
 test("contexto documental não resolve abstenção inicial", () => {
@@ -479,11 +479,11 @@ test("contexto documental não resolve abstenção inicial", () => {
   });
   const { fixed } = validateResult({ outcome: "checked", claims: applied.claims, sources: [{}] });
   assert.equal(fixed.verdict, "unproven");
-  assert.equal(fixed.score, null);
+  assert.equal(fixed.score, 45);
 });
 
 for (const status of ["true", "false", "context", "unproven"]) {
-  test(`mesmo contexto documental termina sem nota independentemente do status inicial ${status}`, () => {
+  test(`mesmo contexto documental termina sem comprovação (45) independentemente do status inicial ${status}`, () => {
     const quote = "A pessoa pediu apoio financeiro; a notícia não documenta pagamento.";
     const claim = { text: "A pessoa recebeu o dinheiro.", status, sourceIds: [0], evidence: [{ sourceId: 0, relation: "supports", quote }] };
     const applied = evidence.applyReview({
@@ -494,7 +494,7 @@ for (const status of ["true", "false", "context", "unproven"]) {
     assert.equal(applied.claims[0].status, "unproven");
     assert.equal(applied.claims[0].evidenceReview.verdict, "context");
     const { fixed } = validateResult({ outcome: "checked", claims: applied.claims, sources: [{}] });
-    assert.equal(fixed.score, null);
+    assert.equal(fixed.score, 45);
   });
 }
 
@@ -564,7 +564,7 @@ test("páginas de vídeo sem transcrição preservam impossibilidade e não part
   assert.equal(applied.claims[0].status, "unproven");
   assert.match(applied.claims[0].note, /não forneceram transcrição/);
   assert.equal(applied.claims[0].evidence[0].verification, "unavailable");
-  assert.equal(validateResult({ outcome: "checked", claims: applied.claims, sources: [{ url }] }).fixed.score, null);
+  assert.equal(validateResult({ outcome: "checked", claims: applied.claims, sources: [{ url }] }).fixed.score, 45);
 });
 
 test("obtenção de documentos compartilha teto e orçamento de bytes", async () => {
@@ -593,7 +593,7 @@ test("comparação qualitativa recebe os dois lados sem exigir cálculo anual", 
   const applied = evidence.applyReview({ claims, citations, review: { claims: [{ claimIndex: 0, verdict: "context", note: "Votação atual e revisão futura são ações diferentes." }] } });
   assert.equal(applied.claims[0].evidenceReview.verification, "verified");
   assert.equal(applied.claims[0].status, "unproven");
-  assert.equal(validateResult({ outcome: "checked", claims: applied.claims, sources: [{}, {}] }).fixed.score, null);
+  assert.equal(validateResult({ outcome: "checked", claims: applied.claims, sources: [{}, {}] }).fixed.score, 45);
 });
 
 test("metadados estruturados sem articleBody documentam apenas título e data", async () => {
@@ -781,7 +781,7 @@ test("fallback não promove abstenção/contexto nem aceita evidências inválid
     const data = researchFixture(); mutate(data);
     const assessed = evidence.applyEvidenceAssessment({ ...data, config: evidence.evidenceConfig({}) });
     assert.equal(assessed.claims[0].status, "unproven");
-    assert.equal(assessed.claims[0].score, null);
+    assert.equal(assessed.claims[0].score, 45);
   }
 });
 

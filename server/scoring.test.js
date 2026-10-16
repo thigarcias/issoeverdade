@@ -25,12 +25,21 @@ function resultFor(status, evidence = [evidenceFor(status === "false" ? "refutes
   };
 }
 
-function assertUnknown(result, expectedCoverage = { total: 1, assessed: 0, unproven: 1, omitted: 0 }) {
+function assertUnprovenScored(result, expectedCoverage = { total: 1, assessed: 1, unproven: 1, omitted: 0 }) {
+  assert.equal(result.score, 45);
+  assert.equal(result.verdict, "unproven");
+  assert.deepEqual(result.coverage, expectedCoverage);
+  for (const claim of result.claims.filter((item) => item.status === "unproven")) {
+    assert.equal(claim.score, 45);
+  }
+}
+
+function assertUnknown(result, expectedCoverage) {
   assert.equal(result.score, null);
   assert.equal(result.verdict, "unproven");
   assert.deepEqual(result.coverage, expectedCoverage);
   for (const claim of result.claims.filter((item) => item.status === "unproven")) {
-    assert.equal(claim.score, null);
+    assert.equal(claim.score, 45);
   }
 }
 
@@ -41,7 +50,7 @@ for (const [status, relation] of [["true", "supports"], ["false", "refutes"]]) {
     assert.equal(fixed.claims[0].status, "unproven");
     assert.equal(fixed.claims[0].evidence[0].relation, "context");
     assert.notEqual(fixed.claims[0].note, raw.claims[0].note);
-    assertUnknown(fixed);
+    assertUnprovenScored(fixed);
   });
 }
 
@@ -97,17 +106,43 @@ for (const relation of ["supports", "refutes", "context"]) {
   });
 }
 
-for (const [status, relation, score] of [["true", "supports", 95], ["context", "context", 70], ["false", "refutes", 5]]) {
-  test(`score ${status} é canônico, não inferido da nota do modelo`, () => {
-    for (const proposed of [undefined, null, "95", 0, 5, 35, 55, 70, 85, 90, 95, 100, NaN, Infinity]) {
+for (const [status, relation, fallback, band] of [["true", "supports", 95, [90, 100]], ["context", "context", 70, [65, 74]], ["false", "refutes", 5, [0, 14]]]) {
+  test(`score ${status} preserva nota do modelo na faixa, fallback ${fallback} fora dela`, () => {
+    for (const proposed of [undefined, null, "95", NaN, Infinity, band[0] - 1, band[1] + 1]) {
       const raw = resultFor(status, [evidenceFor(relation)]);
       raw.claims[0].score = proposed;
       const { fixed } = validateResult(raw);
-      assert.equal(fixed.claims[0].score, score);
-      assert.equal(fixed.score, score);
+      assert.equal(fixed.claims[0].score, fallback);
+      assert.equal(fixed.score, fallback);
+    }
+    for (const proposed of [band[0], Math.round((band[0] + band[1]) / 2), band[1]]) {
+      const raw = resultFor(status, [evidenceFor(relation)]);
+      raw.claims[0].score = proposed;
+      const { fixed } = validateResult(raw);
+      assert.equal(fixed.claims[0].score, proposed);
+      assert.equal(fixed.score, proposed);
     }
   });
 }
+
+test("score unproven preserva nota do modelo na faixa 35–54, fallback 45 fora dela", () => {
+  for (const proposed of [35, 42, 54]) {
+    const raw = resultFor("unproven");
+    raw.claims[0].score = proposed;
+    const { fixed } = validateResult(raw);
+    assert.equal(fixed.claims[0].status, "unproven");
+    assert.equal(fixed.claims[0].score, proposed);
+    assert.equal(fixed.score, proposed);
+    assert.equal(fixed.verdict, "unproven");
+  }
+  for (const proposed of [undefined, null, 34, 55, 70, 95]) {
+    const raw = resultFor("unproven");
+    raw.claims[0].score = proposed;
+    const { fixed } = validateResult(raw);
+    assert.equal(fixed.claims[0].score, 45);
+    assert.equal(fixed.score, 45);
+  }
+});
 
 test("múltiplas fontes não presumem independência ou condição primária", () => {
   const raw = resultFor("true", [evidenceFor("supports"), evidenceFor("supports", { sourceId: 1 })]);
@@ -118,13 +153,14 @@ test("múltiplas fontes não presumem independência ou condição primária", (
   assert.equal(fixed.claims[0].score, 95);
 });
 
-test("claim unproven não recebe score mesmo com indício vinculado", () => {
+test("claim unproven recebe 45 mesmo com indício vinculado", () => {
   const raw = resultFor("unproven");
   raw.claims[0].evidenceSupport = "supports";
   const { fixed } = validateResult(raw);
   assert.equal(fixed.claims[0].status, "unproven");
+  assert.equal(fixed.claims[0].score, 45);
   assert.equal(fixed.claims[0].note, raw.claims[0].note);
-  assertUnknown(fixed);
+  assertUnprovenScored(fixed);
   assert.equal(fixed.claims[0].evidenceSupport, "supports");
 });
 
@@ -132,7 +168,7 @@ for (const [status, relation] of [["true", "refutes"], ["false", "supports"], ["
   test(`relação ${relation} não valida status ${status}`, () => {
     const { fixed } = validateResult(resultFor(status, [evidenceFor(relation)]));
     assert.equal(fixed.claims[0].status, "unproven");
-    assertUnknown(fixed);
+    assertUnprovenScored(fixed);
   });
 }
 
@@ -147,7 +183,7 @@ test("causas estruturais diferentes produzem razões distintas, sem manter confi
   inputs[0].claims[0].sourceIds = [];
   const notes = inputs.map((raw) => {
     const { fixed } = validateResult(raw);
-    assertUnknown(fixed);
+    assertUnprovenScored(fixed);
     assert.notEqual(fixed.claims[0].note, raw.claims[0].note);
     assert.ok(fixed.claims[0].note.length > 0);
     return fixed.claims[0].note;
@@ -158,7 +194,7 @@ test("causas estruturais diferentes produzem razões distintas, sem manter confi
 for (const sourceId of [-1, 1, 0.5, "0", undefined]) {
   test(`índice inválido ${String(sourceId)} não conta como evidência`, () => {
     const { fixed } = validateResult(resultFor("true", [evidenceFor("supports", { sourceId })]));
-    assertUnknown(fixed);
+    assertUnprovenScored(fixed);
     assert.deepEqual(fixed.claims[0].evidence, []);
   });
 }
@@ -167,21 +203,21 @@ test("fonte existente mas não vinculada ao claim não conta", () => {
   const raw = resultFor("true");
   raw.claims[0].sourceIds = [];
   const { fixed } = validateResult(raw);
-  assertUnknown(fixed);
+  assertUnprovenScored(fixed);
   assert.deepEqual(fixed.claims[0].evidence, []);
 });
 
 test("trecho literal exige pelo menos oito caracteres após trim", () => {
   for (const quote of [undefined, null, 12345678, "", "       ", "1234567", " 1234567 "]) {
     const { fixed } = validateResult(resultFor("true", [evidenceFor("supports", { quote })]));
-    assertUnknown(fixed);
+    assertUnprovenScored(fixed);
   }
   const { fixed } = validateResult(resultFor("true", [evidenceFor("supports", { quote: " 12345678 " })]));
   assert.equal(fixed.claims[0].status, "true");
   assert.equal(fixed.claims[0].evidence[0].quote, "12345678");
 });
 
-test("texto ausente ou status inválido não recebem pontuação", () => {
+test("texto ausente ou status inválido recebem 45 como abstenção", () => {
   for (const alter of [
     (claim) => { claim.text = "   "; },
     (claim) => { claim.status = "invalid"; },
@@ -190,7 +226,7 @@ test("texto ausente ou status inválido não recebem pontuação", () => {
     alter(raw.claims[0]);
     const { fixed } = validateResult(raw);
     assert.equal(fixed.claims[0].status, "unproven");
-    assertUnknown(fixed);
+    assertUnprovenScored(fixed);
   }
 });
 
@@ -199,7 +235,7 @@ for (const verification of ["unavailable", "unclear"]) {
     test(`revisão ${verification} não valida claim ${status}, nem evidência context`, () => {
       const { fixed } = validateResult(resultFor(status, [evidenceFor("context", { verification })]));
       assert.equal(fixed.claims[0].status, "unproven");
-      assertUnknown(fixed);
+      assertUnprovenScored(fixed);
     });
   }
 }
@@ -210,7 +246,7 @@ test("revisão verified preserva relação válida e razão semântica anterior 
   const raw = resultFor("unproven", [evidenceFor("context", { verification: "unclear" })]);
   raw.claims[0].evidenceReviewReason = "A revisão não resolveu a correspondência entre a hipótese e o trecho.";
   const { fixed } = validateResult(raw);
-  assertUnknown(fixed);
+  assertUnprovenScored(fixed);
   assert.equal(fixed.claims[0].note, raw.claims[0].evidenceReviewReason);
   assert.equal(fixed.claims[0].evidenceReviewReason, raw.claims[0].evidenceReviewReason);
 });
@@ -241,7 +277,7 @@ test("suporte agrupado respeita vínculos estruturais de TODOS os trechos", () =
   ]) {
     const broken = structuredClone(raw);
     mutate(broken.claims[0]);
-    assertUnknown(validateResult(broken).fixed);
+    assertUnprovenScored(validateResult(broken).fixed);
   }
 });
 
@@ -251,7 +287,7 @@ test("comparação calculada exige suporte do grupo e só então promove unprove
     evidenceFor("context", { evidenceId: "b", verification: "verified" }),
   ]);
   raw.claims[0].comparison = { eligible: true, relation: "supports", groups: [{ rows: [{ evidenceId: "a" }] }, { rows: [{ evidenceId: "b" }] }] };
-  assertUnknown(validateResult(raw).fixed);
+  assertUnprovenScored(validateResult(raw).fixed);
   raw.claims[0].evidenceReview = { verdict: "supports", verification: "verified", incomplete: false, evidenceIndices: [0, 1] };
   const fixed = validateResult(raw).fixed;
   assert.equal(fixed.claims[0].status, "true");
@@ -265,25 +301,24 @@ test("comparação calculada exige suporte do grupo e só então promove unprove
     const broken = structuredClone(raw);
     broken.claims[0].status = "true";
     mutate(broken.claims[0]);
-    assertUnknown(validateResult(broken).fixed);
+    assertUnprovenScored(validateResult(broken).fixed);
   }
 });
 
-test("nota geral exige pelo menos metade das afirmações com nota", () => {
+test("nota geral inclui unproven com 45; null só com omissões altas", () => {
   for (const unknownCount of [1, 2, 3, 49]) {
     const raw = resultFor("true");
     raw.claims.push(...Array.from({ length: unknownCount }, () => resultFor("unproven", []).claims[0]));
     const { fixed } = validateResult(raw);
     assert.equal(fixed.claims[0].score, 95);
-    if (unknownCount === 1) {
-      assert.equal(fixed.score, 95);
-      assert.equal(fixed.verdict, "true");
-      assert.equal(fixed.claims[1].score, null);
-      assert.deepEqual(validateResult(fixed).fixed, fixed);
-    } else {
-      assertUnknown(fixed, { total: unknownCount + 1, assessed: 1, unproven: unknownCount, omitted: 0 });
-    }
+    assert.equal(fixed.claims[1].score, 45);
+    assert.deepEqual(fixed.coverage, { total: unknownCount + 1, assessed: unknownCount + 1, unproven: unknownCount, omitted: 0 });
+    assert.equal(fixed.score, Math.round((95 + 45 * unknownCount) / (unknownCount + 1)));
+    assert.deepEqual(validateResult(fixed).fixed, fixed);
   }
+  const omitted = resultFor("true");
+  omitted.omittedClaimsCount = 2;
+  assertUnknown(validateResult(omitted).fixed, { total: 3, assessed: 1, unproven: 0, omitted: 2 });
 });
 
 test("média arredondada preserva notas individuais e exclui opiniões", () => {
@@ -304,8 +339,11 @@ test("claim refutado impede selo de confirmação em cobertura completa", () => 
   assert.equal(fixed.score, 64);
   assert.equal(fixed.verdict, "distorted");
   assert.deepEqual(fixed.coverage, { total: 4, assessed: 4, unproven: 0, omitted: 0 });
-  raw.claims.push(resultFor("unproven", []).claims[0]);
-  assert.equal(validateResult(raw).fixed.score, 64);
+  const mixed = resultFor("true");
+  mixed.claims.push(resultFor("false").claims[0], resultFor("unproven", []).claims[0]);
+  const mixedFixed = validateResult(mixed).fixed;
+  assert.equal(mixedFixed.score, 48);
+  assert.equal(mixedFixed.verdict, "unproven");
 });
 
 test("limite de cinquenta claims mantém omissões separadas e revalidação coerente", () => {
@@ -397,8 +435,7 @@ test("síntese antiga não sobrevive a mudança de classificação ou cobertura 
   assert.notEqual(omitted.summary, raw.summary);
   assert.equal(omitted.summary, "");
   const unknown = validateResult({ ...resultFor("unproven", []), summary: raw.summary }).fixed;
-  assert.notEqual(unknown.summary, raw.summary);
-  assert.equal(unknown.summary, "");
+  assert.equal(unknown.summary, raw.summary);
 });
 
 test("ajuste só de nota e selo preserva síntese factual", () => {
@@ -433,24 +470,24 @@ test("faixas históricas preservam todos os limites numéricos", () => {
 test("contexto verificável não vira confirmação nem perde sua relação quando claim continua desconhecido", () => {
   const raw = resultFor("unproven", [evidenceFor("context", { verification: "verified" })]);
   const { fixed } = validateResult(raw);
-  assertUnknown(fixed);
+  assertUnprovenScored(fixed);
   assert.equal(fixed.claims[0].evidenceSupport, "context");
 });
 
 test("suporte e refutação no mesmo claim não são resumidos como suporte unilateral", () => {
   const raw = resultFor("unproven", [evidenceFor("supports"), evidenceFor("refutes")]);
   const { fixed } = validateResult(raw);
-  assertUnknown(fixed);
+  assertUnprovenScored(fixed);
   assert.equal(fixed.claims[0].evidenceSupport, "insufficient");
 });
 
 for (const status of ["true", "false", "context"]) {
-  test(`relações conflitantes não mantêm classificação ${status} nem nota`, () => {
+  test(`relações conflitantes não mantêm classificação ${status} e abstêm com 45`, () => {
     const raw = resultFor(status, [evidenceFor("supports"), evidenceFor("refutes")]);
     const { fixed } = validateResult(raw);
     assert.equal(fixed.claims[0].status, "unproven");
     assert.equal(fixed.claims[0].evidenceSupport, "insufficient");
-    assertUnknown(fixed);
+    assertUnprovenScored(fixed);
   });
 }
 
@@ -461,14 +498,14 @@ test("texto integral do claim não é truncado durante a validação", () => {
 });
 
 for (const status of ["true", "false", "context", "unproven"]) {
-  for (const [verdict, expected, score] of [["supports", "true", 95], ["refutes", "false", 5], ["context", "unproven", null]]) {
+  for (const [verdict, expected, score] of [["supports", "true", 95], ["refutes", "false", 5], ["context", "unproven", 45]]) {
     test(`revisão estruturalmente válida ${verdict} resolve status inicial ${status} de forma canônica`, () => {
       const raw = resultFor(status, [evidenceFor("context", { verification: "verified" })]);
       raw.claims[0].evidenceReview = { verdict, verification: "verified", incomplete: false, evidenceIndices: [0] };
       const fixed = validateResult(raw).fixed;
       assert.equal(fixed.claims[0].status, expected);
       assert.equal(fixed.claims[0].score, score);
-      if (score === null) assertUnknown(fixed);
+      if (score === 45) assertUnprovenScored(fixed);
     });
   }
 }
@@ -476,9 +513,9 @@ for (const status of ["true", "false", "context", "unproven"]) {
 for (const [status, relation, score] of [["true", "supports", 95], ["false", "refutes", 5]]) {
   test(`evidência research só sustenta ${status} na avaliação web_research`, () => {
     const raw = resultFor(status, [evidenceFor(relation, { verification: "research" })]);
-    assertUnknown(validateResult(raw).fixed);
+    assertUnprovenScored(validateResult(raw).fixed);
     raw.claims[0].assessmentBasis = "document_review";
-    assertUnknown(validateResult(raw).fixed);
+    assertUnprovenScored(validateResult(raw).fixed);
     raw.claims[0].assessmentBasis = "web_research";
     const fixed = validateResult(raw).fixed;
     assert.equal(fixed.claims[0].status, status);
@@ -504,7 +541,7 @@ test("pesquisa não promove unproven nem mantém context legado como avaliação
   for (const status of ["context", "unproven"]) {
     const raw = resultFor(status, [evidenceFor("supports", { verification: "research" })]);
     raw.claims[0].assessmentBasis = "web_research";
-    assertUnknown(validateResult(raw).fixed);
+    assertUnprovenScored(validateResult(raw).fixed);
   }
   assert.equal(validateResult(resultFor("context", [evidenceFor("context")])).fixed.claims[0].score, 70);
 });
@@ -522,7 +559,7 @@ test("pesquisa continua abstendo por conflito, relação incorreta, período dis
     const raw = resultFor("true", [evidenceFor("supports", { verification: "research" })]);
     raw.claims[0].assessmentBasis = "web_research";
     mutate(raw.claims[0]);
-    assertUnknown(validateResult(raw).fixed);
+    assertUnprovenScored(validateResult(raw).fixed);
   }
 });
 
@@ -530,5 +567,34 @@ test("research não pode se passar por localização documental de grupo verifie
   const raw = resultFor("unproven", [evidenceFor("supports", { verification: "research" })]);
   raw.claims[0].assessmentBasis = "web_research";
   raw.claims[0].evidenceReview = { verdict: "supports", verification: "verified", incomplete: false, evidenceIndices: [0] };
-  assertUnknown(validateResult(raw).fixed);
+  assertUnprovenScored(validateResult(raw).fixed);
+});
+
+test("claim único unproven recebe 45 com veredito unproven", () => {
+  const raw = resultFor("unproven", [evidenceFor("context")]);
+  raw.claims[0].score = 45;
+  const { fixed } = validateResult(raw);
+  assert.equal(fixed.claims[0].status, "unproven");
+  assert.equal(fixed.claims[0].score, 45);
+  assert.equal(fixed.score, 45);
+  assert.equal(fixed.verdict, "unproven");
+  assert.deepEqual(fixed.coverage, { total: 1, assessed: 1, unproven: 1, omitted: 0 });
+});
+
+test("mix true(95)+unproven(45) resulta em média 70", () => {
+  const raw = resultFor("true");
+  raw.claims.push(resultFor("unproven", [evidenceFor("context")]).claims[0]);
+  const { fixed } = validateResult(raw);
+  assert.equal(fixed.score, 70);
+  assert.equal(fixed.verdict, "partially_true");
+  assert.deepEqual(fixed.coverage, { total: 2, assessed: 2, unproven: 1, omitted: 0 });
+});
+
+test("true+true+false tem média 65 com teto 64", () => {
+  const raw = resultFor("true");
+  raw.claims.push(resultFor("true").claims[0], resultFor("false").claims[0]);
+  const { fixed, corrections } = validateResult(raw);
+  assert.equal(fixed.score, 64);
+  assert.equal(fixed.verdict, "distorted");
+  assert.ok(corrections.some((item) => item.includes("teto de consistência")));
 });

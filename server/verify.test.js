@@ -96,7 +96,7 @@ test("pipeline visual continua com frames reais quando o vídeo não tem áudio"
   }
 });
 
-test("validação preserva afirmações literais e não pontua declarações sem evidência", async () => {
+test("validação preserva afirmações literais e dá nota de abstenção a declarações sem evidência", async () => {
   await withControlledModels(async () => {
     const original = ["Hallal apresentou uma estimativa de mortes evitáveis.", "A estimativa foi apresentada em uma audiência."];
     globalThis.fetch = async (url, options) => {
@@ -115,7 +115,9 @@ test("validação preserva afirmações literais e não pontua declarações sem
     const response = await runVerify({ kind: "image", context: "Checar a declaração do pesquisador.", fileBuffer: png, fileMime: "image/png" });
     assert.deepEqual(response.result.claims.map((claim) => claim.text), original);
     assert.deepEqual(response.result.claims.map((claim) => claim.status), ["unproven", "unproven"]);
-    assert.equal(response.result.score, null);
+    assert.deepEqual(response.result.claims.map((claim) => claim.score), [45, 45]);
+    assert.equal(response.result.score, 45);
+    assert.equal(response.result.verdict, "unproven");
     assert.equal(response.result.coverage.unproven, 2);
   });
 });
@@ -217,8 +219,29 @@ test("limitação documental preserva pesquisa citada sem promover alegações s
     assert.deepEqual(out.result.claims.map((claim) => claim.status), ["true", "true", "unproven", "unproven", "unproven", "unproven"]);
     assert.equal(out.result.claims[0].assessmentBasis, "web_research");
     assert.equal(out.result.claims[0].evidence[0].verification, "research");
-    assert.equal(out.result.score, null);
+    assert.equal(out.result.score, 62);
+    assert.deepEqual(out.result.claims.map((claim) => claim.score), [95, 95, 45, 45, 45, 45]);
+    assert.equal(out.result.coverage.assessed, 6);
     assert.deepEqual(out.result.notCheckedClaims.map((claim) => claim.text), ["Duas caras"]);
+  });
+});
+
+test("resultado checked/unproven preserva nota do modelo na faixa e verdict unproven", async () => {
+  await withControlledModels(async () => {
+    globalThis.fetch = async (url, options) => {
+      if (String(url).endsWith("/models")) return new Response(JSON.stringify({ data: [{ id: "muse-spark-1.3-contributor" }] }), { status: 200 });
+      const body = JSON.parse(options.body);
+      assert.ok(!/Examine a imagem|Analise as imagens/.test(body.instructions));
+      const result = { outcome: "checked", summary: "Sem comprovação.", claims: [{ text: "O município anunciou sete escolas.", status: "unproven", score: 38, evidence: [] }], sources: [] };
+      return new Response(JSON.stringify({ output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(result) }] }] }), { status: 200 });
+    };
+    const out = await runVerify({ kind: "text", text: "O município anunciou sete escolas?" });
+    assert.equal(out.result.outcome, "checked");
+    assert.equal(out.result.claims[0].status, "unproven");
+    assert.equal(out.result.claims[0].score, 38);
+    assert.equal(out.result.score, 38);
+    assert.equal(out.result.verdict, "unproven");
+    assert.notEqual(out.result.score, null);
   });
 });
 

@@ -14,7 +14,6 @@ export default function Hero({ onQuickCheck, collapsed }) {
   return (
     <section className={`hero-full${collapsed ? " hero-collapsed" : ""}`} id="topo" aria-label="Verificação rápida">
       <div className="wrap hero-full-inner">
-        <p className="hero-kick"><span className="hero-kick-red">Eleições 2026</span><span className="sep" aria-hidden="true">/</span><span>Segundo turno</span></p>
         <h1 className="quick-title">Isso é verdade<span className="dot">?</span></h1>
         <p className="quick-sub">Digite ou cole um texto ou link, ou envie mídia no verificador completo. A checagem mostra o que as evidências sustentam — e quando não há base suficiente para concluir.</p>
         <form className="quick-form" onSubmit={submit} role="search" aria-label="Checagem rápida">

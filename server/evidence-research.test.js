@@ -87,8 +87,8 @@ test("recupera prova de outra passagem obtida sem transferir veredito ou mudar h
 for (const repair of ["invented", "unproven-url"]) test(`recuperação ${repair} não transforma candidato em prova`, async (t) => {
   const out = await scenario(t, { repair, initialStatus: "unproven" });
   assert.deepEqual(out.result.claims.map((claim) => claim.status), ["true", "unproven"]);
-  assert.equal(out.result.score, 95);
-  assert.equal(out.result.claims[1].score, null);
+  assert.equal(out.result.score, 70);
+  assert.equal(out.result.claims[1].score, 45);
   assert.equal(out.result.claims[1].text, text);
 });
 
@@ -103,8 +103,8 @@ test("cobertura confere omissão mesmo quando todas as afirmações iniciais for
   const out = await scenario(t, { omitted: true });
   assert.deepEqual(out.result.claims.map((claim) => claim.status), ["true", "unproven"]);
   assert.equal(out.result.claims[1].text, text);
-  assert.equal(out.result.score, 95);
-  assert.equal(out.result.claims[1].score, null);
+  assert.equal(out.result.score, 70);
+  assert.equal(out.result.claims[1].score, 45);
   assert.equal(out.result.coverage.total, 2);
 });
 

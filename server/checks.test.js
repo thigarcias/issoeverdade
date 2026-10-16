@@ -112,9 +112,10 @@ test("public projection drops nested unknown objects and reprojects stored legac
   assert.equal(projected.origin.transcript, undefined);
   assert.equal(projected.result.claims[0].comparison.groups[0].rows[0].value, 12);
   assert.doesNotMatch(JSON.stringify(projected), /PRIVATE/);
-  const malformed = publicCheckEnvelope({ checkId: { token: "PRIVATE ID" }, createdAt: { token: "PRIVATE DATE" }, origin: { title: { token: "PRIVATE TITLE" } } });
+  const malformed = publicCheckEnvelope({ checkId: { token: "PRIVATE ID" }, methodologyVersion: { token: "PRIVATE VERSION" }, createdAt: { token: "PRIVATE DATE" }, origin: { title: { token: "PRIVATE TITLE" } } });
   assert.equal(malformed.checkId, null);
   assert.equal(malformed.createdAt, null);
+  assert.equal(malformed.methodologyVersion, undefined);
   assert.doesNotMatch(JSON.stringify(malformed), /PRIVATE/);
   await withStore(async ({ rows }) => {
     const saved = await saveSuccessfulCheck(entry(), envelope());
@@ -126,6 +127,26 @@ test("public projection drops nested unknown objects and reprojects stored legac
     // Even possession of an injected valid hash must not publish refusals.
     rows.get("refused").share_token_hash = createHash("sha256").update(saved.shareToken).digest("hex");
     assert.equal((await request({ method: "POST", body: { checkId: "refused", shareToken: saved.shareToken } })).status, 403);
+  });
+});
+
+test("publication preserves envelope methodology for partial coverage without upgrading legacy records", async () => {
+  await withStore(async () => {
+    for (const methodologyVersion of ["fact-check-20", "fact-check-19", "fact-check-18", undefined]) {
+      const id = methodologyVersion ?? "legacy";
+      const source = envelope(id);
+      if (methodologyVersion) source.methodologyVersion = methodologyVersion;
+      Object.assign(source.result, { outcome: "partial_coverage", score: null });
+      const saved = await saveSuccessfulCheck({ ...entry(id), outcome: "partial_coverage", score: null }, source);
+      await request({ method: "POST", body: { checkId: id, shareToken: saved.shareToken } });
+      const published = await request({ method: "GET", query: { id } });
+      assert.equal(published.status, 200);
+      assert.equal(published.body.methodologyVersion, methodologyVersion);
+      assert.equal(published.body.result.outcome, "partial_coverage");
+      assert.equal(published.body.result.score, null);
+      assert.equal(published.body.result.methodologyVersion, undefined);
+      assert.doesNotMatch(JSON.stringify(published.body), /PRIVATE|shareToken|transcript|aiConfig|debug|raw/);
+    }
   });
 });
 

@@ -21,6 +21,17 @@ export function migrateVerdict(verdict, score) {
   return VERDICTS[verdict] ? verdict : "unproven";
 }
 
+/**
+ * Registros v≤18 (ou sem versão) não pontuavam "sem comprovação": um score
+ * null deles é legado e nunca um gap de cobertura. A partir da v19 todo
+ * claim avaliado recebe nota, então null com versão atual indica cobertura
+ * insuficiente (menos da metade das afirmações avaliada).
+ */
+export function isLegacyMethodology(version) {
+  const n = Number(/(\d+)\s*$/.exec(String(version ?? ""))?.[1]);
+  return !Number.isFinite(n) || n <= 18;
+}
+
 export const CLAIM_STATUS = {
   true: { label: "Verdade", tint: "tint-up", color: "#2f6b44" },
   false: { label: "Falso", tint: "tint-down", color: "#c22a17" },

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowUpRight, BookOpen, ChevronDown, Copy, Flag, Link2, Share2 } from "lucide-react";
-import { ASSESSMENT_BASIS, CLAIM_STATUS, EVIDENCE_SUPPORT, VERDICTS, evidenceReviewLabel, evidenceVerificationLabel } from "../data/constants.js";
+import { ASSESSMENT_BASIS, CLAIM_STATUS, EVIDENCE_SUPPORT, VERDICTS, evidenceReviewLabel, evidenceVerificationLabel, isLegacyMethodology } from "../data/constants.js";
 import ScoreRing from "./ScoreRing.jsx";
 import { copyText } from "../lib/hooks.js";
 import { buildShareText } from "../lib/shareCard.js";
@@ -163,7 +163,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
     <article aria-live="polite" className="result-anim">
 
       <div className="result-head">
-        {result.score != null && <AnimatedScore score={result.score} color={verdict.color} />}
+        {result.score != null ? <AnimatedScore score={result.score} color={verdict.color} /> : null}
         <div className="result-title">
           <span className="verdict-row">
             <span className={`chip ${verdict.tint}`}>
@@ -185,8 +185,10 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
       {original}
       <p className="score-legend">
         {result.score == null
-          ? "Nota indisponível: há afirmações sem comprovação ou sem análise. Falta de evidência não significa falsidade."
-          : "Pesquisa com fontes citadas ou revisão documental opcional: confirmação 95 · refutação 5 · contexto insuficiente ou inconclusão sem nota. A base de cada afirmação aparece abaixo; pesquisa não é conferência documental independente. A escala anterior é preservada nos registros históricos; a nota não é probabilidade calibrada."}
+          ? (isLegacyMethodology(result.methodologyVersion)
+            ? "Sem nota (registro anterior): este resultado foi produzido sob metodologia anterior sem nota por afirmação. Falta de evidência não significa falsidade."
+            : "Nota indisponível: menos da metade das afirmações foi avaliada; as demais ficaram sem análise. Falta de evidência não significa falsidade.")
+          : "Pesquisa com fontes citadas ou revisão documental opcional: nota na faixa do status, decidida pela força da evidência — confirmação 90–100 · refutação 0–14 · sem comprovação 35–54; o servidor valida a faixa. A base de cada afirmação aparece abaixo; pesquisa não é conferência documental independente. A escala anterior é preservada nos registros históricos; a nota não é probabilidade calibrada."}
       </p>
 
       {result.summary?.trim() && <p className="result-summary">{result.summary}</p>}
@@ -205,7 +207,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
               <details className="claim" open={i === 0}>
                 <summary>
                   <span className={`chip ${st.tint} claim-badge`}>
-                    <i /> {st.label} · {claim.score == null ? "sem nota" : `${claim.score}/100`}
+                    <i /> {st.label} · {claim.score == null ? "sem nota (registro anterior)" : `${claim.score}/100`}
                   </span>
                   <span className="claim-text">
                     {claim.text}
@@ -257,7 +259,7 @@ export default function ResultCard({ result, showToast, titleId, onShareCard, re
       {(result.coverage || result.outcome === "partial_coverage" || result.omittedClaimsCount > 0) && (
         <div className="coverage-warning" role="note">
           {result.coverage ? (
-            <><b>Cobertura das afirmações:</b> {result.coverage.total} no total; {result.coverage.assessed} avaliadas com evidência adequada; {result.coverage.unproven} sem comprovação; {result.coverage.omitted} sem análise.</>
+            <><b>Cobertura das afirmações:</b> {result.coverage.total} no total; {result.coverage.assessed} {isLegacyMethodology(result.methodologyVersion) ? "avaliadas com evidência adequada" : "avaliadas com nota"}; {result.coverage.unproven} sem comprovação; {result.coverage.omitted} sem análise.</>
           ) : (
             <><b>Cobertura parcial.</b> Foram analisadas {result.claims.length} afirmações; {result.omittedClaimsCount} ficaram sem análise.</>
           )}

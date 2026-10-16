@@ -2,7 +2,7 @@
 // Justificativas e citações completas permanecem no resultado e no texto compartilhado.
 // Zero dependências — roda 100% no browser.
 
-import { ASSESSMENT_BASIS, CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, OUTCOME_LABEL, VERDICTS, evidenceReviewLabel, evidenceVerificationLabel } from "../data/constants.js";
+import { ASSESSMENT_BASIS, CLAIM_STATUS, EVIDENCE_SUPPORT, EVIDENCE_VERIFICATION, OUTCOME_LABEL, VERDICTS, evidenceReviewLabel, evidenceVerificationLabel, isLegacyMethodology } from "../data/constants.js";
 
 const W = 1080;
 const H = 1920;
@@ -157,7 +157,7 @@ function claimDetails(claim, sources) {
 function resultLimits(result) {
   const limits = [];
   const coverage = result?.coverage;
-  if (coverage) limits.push(`Cobertura: ${coverage.total} no total; ${coverage.assessed} avaliadas com evidência adequada; ${coverage.unproven} sem comprovação; ${coverage.omitted} sem análise.`);
+  if (coverage) limits.push(`Cobertura: ${coverage.total} no total; ${coverage.assessed} ${isLegacyMethodology(result?.methodologyVersion) ? "avaliadas com evidência adequada" : "avaliadas com nota"}; ${coverage.unproven} sem comprovação; ${coverage.omitted} sem análise.`);
   else if (result?.omittedClaimsCount > 0 || result?.outcome === "partial_coverage") limits.push(`Cobertura parcial: ${list(result?.claims).length} afirmações analisadas; ${result?.omittedClaimsCount ?? 0} ficaram sem análise.`);
   if (result?.outcome && result.outcome !== "checked" && result.outcome !== "legacy") limits.push(`Desfecho: ${result.outcomeLabel ?? OUTCOME_LABEL[result.outcome] ?? result.outcome}.`);
   const media = result?.mediaCoverage;
@@ -197,9 +197,10 @@ export function shareCardContent(result) {
   return { title, summary: text(result?.summary), claims, notCheckedClaims, sources: list(result?.sources), limits: resultLimits(result) };
 }
 
-function claimLabel(claim, index) {
+function claimLabel(claim, index, methodologyVersion) {
   const status = CLAIM_STATUS[claim.status] ?? CLAIM_STATUS.unproven;
-  return `${index + 1}. ${CLAIM_ICON[claim.status] ?? "?"} ${status.label.toUpperCase()} · ${claim.score == null ? "SEM NOTA" : `${claim.score}/100`}`;
+  const legacy = claim.score == null && isLegacyMethodology(methodologyVersion);
+  return `${index + 1}. ${CLAIM_ICON[claim.status] ?? "?"} ${status.label.toUpperCase()} · ${claim.score == null ? (legacy ? "SEM NOTA (REGISTRO ANTERIOR)" : "SEM NOTA") : `${claim.score}/100`}`;
 }
 
 /** Nunca usa a página inicial como se fosse o link de um resultado privado. */
@@ -212,15 +213,16 @@ export function publishedCheckUrl(result, { origin = "" } = {}) {
 export function buildShareText(result, { origin = "" } = {}) {
   const content = shareCardContent(result);
   const label = VERDICTS[result?.verdict]?.label ?? "Sem veredito";
-  const sections = [content.title, result?.score == null ? `${label} · nota indisponível` : `${label} · nota ${result.score}/100`];
+  const legacyNull = result?.score == null && isLegacyMethodology(result?.methodologyVersion);
+  const sections = [content.title, result?.score == null ? (legacyNull ? `${label} · sem nota (registro anterior)` : `${label} · nota indisponível`) : `${label} · nota ${result.score}/100`];
   if (content.summary) sections.push(content.summary);
   for (const [index, claim] of content.claims.entries()) {
-    sections.push([claimLabel(claim, index), text(claim.text) || "Afirmação sem texto", ...claimDetails(claim, content.sources)].join("\n"));
+    sections.push([claimLabel(claim, index, result?.methodologyVersion), text(claim.text) || "Afirmação sem texto", ...claimDetails(claim, content.sources)].join("\n"));
   }
   if (content.notCheckedClaims.length) sections.push(["PONTOS NÃO CHECADOS", ...content.notCheckedClaims.map((claim, index) => `${index + 1}. ${text(claim.text) || "Ponto sem texto"}\nMotivo: ${text(claim.reason) || "Não informado no resultado."}`)].join("\n"));
   if (content.limits.length) sections.push(["COBERTURA E LIMITES", ...content.limits].join("\n"));
   sections.push(content.sources.length ? ["FONTES CONSULTADAS (não são comprovação por si só)", ...content.sources.map(sourceText)].join("\n") : "Nenhuma fonte documental disponível no resultado.");
-  sections.push(result?.score == null ? "Checagem automática · nota indisponível não significa falsidade." : "Checagem automática · a nota não é probabilidade calibrada.");
+  sections.push(result?.score == null ? (legacyNull ? "Checagem automática · sem nota (registro anterior à metodologia com nota por afirmação)." : "Checagem automática · nota indisponível não significa falsidade.") : "Checagem automática · a nota não é probabilidade calibrada.");
   if (result?.id) sections.push(`ID ${result.id} · confira correções em ${origin}/correcoes.html?checkId=${encodeURIComponent(result.id)}`);
   const permalink = publishedCheckUrl(result, { origin });
   if (permalink) sections.push(`Confira esta checagem em ${permalink}`);
@@ -259,7 +261,7 @@ export async function renderShareCards(result) {
   const coverage = [
     `${claims.length} ${claims.length === 1 ? "analisado" : "analisados"}`,
     notCheckedClaims.length ? `${notCheckedClaims.length} não ${notCheckedClaims.length === 1 ? "checado" : "checados"}` : "",
-    result?.coverage ? `${result.coverage.assessed} com evidência · ${result.coverage.unproven} sem comprovação` : "",
+    result?.coverage ? `${result.coverage.assessed} ${isLegacyMethodology(result?.methodologyVersion) ? "com evidência" : "com nota"} · ${result.coverage.unproven} sem comprovação` : "",
     (result?.coverage?.omitted ?? result?.omittedClaimsCount) > 0 ? `${result?.coverage?.omitted ?? result.omittedClaimsCount} sem análise` : "",
   ].filter(Boolean).join(" · ");
 
@@ -408,13 +410,13 @@ export async function renderShareCards(result) {
         paint(suffix, W - M, HEADLINE_Y, { size: 26, fill: FG3, align: "right", baseline: "alphabetic" });
         paint(`${result.score}`, W - M - widthOf(suffix, 26, 400, SANS) - 6, HEADLINE_Y, { size: HERO_SCORE_SIZE, family: SERIF, fill: color, align: "right", baseline: "alphabetic" });
       } else {
-        paint("Sem nota global", W - M, HEADLINE_Y, { size: 28, weight: 600, fill: FG3, align: "right", baseline: "alphabetic" });
+        paint(isLegacyMethodology(result?.methodologyVersion) ? "Sem nota (registro anterior)" : "Sem nota disponível", W - M, HEADLINE_Y, { size: 28, weight: 600, fill: FG3, align: "right", baseline: "alphabetic" });
       }
       paintLines(coverageLines, M, coverageY, { size: COVERAGE_SIZE, fill: FG2, baseline: "alphabetic" }, COVERAGE_LINE);
       rule(firstRuleY);
     } else {
       paint(label, M, CONT_Y, { size: 26, weight: 600, fill: color, baseline: "alphabetic" });
-      paint(hasScore ? `${result.score}/100` : "Sem nota global", W - M, CONT_Y, { size: 26, weight: 600, fill: FG2, align: "right", baseline: "alphabetic" });
+      paint(hasScore ? `${result.score}/100` : (isLegacyMethodology(result?.methodologyVersion) ? "Sem nota (registro anterior)" : "Sem nota disponível"), W - M, CONT_Y, { size: 26, weight: 600, fill: FG2, align: "right", baseline: "alphabetic" });
       rule(CONT_RULE_Y);
     }
 

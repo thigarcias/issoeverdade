@@ -5,10 +5,10 @@ import { VERDICTS, evidenceReviewLabel, evidenceVerificationLabel } from "../src
 
 const result = {
   id: "checagem/123", title: "Checagem: é verdade que houve pagamento?", outcome: "checked",
-  verdict: "unproven", score: 45,
+  verdict: "unproven", score: 42,
   summary: "A reportagem documenta um pedido de financiamento, mas não demonstra transferência ou recebimento.",
   claims: [{
-    text: "A pessoa recebeu financiamento do empresário.", status: "unproven", score: 45,
+    text: "A pessoa recebeu financiamento do empresário.", status: "unproven", score: 42,
     note: "As mensagens registram um pedido; não há comprovante de transferência.",
     evidence: [{ sourceId: 0, relation: "context", quote: "The messages describe a request for funding." }],
   }],
@@ -19,7 +19,7 @@ const result = {
 test("texto compartilhado inclui conclusão, limite e endereço de correções", () => {
   const text = buildShareText(result, { origin: "https://example.com", pathname: "/" });
   assert.match(text, /recebeu financiamento/);
-  assert.match(text, /45\/100/);
+  assert.match(text, /42\/100/);
   assert.match(text, /não demonstra transferência ou recebimento/);
   const correctionUrl = new URL(text.match(/https:\/\/example\.com\/correcoes\.html\S+/)?.[0]);
   assert.equal(correctionUrl.pathname, "/correcoes.html");
@@ -31,8 +31,24 @@ test("abstenção não recebe nota ou selo factual no texto de compartilhamento"
   const abstention = { title: "Arquivo sem conteúdo legível", score: null, verdict: null, claims: [], summary: "O arquivo não contém texto legível suficiente." };
   const text = buildShareText(abstention, { origin: "https://example.com" });
   assert.match(text, /não contém texto legível/);
+  assert.match(text, /sem nota \(registro anterior\)/i);
   assert.doesNotMatch(text, /nota\s*(?:null|\d+)|\d+\/100/i);
   for (const { label } of Object.values(VERDICTS)) assert.ok(!text.includes(label));
+});
+
+test("sem comprovação compartilha a nota da faixa decidida pelo modelo", () => {
+  const text = buildShareText(result, { origin: "https://example.com", pathname: "/" });
+  assert.match(text, /Sem comprovação · nota 42\/100/);
+  assert.match(text, /SEM COMPROVAÇÃO · 42\/100/);
+  assert.match(text, /a nota não é probabilidade calibrada/);
+  assert.doesNotMatch(text, /sem nota/i);
+});
+
+test("registro anterior sem nota indica legado em vez de número", () => {
+  const legacy = { ...result, verdict: "unproven", score: null, methodologyVersion: "fact-check-18", claims: [{ ...result.claims[0], score: null }] };
+  const text = buildShareText(legacy, { origin: "https://example.com", pathname: "/" });
+  assert.match(text, /sem nota \(registro anterior\)/i);
+  assert.doesNotMatch(text, /\d+\/100/);
 });
 
 const researchResult = () => ({

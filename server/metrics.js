@@ -58,6 +58,7 @@ function bump(map, key, amount = 1) {
 }
 
 const ABSTENTION_OUTCOMES = new Set(["insufficient_input", "inaccessible_media", "no_verifiable_claims", "moderation_uncovered", "content_refused"]);
+// Abstenção é por outcome sem claim factual, não por score: checked/unproven com nota 45 seguem fora deste contador; só outcomes sem alegação contam (legado null e novos null entram igual).
 
 /** Registra o desfecho de uma checagem concluída ou recusada. */
 export function recordCheck({ kind, outcome, verdict, totalMs, tokens, cached, error, media, moderation } = {}) {

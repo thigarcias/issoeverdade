@@ -80,7 +80,7 @@ test("dados ausentes ou não localizados, IDs ambíguos e números não literais
     assert.equal(calculate(data).status, "invalid");
     const claims = applyComparisons({ claims: data.claims, citations: data.citations, now });
     const reviewed = applyReview({ claims, citations: data.citations, review: { claims: [{ claimIndex: 0, verdict: "supports" }] } });
-    assert.equal(validateResult({ outcome: "checked", claims: reviewed.claims, sources: [{}, {}] }).fixed.score, null);
+    assert.equal(validateResult({ outcome: "checked", claims: reviewed.claims, sources: [{}, {}] }).fixed.score, 45);
   }
 });
 
@@ -113,7 +113,7 @@ test("identificadores e paráfrases não precisam ocorrer literalmente no excerp
   // Arithmetic cannot settle semantic scope: a documentary review that finds
   // mismatched universes/indicators always prevents a decisive result.
   const rejected = applyReview({ claims, citations: data.citations, review: { claims: [{ claimIndex: 0, verdict: "context", note: "Os dados não cobrem o mesmo universo." }] } });
-  assert.equal(validateResult({ outcome: "checked", claims: rejected.claims, sources: [{}, {}] }).fixed.score, null);
+  assert.equal(validateResult({ outcome: "checked", claims: rejected.claims, sources: [{}, {}] }).fixed.score, 45);
 });
 
 test("cobertura incompleta preserva subtotais, lacunas e ano atual parcial", () => {

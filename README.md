@@ -176,7 +176,7 @@ orçamento operacional, não gasto financeiro.
   Os quadros selecionados são moderados individualmente (uma imagem por
   requisição), agregando categorias e o maior score observado. Falha mantém
   bloqueio em modo obrigatório; os motivos ficam no registro de erro do Admin.
-- **Pesquisa e auditoria opcional** (`fact-check-22`, `server/evidence.js`): a
+- **Pesquisa e auditoria opcional** (`fact-check-23`, `server/evidence.js`): a
   avaliação principal usa busca web com proveniência de URLs, vínculos por
   afirmação e validação determinística. **O coletor documental fica desativado
   por padrão**; somente `IEV_EVIDENCE_FETCH=1` ativa obtenção HTML/PDF, localização
@@ -328,7 +328,7 @@ captcha, streams protegidos e conteúdo removido continuam limitações externas
 
 ## Metodologia e avaliação
 
-As novas checagens usam `fact-check-21`: o modelo escolhe a nota dentro da faixa do status conforme a força da evidência — `true` 90–100, `false` 0–14, `unproven` 35–54 (nota mais alta na faixa = evidência mais completa/direta/convergente; mais baixa = parcial/indireta/com ressalvas); o servidor valida status e faixa e aplica fallback neutro fora dela (95/5/45 — 45 é o meio da faixa de `unproven`, não valor fixo); a nota geral é a média de todos os claims pontuados, com teto 64 se houver `false` e mínimo de 50% de cobertura — abaixo disso (só via omissões) ou sem claim avaliado, `score: null`. Desmentidos fundamentados do mesmo rumor sobre medida futura podem refutá-lo sem exigir certeza sobre decisões futuras, mas refutar uma mídia ou fala específica não refuta automaticamente uma alegação mais ampla; negativa isolada não basta. Investigam alegações implícitas em
+As novas checagens usam `fact-check-23`: o modelo escolhe a nota dentro da faixa do status conforme a força da evidência — `true` 90–100, `false` 0–14, `unproven` 35–54 (nota mais alta na faixa = evidência mais completa/direta/convergente; mais baixa = parcial/indireta/com ressalvas); o servidor valida status e faixa e aplica fallback neutro fora dela (95/5/45 — 45 é o meio da faixa de `unproven`, não valor fixo); a nota geral é a média de todos os claims pontuados, com teto 64 se houver `false` e mínimo de 50% de cobertura — abaixo disso (só via omissões) ou sem claim avaliado, `score: null`. Desmentidos fundamentados do mesmo rumor sobre medida futura podem refutá-lo sem exigir certeza sobre decisões futuras, mas refutar uma mídia ou fala específica não refuta automaticamente uma alegação mais ampla; negativa isolada não basta. Investigam alegações implícitas em
 perguntas e justaposições, preservando comparação factual, atribuição e escopo. Registros v≤18 mantêm `null` histórico e não são recalculados; a versão separa o cache.
 O fluxo principal executa avaliação com busca (`judge`), pesquisa direcionada
 condicional de notícias (`article-research`), saneamento e validação
@@ -446,6 +446,11 @@ modalidade/categoria, aviso de amostra insuficiente, `--check-split` contra
 vazamento e `--require chave>=valor` para gates) e
 `node scripts/corpus-tool.mjs` (`init`, `validate`, `agreement`, `adjudicate`,
 `split`). Guia em [docs/avaliacao-corpus.md](docs/avaliacao-corpus.md).
+Bateria adversarial de prompt injection (paga chamadas reais; só localhost):
+`node scripts/injection-battery.mjs` contra o servidor de desenvolvimento, com
+`--dry`, `--only`, `--concurrency` e `--replay` para reavaliar um resultado
+salvo sem novas chamadas — ver
+[docs/auditoria-prompt-injection-2026-10-16.md](docs/auditoria-prompt-injection-2026-10-16.md).
 
 - [docs/metodologia-factual.md](docs/metodologia-factual.md): fluxo efetivo,
   estados operacionais, faixas de score e limites de evidência.
@@ -455,6 +460,8 @@ vazamento e `--require chave>=valor` para gates) e
   para beta/divulgação e o que ainda falta antes de divulgar.
 - [docs/guardrails-seguranca-plano.md](docs/guardrails-seguranca-plano.md):
   guardrails e estado de implementação.
+- [docs/auditoria-prompt-injection-2026-10-16.md](docs/auditoria-prompt-injection-2026-10-16.md):
+  bateria adversarial de 50 casos, leitura por caso e lacunas remanescentes.
 - Harness de avaliação: **não há corpus humano entregue nem taxa de precisão
   publicada.**
 

@@ -42,6 +42,7 @@ import {
 import {
   PROMPT_VERSION,
   SYSTEM_PROMPT_JUDGE,
+  instructionDerivedClaims,
   outputContamination,
   validateResult,
 } from "./scoring.js";
@@ -1403,6 +1404,9 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
     citations: comparisonCitations(documentary, buildResearchCitations({ claims: value.claims, sources: value.sources })),
   });
   finalResult = { ...finalResult, claims: withComparisons(finalResult, citations) };
+  // Material original do solicitante: usado na pesquisa de evidências e na
+  // validação de integridade (alegação derivada de ordem no material).
+  const originalMaterial = [input?.kind === "text" ? input.text : "", input?.context, mediaContext].filter(Boolean).join("\n");
   let review = null;
   if (needsEvidence) {
     const reviewEvidence = async (reviewCitations, phaseName) => {
@@ -1437,7 +1441,6 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       return review?.result ?? null;
     };
     review = await reviewEvidence(citations, "evidence-review");
-    const originalMaterial = [input?.kind === "text" ? input.text : "", input?.context, mediaContext].filter(Boolean).join("\n");
     const provisional = applyEvidenceAssessment({ claims: finalResult.claims, sources: finalResult.sources, citations, review, config: evCfg });
     const provisionalResult = validateResult({ ...finalResult, claims: provisional.claims }).fixed;
     const unresolved = provisionalResult.claims.flatMap((claim, index) => claim.status === "unproven" ? [index] : []);
@@ -1557,6 +1560,10 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
 
   if (outputContamination(fixed)) {
     fail(502, "output_integrity_failed", { message: "A checagem não passou na validação de integridade e não foi entregue." });
+  }
+  const instructed = instructionDerivedClaims(fixed, originalMaterial);
+  if (instructed.length > 0) {
+    fail(502, "output_integrity_failed", { message: "A checagem incorporou alegação definida por ordem no material e não foi entregue." });
   }
   const usedConfig = Object.fromEntries(Object.entries(aiCfg).map(([step, pair]) => [step, `${pair.provider}:${pair.model}`]));
   const inputHash = createHash("sha256").update(JSON.stringify({

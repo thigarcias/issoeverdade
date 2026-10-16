@@ -58,7 +58,13 @@ const ASSISTANT_PROBE = [
   /^(?:quem (?:te|lhe) (?:criou|construiu|fez|treinou)|quem (?:é|e) voc[eê]|qual (?:é|e) o seu nome)\b/i,
   /^(?:what(?: is|'s) your name|who (?:built|created|made|trained|are) you)\b/i,
   /^(?:voc[eê] agora (?:é|e)|you are now|pretend (?:to be|you are)|finja(?: ser)?|modo (?:desenvolvedor|dan|jailbreak)|developer mode|dan mode|do anything now)\b/i,
-  /^(?:mostre|revele|imprima|liste|repita|mostra|show|reveal|print|dump|list|repeat)\b.{0,60}\b(?:prompt do sistema|instru[cç][oõ]es (?:internas|do sistema)|system prompt|internal instructions|api key|chave de api|senha|password|segredo|secret|token)\b/i,
+  /^(?:mostre|revele|imprima|liste|repita|mostra|show|reveal|print|dump|list|repeat)\b.{0,60}\b(?:prompt do sistema|instru[cç][oõ]es (?:internas|do sistema)|system prompt|internal instructions|api key|chave de api|senha|password|segredo|secret|token|vari[aá]veis de ambiente|environment variables|env(?:ironment)? var|OPENAI_API_KEY|OPENCODE_API(?:_KEY)?|BLOB_READ_WRITE_TOKEN|ADMIN_SECRET|SUPABASE_SERVICE_ROLE_KEY)\b/i,
+  // Ativação de modo/persona: verbo de comando seguido do modo, não palavra isolada.
+  /^(?:ative|habilite|ligue|entre em|mude para|enable|activate)\b.{0,40}\b(?:modo (?:desenvolvedor|dan|jailbreak)|developer mode|dan mode|jailbreak)\b/i,
+  // Declaração de ausência de limites, típica de payload de persona.
+  /^(?:you (?:have|get) no (?:restrictions|limits|filters)|sem (?:restri[cç][oõ]es|filtros))\b/i,
+  // Instrução explícita sobre o campo de saída do próprio assistente.
+  /^(?:reply|responda|replique|escreva|grave|imprima|print|write|say|diga)\b.{0,80}\b(?:no|em|in) (?:o |a |the )?(?:campo|sum[aá]rio|resumo|note|justificativa|summary|field|resposta|output)\b/i,
 ];
 
 function isAssistantRequest(sentence) {

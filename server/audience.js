@@ -88,6 +88,19 @@ export function parseAudienceQuery(query = {}, now = new Date()) {
   return { period, scope, region, state, source, checkId, search, page, from: from.toISOString(), to: new Date(Math.min(to.getTime(), now.getTime())).toISOString() };
 }
 
+const SNAPSHOT_COUNTS = ["views", "visitors", "sharedViews", "sharedVisitors", "reachedLinks", "clicks", "conversions", "publishedLinks", "brazilViews", "unknownLocation"];
+const count = (value) => Number.isSafeInteger(value) && value >= 0;
+const timestamp = (value) => typeof value === "string" && Number.isFinite(Date.parse(value));
+function validSnapshot(data) {
+  if (!data || !SNAPSHOT_COUNTS.every((key) => count(data.summary?.[key])) || !count(data.linkTotal) || !timestamp(data.capturedAt) || data.retentionDays !== 90 || data.timeZone !== "America/Sao_Paulo") return false;
+  if (data.trackingSince !== null && !timestamp(data.trackingSince)) return false;
+  for (const key of ["regions", "states", "sources"]) {
+    if (!Array.isArray(data[key]) || !data[key].every((row) => row && typeof row.name === "string" && count(row.views) && count(row.visitors))) return false;
+  }
+  return Array.isArray(data.daily) && data.daily.every((row) => row && /^\d{4}-\d{2}-\d{2}$/.test(row.date) && count(row.views) && count(row.visitors) && count(row.sharedViews)) &&
+    Array.isArray(data.links) && data.links.every((row) => row && validCheckId(row.id) && typeof row.title === "string" && timestamp(row.published_at) && ["views", "visitors", "clicks", "conversions"].every((key) => count(row[key])) && (row.last_view === null || timestamp(row.last_view)));
+}
+
 export async function audienceSnapshot(query, env = process.env) {
   const filters = parseAudienceQuery(query);
   if (!filters) return { status: 400, body: { error: "invalid_audience_query", message: "Escolha um período válido de até 90 dias e confira os filtros." } };
@@ -98,7 +111,7 @@ export async function audienceSnapshot(query, env = process.env) {
       p_scope: filters.scope, p_region: filters.region || null, p_state: filters.state || null,
       p_source: filters.source || null, p_query: filters.search, p_offset: filters.page * 15, p_limit: 15,
     } }, env);
-    if (!data || typeof data !== "object" || !data.summary || !Array.isArray(data.links)) throw new Error("invalid_snapshot");
+    if (!validSnapshot(data)) throw new Error("invalid_snapshot");
     return { status: 200, body: { audience: data, filters, enabled: env.IEV_AUDIENCE_ENABLED !== "0" } };
   } catch (error) {
     reportStorageError("audience-read", "supabase", error);

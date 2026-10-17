@@ -28,3 +28,8 @@ media-tmp/
 *.sln
 *.sw?
 tmp-dl/
+
+# Artefatos locais das verificações de audiência
+playwright-report/
+test-results/
+supabase/.temp/

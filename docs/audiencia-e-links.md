@@ -24,3 +24,22 @@ A gravação é idempotente por UUID do evento; não há índices JSON em Blob n
 O painel considera até 90 dias. A cada gravação, são excluídos lotes de até 500 eventos anteriores a 90 dias. Isso não garante exclusão física imediata durante inatividade ou nos backups. Não há backfill: links antigos contam somente as novas visitas após a publicação desta versão.
 
 Configuração: reutiliza `SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` já existentes. `IEV_ANALYTICS_SECRET` é opcional; na ausência, o HMAC usa `ADMIN_SECRET` (ou a chave de serviço como último recurso). Trocar esse segredo altera a identificação estimada. `IEV_AUDIENCE_ENABLED=0` pausa a coleta e mantém o histórico no painel. A política pública de privacidade descreve o armazenamento local, a retenção e a geolocalização aproximada.
+
+## Suíte automatizada
+
+```bash
+npm ci
+npm run test:audience        # coleta, cliente e PostgreSQL isolado
+npx playwright install chromium
+npm run test:audience:e2e    # fluxos em navegador desktop e celular
+npm run test:audience:all    # todas as camadas acima
+```
+
+Para usar um Chromium já instalado, defina `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` com o caminho do executável. O Playwright inicia seu próprio Vite em `127.0.0.1:4175`; essa porta precisa estar livre. Não é necessário configurar chaves ou acessar o Supabase de produção.
+
+- `server/audience.test.js`: autenticação, HMAC, filtragem de robôs/prévias, DNT/GPC, geolocalização confiável, validação de payloads, falhas de armazenamento e fronteiras de datas em Brasília.
+- `tests/audience-client.test.js`: deduplicação em StrictMode, visibilidade, identificação de origem, armazenamento indisponível/corrompido, expiração e ordenação da atribuição de conversões.
+- `tests/audience-sql.test.js`: executa a migração real em PostgreSQL em memória (PGlite), verificando contagens, únicos, ranking, filtros, permissões, TTL e compatibilidade do agregado com o endpoint. Nenhum evento de teste é inserido no projeto real.
+- `tests/e2e/audience.spec.js`: abre o app real no Chromium, em desktop e viewport móvel, com APIs interceptadas. Cobre aberturas, erros, CTA até conclusão, filtros, busca, respostas fora de ordem, detalhes, cópia e layout. Isso verifica o fluxo do app; não tenta reproduzir os cabeçalhos da infraestrutura real da Vercel.
+
+O workflow `.github/workflows/audience.yml` executa build e suíte completa em pushes na `main` e pull requests que alteram os caminhos relevantes. Falhas de navegador preservam screenshot, trace e relatório por sete dias. A suite usa somente dados sintéticos e não consome chamadas de IA.

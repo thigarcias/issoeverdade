@@ -1,0 +1,36 @@
+name: Audiência e links
+on:
+  push:
+    branches: [main]
+    paths: ['server/**', 'api/**', 'src/**', 'tests/**', 'supabase/migrations/**', 'package*.json', 'vite*.js', 'playwright.audience.config.js', '.github/workflows/audience.yml']
+  pull_request:
+    paths: ['server/**', 'api/**', 'src/**', 'tests/**', 'supabase/migrations/**', 'package*.json', 'vite*.js', 'playwright.audience.config.js', '.github/workflows/audience.yml']
+permissions:
+  contents: read
+concurrency:
+  group: audience-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  audience:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - run: npm run test:audience:all
+      - name: Salvar diagnóstico de falhas
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audience-failures
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: ignore

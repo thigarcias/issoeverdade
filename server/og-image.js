@@ -6,7 +6,7 @@ import { Resvg } from "@resvg/resvg-js";
 import { VERDICTS } from "../src/data/constants.js";
 import { validCheckId } from "./checklog.js";
 import { handleChecksRequest } from "./checks-endpoint.js";
-import { escapeHtml, truncate } from "./og.js";
+import { checkTitle, escapeHtml, truncate } from "./og.js";
 
 const FONT_DIR = fileURLToPath(new URL("../node_modules/@expo-google-fonts/faustina/", import.meta.url));
 const FONT_FILES = [`${FONT_DIR}600SemiBold/Faustina_600SemiBold.ttf`, `${FONT_DIR}400Regular/Faustina_400Regular.ttf`];
@@ -32,14 +32,14 @@ function textBlock(lines, x, y, lineHeight, attrs) {
   return lines.map((line, i) => `<text x="${x}" y="${y + i * lineHeight}" ${attrs}>${escapeHtml(line)}</text>`).join("");
 }
 
-export function renderOgSvg(result) {
+export function renderOgSvg(result, origin) {
   const verdict = Object.hasOwn(VERDICTS, result?.verdict) ? VERDICTS[result.verdict] : null;
   const label = verdict?.label ?? "Sem veredito";
   const pillColor = verdict?.color ?? COLORS.muted;
   const pillWidth = Math.round(label.length * 15 + 56);
   const score = Number.isFinite(result?.score) ? `${result.score}/100` : "sem nota";
   const scoreSize = Number.isFinite(result?.score) ? 150 : 64;
-  const title = wrapLines(String(result?.title ?? "").replace(/^Checagem:\s*/i, "") || "Conteúdo enviado para análise", 40, 2);
+  const title = wrapLines(checkTitle(result, origin) || "Conteúdo enviado para análise", 40, 2);
   const summary = wrapLines(truncate(result?.summary, 300), 66, 2);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
 <rect width="1200" height="630" fill="${COLORS.bg}"/>
@@ -55,8 +55,8 @@ ${textBlock(summary, 130, 512, 38, `font-family="Faustina" font-weight="400" fon
 </svg>`;
 }
 
-export function renderOgPng(result) {
-  const resvg = new Resvg(renderOgSvg(result), {
+export function renderOgPng(result, origin) {
+  const resvg = new Resvg(renderOgSvg(result, origin), {
     fitTo: { mode: "width", value: 1200 },
     font: { fontFiles: FONT_FILES, loadSystemFonts: false, defaultFontFamily: "Faustina" },
   });
@@ -67,7 +67,7 @@ async function loadPublished({ headers, socketAddress, env, fetchCheck, id }) {
   if (!validCheckId(id)) return null;
   try {
     const out = await fetchCheck({ method: "GET", headers, query: { id }, socketAddress, env });
-    return out?.status === 200 && out.body?.result ? out.body.result : null;
+    return out?.status === 200 && out.body?.result ? out.body : null;
   } catch {
     return null;
   }
@@ -80,12 +80,12 @@ export async function handleOgImage({ method, headers = {}, query = {}, socketAd
     return { status: 405, headers: { ...common, Allow: "GET, HEAD", "Cache-Control": "no-store" }, body: null };
   }
   const id = typeof query.id === "string" ? query.id : "";
-  const result = await loadPublished({ headers, socketAddress, env, fetchCheck, id });
+  const body = await loadPublished({ headers, socketAddress, env, fetchCheck, id });
   let png = DEFAULT_PNG;
   let cache = "public, max-age=300";
-  if (result) {
+  if (body) {
     try {
-      png = renderOgPng(result);
+      png = renderOgPng(body.result, body.origin);
       cache = "public, max-age=3600";
     } catch {
       png = DEFAULT_PNG;

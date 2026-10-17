@@ -23,8 +23,20 @@ export function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 }
 
-export function ogTitle(result) {
-  const title = truncate(String(result?.title ?? "").replace(/^Checagem:\s*/i, ""), 90);
+/**
+ * Cabeçalho do resultado, na mesma ordem do card no app: título original →
+ * primeira afirmação analisada → título da origem. Sem isso, checagem sem
+ * título (texto colado, por exemplo) perde a manchete e vira placeholder.
+ */
+export function checkTitle(result, origin) {
+  const title = String(result?.title ?? "").replace(/^Checagem:\s*/i, "").trim();
+  if (title && !/^https?:\/\//i.test(title)) return truncate(title, 300);
+  const claim = String(result?.claims?.[0]?.text ?? "").trim();
+  return claim ? truncate(claim, 300) : truncate(origin?.title, 300);
+}
+
+export function ogTitle(result, origin) {
+  const title = truncate(checkTitle(result, origin), 90);
   return title ? `${title} · ${SITE_NAME}` : SITE_NAME;
 }
 
@@ -119,6 +131,6 @@ async function crawlerPage({ id, validId, headers, socketAddress, env, fetchChec
   return {
     status: 200,
     headers: { ...HTML_HEADERS, "Cache-Control": "no-store" },
-    html: ogHtml({ url, title: ogTitle(out.body.result), description: ogDescription(out.body.result), image: origin ? `${origin}/api/og-image?id=${encodeURIComponent(id)}` : null }),
+    html: ogHtml({ url, title: ogTitle(out.body.result, out.body.origin), description: ogDescription(out.body.result), image: origin ? `${origin}/api/og-image?id=${encodeURIComponent(id)}` : null }),
   };
 }

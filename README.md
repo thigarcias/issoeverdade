@@ -66,7 +66,15 @@ publicação passam pelos handlers do servidor. A URL pública é `/check/<id>`,
 redireciona pessoas para `/?check=<id>` e devolve HTML com metadados Open Graph
 só para crawlers de pré-visualização (`server/og.js`, `api/og.js`). A prévia usa
 título e resumo escapados, `noindex` e cai numa página genérica quando a checagem
-não está publicada ou o endpoint público recusa.
+não está publicada ou o endpoint público recusa. A manchete segue a ordem do card
+no app (`checkTitle`): título original, primeira afirmação analisada e título da
+origem — sem isso, checagem de texto colado perde o título e vira placeholder.
+A imagem da prévia é gerada por checagem em `/api/og-image?id=<id>`
+(`server/og-image.js`, `api/og-image.js`): 1200 × 630 em Faustina com veredito,
+nota, manchete e resumo. Checagem não publicada, limite do endpoint público ou
+falha de render devolvem `public/og-default.png`, e o handler envia
+`Cache-Control` de 1 hora para a imagem da checagem e 5 minutos para a padrão
+(em produção a diretiva efetiva ainda não foi conferida).
 O servidor usa PostgREST, sem SDK no frontend. A migração não importa logs antigos
 do Blob: eles permanecem no armazenamento original; a consulta ativa passa a usar
 Supabase. Não há TTL/exclusão automática dos registros Supabase nesta integração.
@@ -87,6 +95,7 @@ usando seus armazenamentos existentes; esta integração não os migra.
 | `POST /api/checks` | publicação explícita: exige `{checkId, shareToken}` entregue ao navegador da execução; retorna o link somente após confirmação |
 | `GET /api/checks?id=` | resultado publicado por ID, com projeção pública; não retorna logs, transcrição bruta ou capacidades privadas |
 | `/check/<id>` | pessoas: 302 para `/?check=<id>` (UTMs de `utm_*` são preservados); crawlers de pré-visualização: HTML com Open Graph, `noindex` |
+| `GET /api/og-image?id=<id>` | PNG 1200 × 630 da checagem publicado para `og:image`/`twitter:image`; sem publicação, a imagem padrão |
 | `/?check=<id>` | abre a checagem publicada, inclusive em outro navegador |
 | `GET /api/health` | limites e modos vigentes, sem segredos (smoke de implantação) |
 | `POST /api/corrections` | contestação pública: cria protocolo e entra na fila de revisão |

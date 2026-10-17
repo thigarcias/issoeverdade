@@ -1,6 +1,12 @@
 // Regressões do canal de correções: validação do pedido, modo fail-closed sem
 // armazenamento durável, protocolo, histórico e visão pública sem contato.
 process.env.IEV_LIMITS_MODE = "memory";
+// Modo memória independentemente do ambiente que executa a suíte: só a URL pública
+// do Supabase já coloca o storage em modo durável e faz o canal recusar por chave ausente.
+delete process.env.SUPABASE_URL;
+delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+delete process.env.BLOB_READ_WRITE_TOKEN;
 const {
   CORRECTION_STATUSES,
   REPORT_KINDS,

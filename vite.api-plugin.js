@@ -8,6 +8,7 @@ import { handleCorrectionsRequest } from "./server/corrections-endpoint.js";
 import { handleAdminRequest } from "./server/admin-endpoint.js";
 import { handleHealthRequest } from "./server/health-endpoint.js";
 import { handleChecksRequest } from "./server/checks-endpoint.js";
+import { handleOg } from "./server/og.js";
 
 function readBody(req, limit = 200_000) {
   return new Promise((resolve, reject) => {
@@ -99,6 +100,23 @@ export function apiVerifyPlugin() {
         const out = await handleAudienceRequest({ method: req.method, headers: req.headers, body, socketAddress: req.socket?.remoteAddress });
         res.statusCode = out.status;
         return res.end(out.body ? JSON.stringify(out.body) : undefined);
+      });
+      const serveOg = async (req, res, id) => {
+        const params = Object.fromEntries(new URL(req.url, "http://local").searchParams.entries());
+        const out = await handleOg({
+          method: req.method,
+          headers: req.headers,
+          query: { ...params, ...(id === undefined ? {} : { id }) },
+          socketAddress: req.socket?.remoteAddress,
+        });
+        res.statusCode = out.status;
+        for (const [key, value] of Object.entries(out.headers)) res.setHeader(key, value);
+        return out.body ? res.end(out.body) : res.end();
+      };
+      server.middlewares.use("/api/og", (req, res) => serveOg(req, res));
+      server.middlewares.use("/check", (req, res) => {
+        const id = decodeURIComponent(new URL(req.url, "http://local").pathname.replace(/^\/+|\/+$/g, ""));
+        return serveOg(req, res, id);
       });
       server.middlewares.use("/api/checks", async (req, res) => {
         res.setHeader("Content-Type", "application/json");

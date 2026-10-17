@@ -62,7 +62,11 @@ Sem armazenamento compartilhado de limites, **produção recusa novas checagens*
 
 A chave service-role nunca deve ter prefixo `NEXT_PUBLIC_` ou `VITE_`.
 As tabelas têm RLS e acesso direto de `anon`/`authenticated` revogado; consultas e
-publicação passam pelos handlers do servidor. A URL pública usa `/?check=<id>`.
+publicação passam pelos handlers do servidor. A URL pública é `/check/<id>`, que
+redireciona pessoas para `/?check=<id>` e devolve HTML com metadados Open Graph
+só para crawlers de pré-visualização (`server/og.js`, `api/og.js`). A prévia usa
+título e resumo escapados, `noindex` e cai numa página genérica quando a checagem
+não está publicada ou o endpoint público recusa.
 O servidor usa PostgREST, sem SDK no frontend. A migração não importa logs antigos
 do Blob: eles permanecem no armazenamento original; a consulta ativa passa a usar
 Supabase. Não há TTL/exclusão automática dos registros Supabase nesta integração.
@@ -82,6 +86,7 @@ usando seus armazenamentos existentes; esta integração não os migra.
 | `POST /api/verify` | execução da checagem com progresso NDJSON incremental (`accepted`/`content`/`activity`/`result`/`error`); admissão recusada continua JSON+status (`api/verify.js` na Vercel, `vite.api-plugin.js` em dev) |
 | `POST /api/checks` | publicação explícita: exige `{checkId, shareToken}` entregue ao navegador da execução; retorna o link somente após confirmação |
 | `GET /api/checks?id=` | resultado publicado por ID, com projeção pública; não retorna logs, transcrição bruta ou capacidades privadas |
+| `/check/<id>` | pessoas: 302 para `/?check=<id>` (UTMs de `utm_*` são preservados); crawlers de pré-visualização: HTML com Open Graph, `noindex` |
 | `/?check=<id>` | abre a checagem publicada, inclusive em outro navegador |
 | `GET /api/health` | limites e modos vigentes, sem segredos (smoke de implantação) |
 | `POST /api/corrections` | contestação pública: cria protocolo e entra na fila de revisão |

@@ -209,7 +209,7 @@ function claimLabel(claim, index, methodologyVersion) {
 /** Nunca usa a página inicial como se fosse o link de um resultado privado. */
 export function publishedCheckUrl(result, { origin = "" } = {}) {
   return result?.published === true && result?.id
-    ? `${origin}/?check=${encodeURIComponent(result.id)}`
+    ? `${origin}/check/${encodeURIComponent(result.id)}?utm_source=isso-e-verdade&utm_medium=share&utm_campaign=${encodeURIComponent(result.id)}`
     : null;
 }
 
@@ -226,9 +226,9 @@ export function buildShareText(result, { origin = "" } = {}) {
   if (content.limits.length) sections.push(["COBERTURA E LIMITES", ...content.limits].join("\n"));
   sections.push(content.sources.length ? ["FONTES CONSULTADAS (não são comprovação por si só)", ...content.sources.map(sourceText)].join("\n") : "Nenhuma fonte documental disponível no resultado.");
   sections.push(result?.score == null ? (legacyNull ? "Checagem automática · sem nota (registro anterior à metodologia com nota por afirmação)." : "Checagem automática · nota indisponível não significa falsidade.") : "Checagem automática · a nota não é probabilidade calibrada.");
-  if (result?.id) sections.push(`ID ${result.id} · confira correções em ${origin}/correcoes.html?checkId=${encodeURIComponent(result.id)}`);
   const permalink = publishedCheckUrl(result, { origin });
-  if (permalink) sections.push(`Confira esta checagem em ${permalink}`);
+  if (permalink) sections.unshift(`Confira esta checagem em ${permalink}`);
+  if (result?.id) sections.push(`ID ${result.id} · confira correções em ${origin}/correcoes.html?checkId=${encodeURIComponent(result.id)}`);
   return sections.join("\n\n");
 }
 

@@ -1,6 +1,10 @@
 # Metodologia factual
 
-**Contrato atual: `fact-check-23`.** Esta ferramenta automatiza a análise de afirmações; não substitui apuração, revisão profissional ou julgamento humano. Não há certificação ou afiliação ao IFCN declarada. Os smokes e auditorias de versões anteriores abaixo permanecem históricos, não são resultados desta atualização. Registros com versão `≤18` não são recalculados: `score: null` histórico continua legível como "sem nota".
+**Contrato atual: `fact-check-24`.** Esta ferramenta automatiza a análise de afirmações; não substitui apuração, revisão profissional ou julgamento humano. Não há certificação ou afiliação ao IFCN declarada. Os smokes e auditorias de versões anteriores abaixo permanecem históricos, não são resultados desta atualização. Registros com versão `≤18` não são recalculados: `score: null` histórico continua legível como "sem nota".
+
+## Intervalos temporais abertos (versão 24)
+
+A versão 24 mantém o fluxo da versão 23 descrito abaixo e aceita `referencePeriod` com um limite desconhecido: `{start:null,end:"2026-10-16"}` significa "até 16/10" e `{start:"2026-10-01",end:null}` significa "desde 01/10". Quando nenhum limite é conhecido, o campo inteiro deve ser `null`. Não se inventam limites. Só há incompatibilidade temporal quando os limites conhecidos demonstram separação; compartilhar um dia não é separação. Isso vale para pesquisa e revisão documental. Datas impossíveis, campos ausentes e intervalos invertidos continuam inválidos. A versão também separa o namespace do cache; registros já publicados não são recalculados automaticamente. O reparo de metadados realmente malformados não faz parte desta atualização.
 
 ## Fluxo efetivo e versão
 

@@ -5,6 +5,74 @@ import { validateResult, VERDICT_BANDS, verdictForScore } from "./scoring.js";
 const currentPeriod = { start: "2026-10-10", end: "2026-10-12" };
 const previousPeriod = { start: "2026-10-05", end: "2026-10-07" };
 
+test("regressão 77f44e68: quatro claims até 16/10 preservam confirmação e evidências", () => {
+  const period = { start: null, end: "2026-10-16" };
+  const raw = resultFor("true", [evidenceFor("supports", { verification: "research", referencePeriod: period })], period);
+  raw.claims[0].assessmentBasis = "web_research";
+  raw.claims = [98, 94, 92, 96].map((score) => ({ ...structuredClone(raw.claims[0]), score }));
+  const { fixed, corrections } = validateResult(raw);
+  assert.equal(fixed.score, 95);
+  assert.equal(fixed.verdict, "true");
+  assert.equal(fixed.coverage.unproven, 0);
+  for (const claim of fixed.claims) {
+    assert.equal(claim.status, "true");
+    assert.deepEqual(claim.referencePeriod, period);
+    assert.equal(claim.evidence[0].verification, "research");
+    assert.equal(claim.evidenceSupport, "supports");
+  }
+  assert.ok(!corrections.some((item) => /inválido|unproven/.test(item)));
+});
+
+test("intervalos abertos só são disjuntos quando limites conhecidos demonstram separação", () => {
+  for (const [claimPeriod, evidencePeriod, disjoint] of [
+    [{ start: null, end: "2026-10-16" }, { start: "2026-10-17", end: null }, true],
+    [{ start: "2026-10-17", end: null }, { start: null, end: "2026-10-16" }, true],
+    [{ start: null, end: "2026-10-16" }, { start: "2026-10-16", end: null }, false],
+    [{ start: null, end: "2026-10-16" }, { start: null, end: "2026-10-01" }, false],
+    [{ start: "2026-10-01", end: null }, { start: "2026-10-17", end: null }, false],
+    [null, { start: null, end: "2026-10-16" }, false],
+    [{ start: "2026-10-16", end: "2026-10-16" }, null, false],
+  ]) {
+    const raw = resultFor("true", [evidenceFor("supports", { verification: "research", referencePeriod: evidencePeriod })], claimPeriod);
+    raw.claims[0].assessmentBasis = "web_research";
+    const { fixed } = validateResult(raw);
+    assert.equal(fixed.claims[0].status, disjoint ? "unproven" : "true");
+    assert.equal(fixed.claims[0].evidence[0].relation, disjoint ? "context" : "supports");
+  }
+});
+
+test("intervalos abertos não aceitam datas impossíveis, campos ausentes ou ordem invertida", () => {
+  for (const period of [
+    { start: null, end: "2026-02-30" },
+    { start: "2026-13-01", end: null },
+    { start: "2026-10-17", end: "2026-10-16" },
+    { end: "2026-10-16" },
+  ]) {
+    const raw = resultFor("true", [evidenceFor("supports", { verification: "research" })], period);
+    raw.claims[0].assessmentBasis = "web_research";
+    assertUnprovenScored(validateResult(raw).fixed);
+  }
+});
+
+test("períodos abertos preservam refutação e validam também grupos documentais", () => {
+  for (const research of [true, false]) {
+    for (const disjoint of [true, false]) {
+      const period = { start: null, end: "2026-10-16" };
+      const evidencePeriod = { start: disjoint ? "2026-10-17" : "2026-10-16", end: null };
+      const raw = resultFor("false", [evidenceFor("refutes", {
+        verification: research ? "research" : "verified", referencePeriod: evidencePeriod,
+      })], period);
+      raw.claims[0].assessmentBasis = research ? "web_research" : "document_review";
+      if (!research) raw.claims[0].evidenceReview = {
+        verification: "verified", verdict: "refutes", incomplete: false, evidenceIndices: [0],
+      };
+      const fixed = validateResult(raw).fixed;
+      assert.equal(fixed.claims[0].status, disjoint ? "unproven" : "false");
+      assert.deepEqual(validateResult(fixed).fixed, fixed);
+    }
+  }
+});
+
 function evidenceFor(relation, overrides = {}) {
   return { sourceId: 0, relation, quote: "A pesquisa atual registra aumento da rejeição.", referencePeriod: currentPeriod, ...overrides };
 }

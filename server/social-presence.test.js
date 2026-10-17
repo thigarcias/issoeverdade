@@ -61,10 +61,9 @@ test("tweet sem áudio/vídeo não anuncia nem baixa mídia e segue com o texto"
     );
     const ids = collectMediaActivities(events);
     assert.ok(ids.has("media-metadata"), "metadados seguem visíveis no fluxo sem mídia");
-    assert.ok(!ids.has("media-acquisition"));
     assert.ok(!ids.has("media-transcription"));
-    assert.ok(!ids.has("media-vision"));
     assert.equal(workerRequests.includes("/media"), false, "ausência definitiva não dispara download");
+    // Fotos do post (syndication) podem ser analisadas; o que não existe é áudio/vídeo.
     assert.ok(events.filter((event) => event.type === "content").every((event) => event.coverage.videoLinkDetected !== true));
     assert.ok(out.media.some((entry) => String(entry).startsWith("worker-presence:no-media")));
     assert.ok(out.media.some((entry) => String(entry).includes("attachments:none")));

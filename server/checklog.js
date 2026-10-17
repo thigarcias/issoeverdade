@@ -98,7 +98,7 @@ export async function saveCheckLog(entry, { sharing = null } = {}) {
     error: entry.error ?? null,
     errorStatus: Number.isInteger(entry.errorStatus) ? entry.errorStatus : null,
     errorCode: entry.errorCode ?? entry.error ?? null,
-    failedPhase: entry.failedPhase ?? [...(entry.phases ?? [])].reverse().find((phase) => !phase.ok)?.name ?? null,
+    failedPhase: entry.failedPhase ?? ((entry.outcome === "error" || entry.error) ? [...(entry.phases ?? [])].reverse().find((phase) => !phase.ok)?.name ?? null : null),
   };
   if (sharing) record._sharing = sharing;
   if (logMode() === "supabase") {

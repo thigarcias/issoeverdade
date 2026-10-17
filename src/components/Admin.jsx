@@ -154,6 +154,7 @@ function frameTimestamp(value) {
 
 function FailureSummary({ record }) {
   const code = record.errorCode ?? record.error;
+  if (!code && record.outcome !== "error") return null;
   const phase = record.failedPhase ?? record.phases?.find((entry) => entry.ok === false)?.name;
   if (!code && !phase) return null;
   return <span className="admin-failure-summary"><b>{typeof code === "string" ? code : "Erro registrado"}</b>{phase && <span>Fase: {phase}</span>}<span>Provedor: {record.provider ?? "não registrado"} · Modelo: {record.model ?? "não registrado"}</span></span>;

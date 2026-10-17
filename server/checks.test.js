@@ -30,6 +30,7 @@ async function withStore(fn, extraEnv = {}) {
   Object.assign(process.env, { SUPABASE_URL: "https://store.example", SUPABASE_SERVICE_ROLE_KEY: "server-secret", NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-must-not-be-used", ADMIN_SECRET: "00000000-0000-4000-8000-000000000001", ...extraEnv });
   delete process.env.BLOB_READ_WRITE_TOKEN;
   const rows = new Map();
+  const state = new Map();
   const requests = [];
   let failure = false;
   const store = { rows, requests, fail(value = true) { failure = value; } };
@@ -42,6 +43,14 @@ async function withStore(fn, extraEnv = {}) {
     requests.push({ url, method: options.method, body });
     if (failure) return new Response("PRIVATE DB FAILURE server-secret https://private.example", { status: 500 });
     if (url.pathname.endsWith("/rpc/iev_list_checks")) return Response.json({ total: 37, items: [{ id: "match", outcome: "error" }] });
+    if (url.pathname.endsWith("/rpc/iev_put_state")) {
+      state.set(`${body.p_namespace}:${body.p_key}`, { value: body.p_value, expires_at: body.p_expires_at });
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname.endsWith("/iev_state")) {
+      const stored = state.get(`${url.searchParams.get("namespace").slice(3)}:${url.searchParams.get("key").slice(3)}`);
+      return Response.json(stored ? [stored] : []);
+    }
     if (options.method === "POST") {
       if (rows.has(body.id)) return new Response("duplicate", { status: 409 });
       rows.set(body.id, structuredClone(body));
@@ -267,7 +276,7 @@ test("successful and cached executions persist distinct IDs/capabilities and cac
     const stillValid = await runVerify(input);
     assert.ok(stillValid.result);
     assert.deepEqual(stillValid.storage, { persisted: false });
-  }, { OPENCODE_API: "test-key", OPENAI_API_KEY: "", MODERATION_MODE: "off", IEV_EVIDENCE_FETCH: "0", IEV_EVIDENCE_REVIEW: "0" });
+  }, { OPENCODE_API: "test-key", IEV_JUDGE: JSON.stringify({ provider: "opencode", model: "muse-spark-1.3-contributor" }), OPENAI_API_KEY: "", MODERATION_MODE: "off", IEV_EVIDENCE_FETCH: "0", IEV_EVIDENCE_REVIEW: "0" });
 });
 
 test("pipeline failures durably retain safe error metadata and phase timing, never provider messages", async () => {
@@ -290,7 +299,7 @@ test("pipeline failures durably retain safe error metadata and phase timing, nev
     assert.equal(row.share_token_hash, null);
     assert.doesNotMatch(JSON.stringify(row), /PRIVATE PROVIDER RESPONSE|test-key/);
     assert.ok(row.index_entry.errorCode);
-  }, { OPENCODE_API: "test-key", OPENAI_API_KEY: "", MODERATION_MODE: "off", IEV_EVIDENCE_FETCH: "0", IEV_EVIDENCE_REVIEW: "0" });
+  }, { OPENCODE_API: "test-key", IEV_JUDGE: JSON.stringify({ provider: "opencode", model: "muse-spark-1.3-contributor" }), OPENAI_API_KEY: "", MODERATION_MODE: "off", IEV_EVIDENCE_FETCH: "0", IEV_EVIDENCE_REVIEW: "0" });
 });
 
 test("unconfigured storage stays disabled, partial Supabase config never falls back to Blob", async () => {

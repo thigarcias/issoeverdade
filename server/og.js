@@ -44,7 +44,7 @@ export function siteOrigin(headers = {}) {
   return `${scheme}://${host}`;
 }
 
-export function ogHtml({ url, title, description }) {
+export function ogHtml({ url, title, description, image }) {
   const t = escapeHtml(title);
   const d = escapeHtml(description);
   const u = url ? escapeHtml(url) : null;
@@ -59,7 +59,7 @@ export function ogHtml({ url, title, description }) {
 <meta property="og:type" content="article" />
 <meta property="og:title" content="${t}" />
 <meta property="og:description" content="${d}" />
-${u ? `<meta property="og:url" content="${u}" />\n` : ""}<meta name="twitter:card" content="summary" />
+${image ? `<meta property="og:image" content="${escapeHtml(image)}" />\n<meta name="twitter:image" content="${escapeHtml(image)}" />\n` : ""}${u ? `<meta property="og:url" content="${u}" />\n` : ""}<meta name="twitter:card" content="${image ? "summary_large_image" : "summary"}" />
 <meta name="twitter:title" content="${t}" />
 <meta name="twitter:description" content="${d}" />
 </head>
@@ -68,10 +68,10 @@ ${u ? `<meta property="og:url" content="${u}" />\n` : ""}<meta name="twitter:car
 `;
 }
 
-const fallbackPage = () => ({
+const fallbackPage = (origin) => ({
   status: 200,
   headers: { ...HTML_HEADERS, "Cache-Control": "no-store" },
-  html: ogHtml({ url: null, title: SITE_NAME, description: FALLBACK_DESCRIPTION }),
+  html: ogHtml({ url: null, title: SITE_NAME, description: FALLBACK_DESCRIPTION, image: origin ? `${origin}/og-default.png` : null }),
 });
 
 /**
@@ -105,20 +105,20 @@ export async function handleOg({ method, headers = {}, query = {}, socketAddress
 }
 
 async function crawlerPage({ id, validId, headers, socketAddress, env, fetchCheck }) {
-  if (!validId) return fallbackPage();
+  const origin = siteOrigin(headers);
+  if (!validId) return fallbackPage(origin);
   let out;
   try {
     out = await fetchCheck({ method: "GET", headers, query: { id }, socketAddress, env });
   } catch {
-    return fallbackPage();
+    return fallbackPage(origin);
   }
   // Fail-open: sem checagem publicada (404), limite (429) ou erro de storage, o crawler recebe a página genérica.
-  if (out?.status !== 200 || !out.body?.result) return fallbackPage();
-  const origin = siteOrigin(headers);
+  if (out?.status !== 200 || !out.body?.result) return fallbackPage(origin);
   const url = origin ? `${origin}/check/${encodeURIComponent(id)}` : null;
   return {
     status: 200,
     headers: { ...HTML_HEADERS, "Cache-Control": "no-store" },
-    html: ogHtml({ url, title: ogTitle(out.body.result), description: ogDescription(out.body.result) }),
+    html: ogHtml({ url, title: ogTitle(out.body.result), description: ogDescription(out.body.result), image: origin ? `${origin}/og-default.png` : null }),
   };
 }

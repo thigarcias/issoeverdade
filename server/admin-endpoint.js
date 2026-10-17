@@ -3,6 +3,7 @@
 // invalidação de cache. Toda ação exige o Bearer de ADMIN_SECRET: comparação em
 // tempo constante, mínimo de tamanho e trava por origem nas falhas.
 import { createHash, timingSafeEqual } from "node:crypto";
+import { audienceSnapshot } from "./audience.js";
 import { appendCorrectionToLog, getCheckLog, listCheckLogs, logEnabled, logMode } from "./checklog.js";
 import { StorageError, reportStorageError, storageFailureMessage } from "./supabase.js";
 import { aiConfigCatalog, getAiConfigState, saveAiConfig } from "./ai-config.js";
@@ -172,6 +173,11 @@ export async function handleAdminRequest({ method, headers = {}, query = {}, bod
   if (!secretMatches(headers.authorization, secret)) {
     await authLimit({ headers, socketAddress, env }, true);
     return jsonError(401, { error: "unauthorized" });
+  }
+
+  if (query.audience === "1") {
+    if (method !== "GET") return jsonError(405, { error: "method_not_allowed" });
+    return audienceSnapshot(query, env);
   }
 
   if (query.metrics !== undefined && query.metrics !== "0") {

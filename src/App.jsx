@@ -9,6 +9,7 @@ import Admin from "./components/Admin.jsx";
 import HowItWorks from "./components/HowItWorks.jsx";
 import { VERDICTS, migrateVerdict } from "./data/constants.js";
 import { useToast } from "./lib/hooks.js";
+import { trackPageView, trackNewCheck, trackCheckCompleted } from "./lib/audience.js";
 import { getPublishedCheck } from "./lib/api.js";
 import { ArrowUpRight, BookOpen, ChevronDown, History, LockKeyhole } from "lucide-react";
 import "./home.css";
@@ -60,6 +61,7 @@ export default function App() {
   }, []);
 
   function handleChecked(result) {
+    trackCheckCompleted();
     setHistory((h) => [result, ...h.filter((r) => r.id !== result.id)].slice(0, 20));
     const verdict = VERDICTS[result.verdict];
     show(verdict
@@ -109,8 +111,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!isAdmin && !sharedCheckId) return trackPageView();
+  }, [isAdmin, sharedCheckId]);
+
+  useEffect(() => {
     if (!sharedCheckId || isAdmin) return;
     const controller = new AbortController();
+    let stopTracking = () => {};
     setOpenResult(null);
     setSharedState({ status: "loading" });
     getPublishedCheck(sharedCheckId, { signal: controller.signal })
@@ -118,6 +125,7 @@ export default function App() {
         if (controller.signal.aborted) return;
         setOpenResult(result);
         setSharedState(null);
+        stopTracking = trackPageView(sharedCheckId);
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
@@ -126,8 +134,14 @@ export default function App() {
           message: error.message || "Não foi possível carregar a checagem compartilhada.",
         });
       });
-    return () => controller.abort();
+    return () => { controller.abort(); stopTracking(); };
   }, [sharedCheckId, sharedRetry, isAdmin]);
+
+  function startFromShared() {
+    trackNewCheck(sharedCheckId);
+    closeResult();
+    document.getElementById("verificar")?.scrollIntoView({ behavior: "smooth" });
+  }
 
   if (isAdmin) {
     return (
@@ -210,7 +224,7 @@ export default function App() {
           <p className="footer-note">Checagem automática, não apuração independente. Consulte as evidências e os limites de cada resultado.</p>
         </div>
       </footer>
-      <DetailDialog result={openResult} state={sharedState} onRetry={() => setSharedRetry((value) => value + 1)} onClose={closeResult} showToast={show} onShareCard={openShare} />
+      <DetailDialog onNewCheck={sharedCheckId ? startFromShared : undefined} result={openResult} state={sharedState} onRetry={() => setSharedRetry((value) => value + 1)} onClose={closeResult} showToast={show} onShareCard={openShare} />
       <ShareDialog result={shareResult} onClose={() => setShareResult(null)} showToast={show} onPublished={handlePublished} />
       <div id="toast" role="status" className={message ? "show" : ""}>
         {message}

@@ -3271,3 +3271,7 @@ body:has(.admin-main) {
     margin-bottom: 3px;
   }
 }
+
+.shared-check-cta { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:22px; margin-top:24px; border:1px solid var(--line, #ddd6c9); background:var(--bg, #f5f2e9); border-radius:12px; }
+.shared-check-cta p { margin:6px 0 0; font-size:14px; color:var(--mut, #6b665e); }
+@media(max-width:600px) { .shared-check-cta { align-items:stretch; flex-direction:column; } }

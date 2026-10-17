@@ -30,7 +30,8 @@ export default function ShareDialog({ result, onClose, showToast, onPublished })
   const permalink = publishedCheckUrl(sharedResult, shareLocation);
   const canPublish = result?.persisted === true && !!result.shareToken && !result.publicView;
   const shareText = result ? buildShareText(sharedResult, shareLocation) : "";
-  const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+  const whatsappText = permalink ? shareText.replaceAll(permalink, `${permalink}&utm_source=whatsapp`) : shareText;
+  const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(whatsappText)}`;
 
   const generating = status === "generating";
   const ready = status === "ready" && cards?.result === result && cards?.retry === retry;

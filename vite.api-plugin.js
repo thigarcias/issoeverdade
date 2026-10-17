@@ -1,6 +1,7 @@
 // Plugin Vite (dev): serve /api/verify, /api/corrections e /api/admin com as
 // chaves server-side — mesmos handlers da Vercel.
 // /api/verify admite (JSON + status em caso de recusa) e transmite NDJSON.
+import { handleAudienceRequest } from "./server/audience.js";
 import { loadEnv } from "vite";
 import { admitVerifyRequest, executeVerifyStream, handleVerifyRecovery, VERIFY_CONTRACT, VERIFY_NDJSON_TYPE } from "./server/endpoint.js";
 import { handleCorrectionsRequest } from "./server/corrections-endpoint.js";
@@ -88,6 +89,16 @@ export function apiVerifyPlugin() {
           },
         });
         res.end();
+      });
+      server.middlewares.use("/api/audience", async (req, res) => {
+        res.setHeader("Cache-Control", "no-store");
+        res.setHeader("Content-Type", "application/json");
+        let body = null;
+        try { if (req.method === "POST") body = JSON.parse(await readBody(req, 2048)); }
+        catch { res.statusCode = 400; return res.end(JSON.stringify({ error: "bad_request" })); }
+        const out = await handleAudienceRequest({ method: req.method, headers: req.headers, body, socketAddress: req.socket?.remoteAddress });
+        res.statusCode = out.status;
+        return res.end(out.body ? JSON.stringify(out.body) : undefined);
       });
       server.middlewares.use("/api/checks", async (req, res) => {
         res.setHeader("Content-Type", "application/json");

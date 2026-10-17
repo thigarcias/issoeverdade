@@ -97,7 +97,7 @@ export function UsageFilterBar({ filters, options, disabled, onChange, onReset }
         </AdminSelect>
       </label>
       {dirty && <button className="btn ghost" type="button" onClick={onReset} disabled={disabled}>Limpar filtros</button>}
-      <p className="admin-mut admin-usage-scope">Os filtros valem para toda a aba: uso estimado e qualidade operacional.</p>
+      <p className="admin-mut admin-usage-scope">Os filtros desta área valem para uso estimado e qualidade operacional.</p>
     </div>
   );
 }

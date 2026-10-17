@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ASSESSMENT_BASIS, CLAIM_STATUS, EVIDENCE_SUPPORT, VERDICTS, evidenceReviewLabel, evidenceVerificationLabel, isLegacyMethodology, migrateVerdict } from "../data/constants.js";
 import ComparisonDetails from "./ComparisonDetails.jsx";
 import { Activity, ArrowUpRight, BookOpen, ClipboardCheck, Copy, LayoutDashboard, LogOut, MessageSquare, RefreshCw, Search, Settings2, ShieldCheck } from "lucide-react";
+import AudienceDashboard from "./AudienceDashboard.jsx";
 import AdminSelect from "./AdminSelect.jsx";
 import { CapabilityGrid, DEFAULT_METRICS_FILTERS, UsageFilterBar, UsageHero, UsageTemporalCharts, buildMetricsQuery, isDayPeriod } from "./UsageDashboard.jsx";
 import "../admin.css";
@@ -958,7 +959,17 @@ function OutcomeMetricChart({ outcomes }) {
   </section>;
 }
 /** Aba Métricas como dashboard de uso (sem segredos). Filtros server-side valem para uso estimado e qualidade operacional. */
-function AdminMetrics({ data, loading, error, filters, onFiltersChange, onResetFilters, onReload }) {
+function AdminMetrics({ request, showToast, ...props }) {
+  const [tab, setTab] = useState("audience");
+  return <>
+    <div className="admin-metrics-tabs" role="tablist" aria-label="Área de métricas">
+      <button type="button" id="audience-tab" role="tab" aria-selected={tab === "audience"} aria-controls="audience-panel" onClick={() => setTab("audience")}><ArrowUpRight size={15} />Audiência & links</button>
+      <button type="button" id="operation-tab" role="tab" aria-selected={tab === "operation"} aria-controls="operation-panel" onClick={() => setTab("operation")}><Activity size={15} />Operação & IA</button>
+    </div>
+    {tab === "audience" ? <div id="audience-panel" role="tabpanel" aria-labelledby="audience-tab"><AudienceDashboard request={request} showToast={showToast} /></div> : <div id="operation-panel" role="tabpanel" aria-labelledby="operation-tab"><OperationMetrics {...props} /></div>}
+  </>;
+}
+function OperationMetrics({ data, loading, error, filters, onFiltersChange, onResetFilters, onReload }) {
   const aggregate = data?.metrics ?? null;
   const budget = aggregate?.budgetToday ?? null;
   const usageOptions = aggregate?.usageOptions ?? {};
@@ -991,7 +1002,7 @@ function AdminMetrics({ data, loading, error, filters, onFiltersChange, onResetF
       <div className="admin-section-heading">
         <p className="admin-eyebrow">Operação · uso e qualidade</p>
         <h1 id="admin-metrics-title">Métricas</h1>
-        <p>Uso estimado dos logs retidos e orçamento real de hoje (UTC), com qualidade operacional abaixo. Os filtros valem para toda a aba.</p>
+        <p>Uso estimado dos logs retidos e orçamento real de hoje (UTC), com qualidade operacional abaixo. Os filtros desta área valem para uso e qualidade operacional.</p>
       </div>
       <button className="btn ghost" type="button" onClick={onReload} disabled={loading}>{loading ? "Atualizando métricas…" : "Atualizar métricas"}</button>
       {error && <div className="admin-error-state" role="alert"><p>Não foi possível consultar as métricas. Os contadores estão indisponíveis, não zerados.</p><p>{error}</p><button className="btn" type="button" onClick={onReload} disabled={loading}>Tentar novamente</button></div>}
@@ -1687,7 +1698,7 @@ export default function Admin({ showToast }) {
           onInvalidateCache={invalidateAdminCache}
           showToast={showToast}
         />}
-        {section === "metrics" && <AdminMetrics data={metricsData} loading={metricsLoading} error={metricsError} filters={metricsFilters} onFiltersChange={(next) => setMetricsFilters({ ...DEFAULT_METRICS_FILTERS, ...next })} onResetFilters={() => setMetricsFilters({ ...DEFAULT_METRICS_FILTERS })} onReload={() => loadMetrics(metricsFiltersRef.current)} />}
+        {section === "metrics" && <AdminMetrics request={authedFetch} showToast={showToast} data={metricsData} loading={metricsLoading} error={metricsError} filters={metricsFilters} onFiltersChange={(next) => setMetricsFilters({ ...DEFAULT_METRICS_FILTERS, ...next })} onResetFilters={() => setMetricsFilters({ ...DEFAULT_METRICS_FILTERS })} onReload={() => loadMetrics(metricsFiltersRef.current)} />}
         {section === "models" && <section aria-labelledby="admin-models-title"><div className="admin-section-heading"><p className="admin-eyebrow">Configuração e compatibilidade</p><h1 id="admin-models-title">Modelos & provedores</h1><p>Defina separadamente os modelos usados na avaliação factual, visão e transcrição.</p></div>
           <AiConfigCard catalog={aiCatalog} draft={aiDraft} saved={aiConfig} saving={aiSaving} loading={aiLoading} persisted={aiPersisted} error={aiError} configErrors={aiConfigErrors} configUnavailable={aiConfigUnavailable} configStale={aiConfigStale} staleReason={aiStaleReason} onChange={setAiDraft} onSave={saveAi} onReload={() => loadAi()} onRefreshCatalog={() => loadAi({ refresh: true, preserveDraft: true })} />
         </section>}

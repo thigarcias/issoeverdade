@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import ResultCard from "./ResultCard.jsx";
 
-export default function DetailDialog({ result, state, onRetry, onClose, showToast, onShareCard }) {
+export default function DetailDialog({ result, state, onRetry, onClose, showToast, onShareCard, onNewCheck }) {
   const ref = useRef(null);
 
   useEffect(() => {
@@ -49,6 +49,7 @@ export default function DetailDialog({ result, state, onRetry, onClose, showToas
         {result ? (
           <ResultCard result={result} showToast={showToast} titleId="dialog-result-title" onShareCard={onShareCard} reportSource="detail" />
         ) : null}
+        {result?.publicView && onNewCheck && <div className="shared-check-cta"><div><b>Recebeu outra informação suspeita?</b><p>Faça sua própria checagem e consulte as fontes.</p></div><button className="btn primary" type="button" onClick={onNewCheck}>Fazer uma checagem</button></div>}
       </div>
     </dialog>
   );

@@ -119,6 +119,6 @@ async function crawlerPage({ id, validId, headers, socketAddress, env, fetchChec
   return {
     status: 200,
     headers: { ...HTML_HEADERS, "Cache-Control": "no-store" },
-    html: ogHtml({ url, title: ogTitle(out.body.result), description: ogDescription(out.body.result), image: origin ? `${origin}/og-default.png` : null }),
+    html: ogHtml({ url, title: ogTitle(out.body.result), description: ogDescription(out.body.result), image: origin ? `${origin}/api/og-image?id=${encodeURIComponent(id)}` : null }),
   };
 }

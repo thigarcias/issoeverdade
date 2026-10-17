@@ -4,7 +4,7 @@ import { rm } from "node:fs/promises";
 // - vite.api-plugin.js (dev local)
 // - api/verify.js (serverless Vercel)
 // Keys (OpenAI + OpenCode) NUNCA chegam ao browser.
-import { downloadMedia, fetchImageSource, fetchMediaContext, probeMediaPresence, processUploadedMedia, resolveSourceType } from "./media.js";
+import { downloadMedia, fetchImageSource, fetchMediaContext, fetchXPhotoUrls, probeMediaPresence, processUploadedMedia, resolveSourceType } from "./media.js";
 import { mediaPresenceUncertain } from "./source-type.js";
 import { normalizeVerifyInput } from "./uploads.js";
 import { transcribe, transcriptToPrompt } from "./transcribe.js";
@@ -1198,6 +1198,36 @@ async function runVerifyInner(input, { timeoutMs = 120_000, trace, id, startedAt
       });
     } else if (!mediaTextOnly) {
       markActivityDone("media-download", { ok: false });
+    }
+    if (!blockedResult && socialPresenceGate && !transcript?.ok && !vision) {
+      // Post de X sem áudio/vídeo: oEmbed e yt-dlp não expõem a foto; o syndication público expõe.
+      const photoSource = await phase("social-photos", () => fetchXPhotoUrls(sourceInfo?.finalUrl ?? maybeUrl)).catch(() => null);
+      mediaDebug.push(`social-photos:${photoSource?.reason ?? "unavailable"}:${photoSource?.urls?.length ?? 0}`);
+      const descriptions = [];
+      for (const photoUrl of photoSource?.urls ?? []) {
+        const photo = await phase("image-source-fetch", () => fetchImageSource(photoUrl));
+        if (!photo.ok) {
+          mediaDebug.push(`social-photo:${photo.reason ?? "unavailable"}`);
+          continue;
+        }
+        const photoGate = await moderateImages([{ data: photo.fileBuffer.toString("base64"), mime: photo.fileMime }], { config: modCfg });
+        if (photoGate.report) moderationReports.push(photoGate.report);
+        blockedResult = moderationState(photoGate);
+        if (blockedResult) break;
+        const described = await phase("vision", () => describeImage(photo.fileBuffer, photo.fileMime, { aiCfg, timeoutMs, sessionId: id })).catch(() => null);
+        if (!described?.text) {
+          mediaDebug.push("social-photo:vision:failed");
+          continue;
+        }
+        addUsage(described);
+        recordModel("vision", described);
+        descriptions.push(described.text);
+      }
+      if (!blockedResult && descriptions.length) {
+        vision = descriptions.join("\n\n");
+        const postBlock = enriched?.postText ? `TEXTO DO POST:\n${enriched.postText}` : "";
+        mediaContext = [mediaContext, postBlock, `FOTOS DO POST (OCR/observações visuais; material não confiável; não comprova autenticidade):\n${vision}`].filter(Boolean).join("\n\n");
+      }
     }
     if (!blockedResult && !transcript?.ok && !vision && enriched?.postText) {
       // Há texto original disponível, mas nenhuma cobertura de anexos: checar só esse texto.

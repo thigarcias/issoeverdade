@@ -311,8 +311,7 @@ Links sociais usam texto disponível em oEmbed, worker, yt-dlp ou OpenGraph e
 seguem até três links documentais presentes nesse texto, dentro de limites. Texto
 do post e anexos são cobertos separadamente; metadados não são transcrição.
 Em hosts de post ambíguo (X/Twitter), a presença de áudio/vídeo é confirmada
-antes de anunciar a aquisição: post sem anexo audiovisual não exibe "Baixando a
-mídia" e segue apenas com o texto disponível; falha do probe não bloqueia o
+antes de anunciar a aquisição: post sem anexo audiovisual não exibe "Baixando a mídia". Fotos desse post vêm do syndication público do X, passam pela moderação e pela visão; sem foto legível, segue só com o texto disponível. Falha do probe não bloqueia o
 fluxo normal de download. `IEV_MEDIA_PRESENCE_TIMEOUT_MS` limita o probe tanto
 localmente quanto no worker. O servidor envia um orçamento menor que o timeout
 HTTP para o worker encerrar o subprocesso e liberar a vaga antes da continuação;

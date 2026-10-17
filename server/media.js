@@ -805,6 +805,43 @@ export async function probeOEmbed(url) {
   }
 }
 
+/** Token exigido pelo syndication público do X (mesma fórmula do embed oficial). */
+function xSyndicationToken(id) {
+  return ((Number(id) / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, "");
+}
+
+const X_PHOTOS_MAX = 4;
+
+/**
+ * Fotos de um post de X pelo syndication público (sem login). oEmbed e yt-dlp não
+ * expõem imagens de post só-foto: yt-dlp responde "No video could be found".
+ */
+export async function fetchXPhotoUrls(url) {
+  let id = "";
+  try {
+    id = new URL(url).pathname.match(/\/status\/(\d+)/)?.[1] ?? "";
+  } catch {
+    id = "";
+  }
+  if (!id) return { ok: false, reason: "not-x-status", urls: [] };
+  try {
+    const response = await safeFetch(
+      `https://cdn.syndication.twimg.com/tweet-result?id=${id}&token=${xSyndicationToken(id)}`,
+      { maxBytes: 512 * 1024, maxRedirects: 0, timeoutMs: 15_000, accept: "application/json" },
+    );
+    if (!response.ok) return { ok: false, reason: `syndication-http-${response.status}`, urls: [] };
+    const data = JSON.parse(response.body.toString("utf8"));
+    const urls = (Array.isArray(data?.mediaDetails) ? data.mediaDetails : [])
+      .filter((item) => item?.type === "photo" && typeof item.media_url_https === "string")
+      .map((item) => item.media_url_https)
+      .filter((photo) => /^https:\/\/pbs\.twimg\.com\//.test(photo))
+      .slice(0, X_PHOTOS_MAX);
+    return { ok: urls.length > 0, reason: urls.length > 0 ? "ok" : "no-photos", urls };
+  } catch (error) {
+    return { ok: false, reason: netReason(error), urls: [] };
+  }
+}
+
 const ARTICLE_TEXT_MAX = 18_000;
 
 function articleParagraphs(html) {

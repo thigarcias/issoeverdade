@@ -7,7 +7,7 @@
 // Sem controles ativos em produção o endpoint RECUSA a checagem (fail-closed).
 import { activeGuard, blockedPayload, LimitsExceeded, LimitsUnavailable } from "./limits.js";
 import { clientIp } from "./client-ip.js";
-import { randomUUID } from "node:crypto";
+import { newCheckId } from "./check-id.js";
 import { startRecovery, completeRecovery, failRecovery, readRecovery, RecoveryUnavailable } from "./recovery.js";
 import { parseUrlStrict } from "./net.js";
 import { normalizeVerifyInput } from "./uploads.js";
@@ -150,7 +150,7 @@ export async function executeVerifyStream({ input, slot, guard, checkId = null, 
     // Delivery callbacks cannot turn a completed analysis into a failed one.
     try { emit({ ...event, seq: ++seq, at: new Date().toISOString() }); } catch { /* disconnected consumer */ }
   };
-  const id = typeof checkId === "string" && checkId ? checkId : randomUUID();
+  const id = typeof checkId === "string" && checkId ? checkId : newCheckId();
   try {
     // A recuperação é complementar: falha ou prazo excedido do registro inicial
     // não impede a checagem permitida, apenas deixa de prometer recuperação.

@@ -169,7 +169,7 @@ test("layout cabe na tela e copiar link não inclui credenciais", async ({ page 
   const { errors } = await setup(page, { admin: true }); await openAdmin(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole("button", { name: "Copiar link de Vacinação no Brasil" }).click();
-  expect(await page.evaluate(() => window.__copiedPublicLink)).toMatch(/^http:\/\/127\.0\.0\.1:4175\/\?check=published-a$/);
+  expect(await page.evaluate(() => window.__copiedPublicLink)).toMatch(/^http:\/\/127\.0\.0\.1:4175\/check\/published-a$/);
   await page.getByText("Ver valores por dia", { exact: true }).click();
   await expect(page.locator(".audience-data-table table")).toBeVisible(); expect(errors).toEqual([]);
 });

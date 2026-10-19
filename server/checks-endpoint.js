@@ -29,7 +29,7 @@ export async function handleChecksRequest({ method, headers = {}, query = {}, bo
       return envelope ? reply(200, envelope) : reply(404, { error: "not_found" });
     }
     if (!await publishCheck(id, body.shareToken)) return reply(403, { error: "publication_denied" });
-    return reply(200, { id, url: `/?check=${id}` });
+    return reply(200, { id, url: `/check/${encodeURIComponent(id)}` });
   } catch (error) {
     reportStorageError(method === "GET" ? "public-read" : "publish", logMode(), error);
     return reply(502, { error: "checks_storage_failed" });

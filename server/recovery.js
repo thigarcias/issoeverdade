@@ -1,6 +1,7 @@
 // Capability-only recovery; never reads administrative logs or indexes by input.
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { stateStoreMode, readState, writeState } from "./state-store.js";
+import { newCheckId } from "./check-id.js";
 
 const TTL_MS = 30 * 60 * 1000;
 const PENDING_MS = 5 * 60 * 1000;
@@ -71,7 +72,7 @@ export function createRecoveryStore({ now = Date.now, blobToken = () => process.
     return { key, record };
   };
   return {
-    async start(checkId = randomUUID()) {
+    async start(checkId = newCheckId()) {
       if (!validId(checkId)) throw new RecoveryUnavailable();
       const capability = { checkId, recoveryToken: randomBytes(32).toString("base64url") };
       const startedAt = now();

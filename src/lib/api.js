@@ -324,7 +324,7 @@ export async function publishCheck(result, { signal } = {}) {
     cache: "no-store",
   }));
   if (data.id !== result.id) throw new Error("O serviço não confirmou a publicação desta checagem.");
-  return { id: data.id, url: `/?check=${encodeURIComponent(data.id)}` };
+  return { id: data.id, url: `/check/${encodeURIComponent(data.id)}` };
 }
 
 /** A leitura pública nunca recupera capacidade de publicação ou dados privados. */

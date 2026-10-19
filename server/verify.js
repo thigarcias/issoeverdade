@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 // Núcleo server-side da checagem — compartilhado entre:
 // - vite.api-plugin.js (dev local)
@@ -9,6 +9,7 @@ import { mediaPresenceUncertain } from "./source-type.js";
 import { normalizeVerifyInput } from "./uploads.js";
 import { transcribe, transcriptToPrompt } from "./transcribe.js";
 import { saveCheckLog as saveLog, saveSuccessfulCheck } from "./checklog.js";
+import { newCheckId } from "./check-id.js";
 import { getCached, setCached } from "./cache.js";
 import {
   EVIDENCE_REVIEW_INSTRUCTIONS,
@@ -715,7 +716,7 @@ function makeProgressEmitter(onProgress) {
 }
 
 function makeId() {
-  return randomUUID();
+  return newCheckId();
 }
 
 function safeErrorCode(error) {

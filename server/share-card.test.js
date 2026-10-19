@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildShareText, renderShareCards } from "../src/lib/shareCard.js";
+import { buildShareText, publishedCheckUrl, renderShareCards, withShareSource } from "../src/lib/shareCard.js";
 import { VERDICTS, evidenceReviewLabel, evidenceVerificationLabel } from "../src/data/constants.js";
 
 const result = {
@@ -25,6 +25,21 @@ test("texto compartilhado inclui conclusão, limite e endereço de correções",
   assert.equal(correctionUrl.pathname, "/correcoes.html");
   assert.equal(correctionUrl.searchParams.get("checkId"), result.id);
   assert.doesNotMatch(text, /é verdade que houve pagamento/);
+});
+
+test("link compartilhado é curto, limpo e não carrega parâmetros de rastreamento", () => {
+  const published = { ...result, id: "4kq7m2x9b3vz", published: true };
+  const permalink = publishedCheckUrl(published, { origin: "https://exemplo.com" });
+  assert.equal(permalink, "https://exemplo.com/check/4kq7m2x9b3vz");
+  assert.ok(permalink.length <= 48, `link longo demais: ${permalink.length} caracteres`);
+  const text = buildShareText(published, { origin: "https://exemplo.com" });
+  assert.match(text, /Confira esta checagem em https:\/\/exemplo\.com\/check\/4kq7m2x9b3vz/);
+  assert.doesNotMatch(text, /utm_/);
+});
+
+test("origem conhecida é marcada sem alterar o link público", () => {
+  assert.equal(withShareSource("https://exemplo.com/check/4kq7m2x9b3vz", "whatsapp"), "https://exemplo.com/check/4kq7m2x9b3vz?utm_source=whatsapp");
+  assert.equal(withShareSource("https://exemplo.com/check/4kq7m2x9b3vz", null), "https://exemplo.com/check/4kq7m2x9b3vz");
 });
 
 test("abstenção não recebe nota ou selo factual no texto de compartilhamento", () => {

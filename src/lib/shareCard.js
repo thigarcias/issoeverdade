@@ -209,8 +209,17 @@ function claimLabel(claim, index, methodologyVersion) {
 /** Nunca usa a página inicial como se fosse o link de um resultado privado. */
 export function publishedCheckUrl(result, { origin = "" } = {}) {
   return result?.published === true && result?.id
-    ? `${origin}/check/${encodeURIComponent(result.id)}?utm_source=isso-e-verdade&utm_medium=share&utm_campaign=${encodeURIComponent(result.id)}`
+    ? `${origin}/check/${encodeURIComponent(result.id)}`
     : null;
+}
+
+/**
+ * Marca a origem conhecida do compartilhamento (só o botão do WhatsApp sabe).
+ * O link público continua limpo; a origem entra só como parâmetro `utm_source`.
+ */
+export function withShareSource(url, source) {
+  if (!url || !source) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}utm_source=${encodeURIComponent(source)}`;
 }
 
 export function buildShareText(result, { origin = "" } = {}) {

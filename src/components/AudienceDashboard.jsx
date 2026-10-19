@@ -70,7 +70,7 @@ export default function AudienceDashboard({ request, showToast }) {
   const s = a?.summary;
   const allRegions = a ? [...REGIONS.map((name) => a.regions.find((r) => r.name === name) ?? { name, views: 0 }), ...a.regions.filter((r) => !REGIONS.includes(r.name))] : [];
   const selectedLink = filters.checkId ? a?.links?.find((link) => link.id === filters.checkId) : null;
-  const copy = async (id) => { try { await navigator.clipboard.writeText(`${location.origin}/?check=${encodeURIComponent(id)}`); setCopied(id); showToast?.("Link copiado."); } catch { showToast?.("Não foi possível copiar o link."); } };
+  const copy = async (id) => { try { await navigator.clipboard.writeText(`${location.origin}/check/${encodeURIComponent(id)}`); setCopied(id); showToast?.("Link copiado."); } catch { showToast?.("Não foi possível copiar o link."); } };
   const cards = s ? [
     { icon: Eye, label: "Acessos", value: s.views, note: "Páginas efetivamente abertas" },
     { icon: Users, label: "Visitantes estimados", value: s.visitors, note: "Navegadores distintos no período" },

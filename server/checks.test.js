@@ -96,7 +96,7 @@ test("private records require explicit capability publication; reads never selec
     assert.equal((await request({ method: "POST", body: { checkId: "missing-check", shareToken: saved.shareToken } })).status, 403);
     assert.equal((await request({ method: "GET", query: { id: "private-check" } })).status, 404);
     const publication = await request({ method: "POST", body: { checkId: "private-check", shareToken: saved.shareToken } });
-    assert.deepEqual(publication.body, { id: "private-check", url: "/?check=private-check" });
+    assert.deepEqual(publication.body, { id: "private-check", url: "/check/private-check" });
     const publishedAt = rows.get("private-check").published_at;
     assert.equal((await request({ method: "POST", body: { checkId: "private-check", shareToken: saved.shareToken } })).status, 200);
     assert.equal(rows.get("private-check").published_at, publishedAt);

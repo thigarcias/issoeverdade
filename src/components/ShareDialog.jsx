@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { buildShareText, publishedCheckUrl, renderShareCards } from "../lib/shareCard.js";
+import { buildShareText, publishedCheckUrl, renderShareCards, withShareSource } from "../lib/shareCard.js";
 import { publishCheck } from "../lib/api.js";
 import { copyText } from "../lib/hooks.js";
 
@@ -30,7 +30,7 @@ export default function ShareDialog({ result, onClose, showToast, onPublished })
   const permalink = publishedCheckUrl(sharedResult, shareLocation);
   const canPublish = result?.persisted === true && !!result.shareToken && !result.publicView;
   const shareText = result ? buildShareText(sharedResult, shareLocation) : "";
-  const whatsappText = permalink ? shareText.replaceAll(permalink, `${permalink}&utm_source=whatsapp`) : shareText;
+  const whatsappText = permalink ? shareText.replaceAll(permalink, withShareSource(permalink, "whatsapp")) : shareText;
   const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(whatsappText)}`;
 
   const generating = status === "generating";

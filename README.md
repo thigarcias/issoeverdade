@@ -64,7 +64,9 @@ A chave service-role nunca deve ter prefixo `NEXT_PUBLIC_` ou `VITE_`.
 As tabelas têm RLS e acesso direto de `anon`/`authenticated` revogado; consultas e
 publicação passam pelos handlers do servidor. A URL pública é `/check/<id>`, que
 redireciona pessoas para `/?check=<id>` e devolve HTML com metadados Open Graph
-só para crawlers de pré-visualização (`server/og.js`, `api/og.js`). A prévia usa
+só para crawlers de pré-visualização (`server/og.js`, `api/og.js`). O ID novo é
+curto (12 caracteres base32, `server/check-id.js`), para que o link compartilhado
+fique curto e legível; registros antigos com UUID continuam válidos. A prévia usa
 título e resumo escapados, `noindex` e cai numa página genérica quando a checagem
 não está publicada ou o endpoint público recusa. A manchete segue a ordem do card
 no app (`checkTitle`): título original, primeira afirmação analisada e título da
@@ -94,7 +96,7 @@ usando seus armazenamentos existentes; esta integração não os migra.
 | `POST /api/verify` | execução da checagem com progresso NDJSON incremental (`accepted`/`content`/`activity`/`result`/`error`); admissão recusada continua JSON+status (`api/verify.js` na Vercel, `vite.api-plugin.js` em dev) |
 | `POST /api/checks` | publicação explícita: exige `{checkId, shareToken}` entregue ao navegador da execução; retorna o link somente após confirmação |
 | `GET /api/checks?id=` | resultado publicado por ID, com projeção pública; não retorna logs, transcrição bruta ou capacidades privadas |
-| `/check/<id>` | pessoas: 302 para `/?check=<id>` (UTMs de `utm_*` são preservados); crawlers de pré-visualização: HTML com Open Graph, `noindex` |
+| `/check/<id>` | link público canônico: pessoas: 302 para `/?check=<id>` (UTMs de `utm_*` são preservados); crawlers de pré-visualização: HTML com Open Graph, `noindex` |
 | `GET /api/og-image?id=<id>` | PNG 1200 × 630 da checagem publicado para `og:image`/`twitter:image`; sem publicação, a imagem padrão |
 | `/?check=<id>` | abre a checagem publicada, inclusive em outro navegador |
 | `GET /api/health` | limites e modos vigentes, sem segredos (smoke de implantação) |
@@ -298,6 +300,11 @@ limitação essencial, checagem automática e identificação da checagem/site.
 O card segue a identidade do site (creme, tinta e vermelho): marca e veredito em Faustina (serifa); pontos, status e rótulos em Geist. Sem caixas nem faixas: o veredito e a nota dominam o topo; cada ponto é separado por uma régua fina, com número, texto e, sob ele, o status com a nota à direita. Pontos não checados ficam em seção própria. Nas páginas seguintes, uma linha de contexto repete o veredito e a nota. No PNG de 1080 px: marca 36 px, veredito 76 px, nota 136 px, pontos 30 px, status e rótulos 24 px, rodapé 24 px.
 Texto e rótulos continuam explicitando o resultado, sem depender somente da cor.
 O diálogo permite navegar pelas páginas e baixar a imagem selecionada.
+O link público exibido no diálogo e copiado no texto é o canônico `/check/<id>`,
+sem parâmetros de rastreamento: ele abre a checagem publicada e entrega a prévia
+Open Graph para redes sociais. Só o botão do WhatsApp acrescenta
+`utm_source=whatsapp`, para que a origem conhecida do compartilhamento entre na
+contagem de audiência; nenhum outro parâmetro é gerado ou gravado.
 Onde o aparelho aceita todos os arquivos via Web Share, **Compartilhar imagens e
 texto** abre o seletor do sistema com todos os PNGs (escolha WhatsApp nele); não
 há envio automático nem garantia de que o WhatsApp será escolhido.
